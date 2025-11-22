@@ -2,15 +2,15 @@ import logging
 import uuid
 from typing import Any, Callable
 
-from pydantic_ai import Agent
+from pydantic_ai import Agent, AgentRunResult
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
-    Message,
+    ModelMessage,
     ModelRequest,
     ModelResponse,
-    UserPrompt,
+    UserPromptPart,
 )
-from pydantic_ai.result import RunResult, StreamedRunResult
+from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import Tool
 from pydantic_ai.usage import UsageLimits
 
@@ -20,20 +20,22 @@ from agentexec.runners.base import BaseAgentRunner, _RunnerTools
 logger = logging.getLogger(__name__)
 
 
-def _extract_messages(e: UsageLimitExceeded) -> list[Message]:
+def _extract_messages(e: UsageLimitExceeded) -> list[ModelMessage]:
     """
     Extract the full conversation message history from a `UsageLimitExceeded` exception.
 
     Args:
         e: The UsageLimitExceeded exception instance
     Returns:
-        List of Message objects representing the full conversation history
+        List of ModelMessage objects representing the full conversation history
     """
-    if not hasattr(e, "messages") or not e.messages:
-        logger.warning("No messages available in UsageLimitExceeded exception")
-        return []
+    # UsageLimitExceeded may have a message_history attribute or similar
+    # For now, return empty list if not available
+    if hasattr(e, "message_history") and e.message_history:
+        return list(e.message_history)
 
-    return list(e.messages)
+    logger.warning("No message history available in UsageLimitExceeded exception")
+    return []
 
 
 class _PydanticAIRunnerTools(_RunnerTools):
@@ -117,12 +119,12 @@ class PydanticAIRunner(BaseAgentRunner):
     async def run(
         self,
         agent: Agent[Any, Any],
-        user_prompt: str | list[Message],
+        user_prompt: str | list[ModelMessage] | None,
         max_turns: int = 10,
         deps: Any | None = None,
-        message_history: list[Message] | None = None,
+        message_history: list[ModelMessage] | None = None,
         model_settings: dict[str, Any] | None = None,
-    ) -> RunResult[Any]:
+    ) -> AgentRunResult[Any]:
         """Run the agent with automatic activity tracking.
 
         Args:
@@ -153,12 +155,15 @@ class PydanticAIRunner(BaseAgentRunner):
             # Extract the conversation history
             messages = _extract_messages(e)
 
-            # Append wrap-up prompt
-            messages.append(UserPrompt(content=self.prompts.wrap_up, timestamp=None))
+            # Append wrap-up prompt as a new ModelRequest
+            wrap_up_request = ModelRequest(
+                parts=[UserPromptPart(content=self.prompts.wrap_up)]
+            )
+            messages.append(wrap_up_request)
 
             # Retry with recovery turns limit
             result = await agent.run(
-                user_prompt="",  # Empty prompt since we're continuing with history
+                user_prompt=None,  # None since we're using message_history
                 message_history=messages,
                 deps=deps,
                 usage_limits=UsageLimits(request_limit=self.recovery_turns),
@@ -172,10 +177,10 @@ class PydanticAIRunner(BaseAgentRunner):
     async def run_streamed(
         self,
         agent: Agent[Any, Any],
-        user_prompt: str | list[Message],
+        user_prompt: str | list[ModelMessage] | None,
         max_turns: int = 10,
         deps: Any | None = None,
-        message_history: list[Message] | None = None,
+        message_history: list[ModelMessage] | None = None,
         model_settings: dict[str, Any] | None = None,
     ) -> StreamedRunResult[Any]:
         """Run the agent in streaming mode with automatic activity tracking.
@@ -216,12 +221,15 @@ class PydanticAIRunner(BaseAgentRunner):
             # Extract the conversation history
             messages = _extract_messages(e)
 
-            # Append wrap-up prompt
-            messages.append(UserPrompt(content=self.prompts.wrap_up, timestamp=None))
+            # Append wrap-up prompt as a new ModelRequest
+            wrap_up_request = ModelRequest(
+                parts=[UserPromptPart(content=self.prompts.wrap_up)]
+            )
+            messages.append(wrap_up_request)
 
             # Retry with recovery turns limit
             result = await agent.run_stream(
-                user_prompt="",  # Empty prompt since we're continuing with history
+                user_prompt=None,  # None since we're using message_history
                 message_history=messages,
                 deps=deps,
                 usage_limits=UsageLimits(request_limit=self.recovery_turns),

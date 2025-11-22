@@ -16,12 +16,20 @@ def test_main_imports() -> None:
     assert enqueue is not None
 
 
-def test_runner_imports() -> None:
-    """Test that runner imports work."""
+def test_openai_runner_imports() -> None:
+    """Test that OpenAI runner imports work."""
     pytest.importorskip("agents")
     from agentexec.runners import OpenAIRunner
 
     assert OpenAIRunner is not None
+
+
+def test_pydantic_ai_runner_imports() -> None:
+    """Test that Pydantic AI runner imports work."""
+    pytest.importorskip("pydantic_ai")
+    from agentexec.runners import PydanticAIRunner
+
+    assert PydanticAIRunner is not None
 
 
 def test_worker_pool_initialization() -> None:
@@ -36,7 +44,7 @@ def test_worker_pool_initialization() -> None:
     assert hasattr(pool, "shutdown")
 
 
-def test_runner_initialization() -> None:
+def test_openai_runner_initialization() -> None:
     """Test that OpenAIRunner can be initialized."""
     pytest.importorskip("agents")
     from agentexec.runners import OpenAIRunner
@@ -53,6 +61,26 @@ def test_runner_initialization() -> None:
     assert runner.prompts.report_status == "Use report_status to report progress."
     assert hasattr(runner, "tools")
     assert hasattr(runner, "run")
+
+
+def test_pydantic_ai_runner_initialization() -> None:
+    """Test that PydanticAIRunner can be initialized."""
+    pytest.importorskip("pydantic_ai")
+    from agentexec.runners import PydanticAIRunner
+
+    runner = PydanticAIRunner(
+        agent_id=uuid.uuid4(),
+        max_turns_recovery=True,
+        wrap_up_prompt="Please summarize your findings.",
+        report_status_prompt="Use report_status to report progress.",
+    )
+
+    assert runner is not None
+    assert runner.max_turns_recovery is True
+    assert runner.prompts.report_status == "Use report_status to report progress."
+    assert hasattr(runner, "tools")
+    assert hasattr(runner, "run")
+    assert hasattr(runner, "run_streamed")
 
 
 def test_config_access() -> None:
