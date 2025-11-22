@@ -7,7 +7,7 @@ from sqlalchemy import create_engine, inspect
 from sqlalchemy.orm import Session, sessionmaker
 
 from agentexec import activity
-from agentexec.activity.models import Activity, ActivityLog, Base, Status
+from agentexec.activity.models import Activity, Base, Status
 
 
 @pytest.fixture

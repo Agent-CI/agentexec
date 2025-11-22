@@ -3,7 +3,6 @@
 import json
 import uuid
 
-import pytest
 
 
 def test_task_creation() -> None:

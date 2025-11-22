@@ -1,0 +1,78 @@
+name: Tests
+
+on:
+  push:
+    branches:
+      - main
+  pull_request:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.11", "3.12"]
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Set up Python ${{ matrix.python-version }}
+      run: uv python install ${{ matrix.python-version }}
+
+    - name: Install dependencies
+      run: |
+        # Install package with all optional dependencies for full test coverage
+        uv sync --all-extras --dev
+
+    - name: Run linter (ruff)
+      run: uv run ruff check src tests
+
+    - name: Run type checker (mypy)
+      run: uv run mypy src
+      continue-on-error: true  # Don't fail the build on type errors initially
+
+    - name: Run tests
+      run: uv run pytest tests/ -v --cov=agentexec --cov-report=term-missing --cov-report=xml
+
+    - name: Upload coverage reports to Codecov
+      uses: codecov/codecov-action@v4
+      with:
+        file: ./coverage.xml
+        flags: unittests
+        name: codecov-umbrella
+        fail_ci_if_error: false
+      env:
+        CODECOV_TOKEN: ${{ secrets.CODECOV_TOKEN }}
+      continue-on-error: true  # Don't fail if codecov upload fails
+
+  test-minimal:
+    # Test that the package works without optional dependencies
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v5
+      with:
+        enable-cache: true
+
+    - name: Set up Python 3.11
+      run: uv python install 3.11
+
+    - name: Install minimal dependencies
+      run: uv sync --dev
+
+    - name: Run tests (minimal - should skip OpenAI and Pydantic AI tests)
+      run: uv run pytest tests/ -v -k "not (openai_runner or pydantic_ai_runner)" --cov=agentexec --cov-report=term-missing

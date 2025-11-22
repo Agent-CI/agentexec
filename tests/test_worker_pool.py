@@ -6,7 +6,7 @@ import uuid
 import pytest
 from sqlalchemy import create_engine
 
-from agentexec import Priority, Task, WorkerPool, enqueue
+from agentexec import Priority, WorkerPool, enqueue
 from agentexec.core.redis_client import close_redis
 
 
@@ -67,7 +67,7 @@ def test_enqueue_high_priority_task(mock_redis, monkeypatch) -> None:
 
     # Enqueue low priority task
     from agentexec import CONF
-    task1 = enqueue("low_task", {"value": 1}, priority=Priority.LOW)
+    _ = enqueue("low_task", {"value": 1}, priority=Priority.LOW)
 
     # Enqueue high priority task
     task2 = enqueue("high_task", {"value": 2}, priority=Priority.HIGH)
