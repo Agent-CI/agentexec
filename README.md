@@ -1,8 +1,8 @@
 # `agentexec`
 
-**Production-ready orchestration for OpenAI Agents SDK** with Redis-backed task queues, SQLAlchemy activity tracking, and multiprocessing worker pools.
+**Production-ready orchestration for AI agents** with Redis-backed task queues, SQLAlchemy activity tracking, and multiprocessing worker pools.
 
-Build reliable, scalable AI agent applications with automatic lifecycle management, progress tracking, and fault tolerance.
+Supports **OpenAI Agents SDK** and **LangChain** with automatic lifecycle management, progress tracking, and fault tolerance.
 
 Running AI agents in production requires more than just the SDK. You need:
 
@@ -22,6 +22,7 @@ Running AI agents in production requires more than just the SDK. You need:
 - **Redis task queue** - Reliable job distribution with priority support
 - **Automatic activity tracking** - Full lifecycle management (QUEUED → RUNNING → COMPLETE/ERROR)
 - **OpenAI Agents integration** - Drop-in runner with max turns recovery
+- **LangChain integration** - Support for ReAct, tool-calling, and LangGraph agents
 - **Agent self-reporting** - Built-in tools for agents to report progress
 - **SQLAlchemy-based storage** - Flexible database support (PostgreSQL, MySQL, SQLite)
 - **Type-safe** - Full type annotations with Pydantic schemas
@@ -31,8 +32,16 @@ Running AI agents in production requires more than just the SDK. You need:
 
 ## Installation
 
+**For OpenAI Agents SDK:**
 ```bash
 uv add agentexec
+```
+
+**For LangChain:**
+```bash
+uv add "agentexec[langchain]"
+# Also install your LLM provider, e.g.:
+uv add langchain-openai  # or langchain-anthropic, etc.
 ```
 
 **Requirements:**
@@ -180,7 +189,9 @@ ax.enqueue("batch_job", payload, priority=ax.Priority.LOW)
 
 ---
 
-## Full Example: FastAPI Integration
+## Full Examples: FastAPI Integration
+
+### OpenAI Agents SDK Example
 
 See **[examples/openai-agents-fastapi/](examples/openai-agents-fastapi/)** for a complete production application showing:
 
@@ -190,6 +201,16 @@ See **[examples/openai-agents-fastapi/](examples/openai-agents-fastapi/)** for a
 - Custom agents with function tools
 - Real-time progress monitoring
 - Graceful shutdown with cleanup
+
+### LangChain Example
+
+See **[examples/langchain-agents-fastapi/](examples/langchain-agents-fastapi/)** for a LangChain-based application demonstrating:
+
+- ReAct agent pattern with LangChain
+- Integration with multiple LLM providers
+- Streaming support via astream_events
+- Custom tools with @tool decorator
+- Same orchestration patterns as OpenAI example
 
 ---
 
@@ -255,6 +276,34 @@ result = await runner.run(agent, input="...", max_turns=15)
 
 # Streaming
 result = await runner.run_streamed(agent, input="...", max_turns=15)
+```
+
+### LangChain Runner
+
+```python
+from langchain.agents import AgentExecutor, create_react_agent
+from langchain_openai import ChatOpenAI
+
+# Create LangChain agent
+llm = ChatOpenAI(model="gpt-4o-mini")
+agent = create_react_agent(llm, tools, prompt)
+agent_executor = AgentExecutor(agent=agent, tools=tools)
+
+# Wrap with agentexec runner
+runner = ax.LangChainRunner(
+    agent_id=agent_id,
+    agent_executor=agent_executor,
+    max_turns_recovery=True,
+    wrap_up_prompt="Summarize...",
+)
+
+# Run agent
+result = await runner.run(input="...", max_iterations=15)
+
+# Streaming
+async for event in runner.run_streamed(input="...", max_iterations=15):
+    if event["event"] == "on_chat_model_stream":
+        print(event["data"]["chunk"].content, end="")
 ```
 
 ---
@@ -339,7 +388,9 @@ MIT License - see [LICENSE](LICENSE) for details
 
 ## Links
 
-- **Documentation**: See example application in `examples/openai-agents-fastapi/`
+- **Documentation**: See example applications
+  - OpenAI Agents SDK: `examples/openai-agents-fastapi/`
+  - LangChain: `examples/langchain-agents-fastapi/`
 - **Issues**: [GitHub Issues](https://github.com/Agent-CI/agentexec/issues)
 - **PyPI**: [agentexec](https://pypi.org/project/agentexec/)
 

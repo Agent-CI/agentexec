@@ -11,3 +11,11 @@ try:
     __all__.append("OpenAIRunner")
 except ImportError:
     pass
+
+# LangChain runner is only available if langchain packages are installed
+try:
+    from agentexec.runners.langchain import LangChainRunner
+
+    __all__.append("LangChainRunner")
+except ImportError:
+    pass
