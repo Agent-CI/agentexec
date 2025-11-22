@@ -1,0 +1,70 @@
+[project]
+name = "agentexec"
+version = "0.1.0"
+description = "Production-ready orchestration for OpenAI Agents with Redis-backed coordination, activity tracking, and workflow management"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [
+    {name = "Agent CI", email = "hello@agentci.com"},
+    {name = "Travis Dent", email = "root@a10k.co"}
+]
+keywords = ["agents", "openai", "redis", "orchestration", "async", "background-workers"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+dependencies = [
+    "redis>=7.0.1",
+    "pydantic>=2.12.0",
+    "pydantic-settings>=2.5.0",
+    "sqlalchemy>=2.0.44",
+    "openai-agents>=0.1.0",
+]
+
+
+[project.urls]
+Homepage = "https://github.com/Agent-CI/agentexec"
+Documentation = "https://github.com/Agent-CI/agentexec#readme"
+Repository = "https://github.com/Agent-CI/agentexec"
+Issues = "https://github.com/Agent-CI/agentexec/issues"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/agentexec"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.0.0",
+    "pytest-asyncio>=0.23.0",
+    "pytest-cov>=4.1.0",
+    "ruff>=0.5.0",
+    "mypy>=1.10.0",
+    "fakeredis>=2.32.1",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.mypy]
+python_version = "3.11"
+warn_return_any = true
+warn_unused_configs = true
+disallow_untyped_defs = true
+disallow_incomplete_defs = true
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_functions = ["test_*"]
+addopts = "--cov=agentexec --cov-report=term-missing --cov-report=html"
