@@ -58,6 +58,10 @@ dev-dependencies = [
 line-length = 100
 target-version = "py311"
 
+[tool.ruff.lint]
+# Ignore unused imports in __init__.py files (used for re-exports)
+per-file-ignores = { "__init__.py" = ["F401"] }
+
 [tool.mypy]
 python_version = "3.11"
 warn_return_any = true

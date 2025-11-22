@@ -1,8 +1,7 @@
 """Tests for PydanticAIRunner."""
 
 import uuid
-from typing import Any
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -11,7 +10,7 @@ pytest.importorskip("pydantic_ai")
 
 from pydantic_ai import Agent, AgentRunResult
 from pydantic_ai.exceptions import UsageLimitExceeded
-from pydantic_ai.messages import ModelMessage, ModelRequest, ModelResponse, UserPromptPart
+from pydantic_ai.messages import ModelRequest, ModelResponse, UserPromptPart
 from pydantic_ai.result import StreamedRunResult
 from pydantic_ai.tools import Tool
 
@@ -423,10 +422,10 @@ class TestPydanticAIRunnerIntegration:
         agent_id = uuid.uuid4()
         runner = PydanticAIRunner(agent_id=agent_id)
 
-        # Create a real Pydantic AI agent (not mocked)
-        agent = Agent("test")
+        # Create a real Pydantic AI agent (not mocked) to verify compatibility
+        _ = Agent("test")
 
-        # Verify runner has the right interface for this agent
+        # Verify runner has the right interface for Pydantic AI agents
         assert hasattr(runner, "run")
         assert hasattr(runner, "run_streamed")
 

@@ -1,13 +1,12 @@
 import logging
 import uuid
-from typing import Any, Callable
+from typing import Any
 
 from pydantic_ai import Agent, AgentRunResult
 from pydantic_ai.exceptions import UsageLimitExceeded
 from pydantic_ai.messages import (
     ModelMessage,
     ModelRequest,
-    ModelResponse,
     UserPromptPart,
 )
 from pydantic_ai.result import StreamedRunResult
