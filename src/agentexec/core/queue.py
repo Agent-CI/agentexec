@@ -1,7 +1,9 @@
 """Task queue operations using Redis."""
 
+import json
 import logging
 from enum import Enum
+from typing import Any
 
 from pydantic import BaseModel
 
@@ -73,8 +75,8 @@ async def enqueue(
 async def dequeue(
     queue_name: str | None = None,
     timeout: int = 1,
-) -> str | None:
-    """Dequeue raw task JSON from the queue.
+) -> dict[str, Any] | None:
+    """Dequeue a task from the queue.
 
     Blocks for up to timeout seconds waiting for a task.
 
@@ -83,7 +85,7 @@ async def dequeue(
         timeout: Maximum seconds to wait for a task.
 
     Returns:
-        Raw task JSON string if available, None otherwise.
+        Parsed task data if available, None otherwise.
     """
     redis = get_redis()
     result = await redis.brpop(  # type: ignore[misc]
@@ -95,4 +97,5 @@ async def dequeue(
         return None
 
     _, task_json = result
-    return task_json  # type: ignore[no-any-return]
+    data: dict[str, Any] = json.loads(task_json)
+    return data

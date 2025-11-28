@@ -7,7 +7,6 @@ Workers use the class-level registry to deserialize and execute tasks.
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
@@ -100,19 +99,19 @@ class Worker:
     async def _dequeue_task(self) -> Task | None:
         """Dequeue and hydrate a task from the Redis queue.
 
-        Parses the JSON, reconstructs the typed context using the TaskDefinition,
+        Reconstructs the typed context using the TaskDefinition
         and binds the definition to the task.
 
         Returns:
             Hydrated Task instance if available, else None.
         """
-        task_json = await dequeue(queue_name=self._context.queue_name)
-        if task_json is None:
-            return None
+        if (data := await dequeue(queue_name=self._context.queue_name)) is not None:
+            return Task.from_serialized(
+                definition=self._context.tasks[data["task_name"]],
+                data=data,
+            )
 
-        data = json.loads(task_json)
-        task_def = self._context.tasks[data["task_name"]]
-        return Task.from_serialized(task_def, data)
+        return None
 
 
 class WorkerPool:
