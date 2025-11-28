@@ -1,17 +1,26 @@
+"""Worker pool for background task execution.
+
+Tasks are registered via @WorkerPool.task() decorator before starting the pool.
+Workers use the class-level registry to deserialize and execute tasks.
+"""
+
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
 import multiprocessing as mp
-from collections.abc import Callable
+from dataclasses import dataclass
 from multiprocessing.synchronize import Event as EventClass
-from typing import Any, ClassVar, Generic, TypeVar, cast
+from typing import Callable
 
 from sqlalchemy import Engine
-from sqlalchemy.orm import Session, sessionmaker
 
 from agentexec.config import CONF
-from agentexec.core.task import Task, TaskHandler
+from agentexec.core.db import remove_global_session, set_global_session
+from agentexec.core.queue import dequeue
+from agentexec.core.redis_client import close_redis
+from agentexec.core.task import Task, TaskDefinition, TaskHandler
 
 logger = logging.getLogger(__name__)
 
@@ -19,243 +28,155 @@ logger = logging.getLogger(__name__)
 __all__ = [
     "Worker",
     "WorkerPool",
-    "get_worker_session",
+    "WorkerContext",
 ]
 
-T = TypeVar("T")
 
+@dataclass
+class WorkerContext:
+    """Shared context passed from WorkerPool to Worker processes."""
 
-class classproperty(Generic[T]):
-    """Decorator for class-level properties.
-
-    Generic decorator that preserves the return type of the decorated method.
-    """
-
-    def __init__(self, func: Callable[[Any], T]) -> None:
-        self.func = func
-
-    def __get__(self, obj: Any, owner: type) -> T:
-        return self.func(owner)
-
-
-def _build_session(engine: Engine) -> Session:
-    """Helper to build a new SQLAlchemy session from engine."""
-    SessionLocal = sessionmaker(bind=engine, autocommit=False, autoflush=False)
-    return cast(Session, SessionLocal())
-
-
-def get_worker_session() -> Session:
-    """Get the current worker's database session.
-
-    Returns:
-        Session from the current worker
-
-    Raises:
-        RuntimeError: If called outside of a worker process
-    """
-    return Worker.session
+    engine: Engine
+    shutdown_event: EventClass
+    tasks: dict[str, TaskDefinition]
+    queue_name: str
 
 
 class Worker:
     """Individual worker process with isolated state.
 
-    Each worker maintains its own database session, event loop, and processes
-    tasks from the queue independently. Workers run in separate processes for
-    true parallelism.
+    Each worker configures the scoped Session factory on startup.
+    Task handlers can use get_global_session() to get the process-local session.
     """
 
-    # Class-level reference to current worker in this process
-    current: ClassVar[Worker | None] = None
-
-    # Instance attributes
     _worker_id: int
-    _handlers: dict[str, TaskHandler]
-    _shutdown_event: EventClass
-    _session: Session
-    _loop: asyncio.AbstractEventLoop
+    _context: WorkerContext
 
-    def __init__(
-        self,
-        worker_id: int,
-        engine: Engine,
-        handlers: dict[str, TaskHandler],
-        shutdown_event: EventClass,
-    ):
+    def __init__(self, worker_id: int, context: WorkerContext):
         """Initialize worker with isolated state.
 
         Args:
             worker_id: Unique identifier for this worker
-            engine: SQLAlchemy engine to create session from
-            handlers: Task handler registry (shared read-only)
-            shutdown_event: Multiprocessing event for coordinated shutdown
+            context: Shared context from WorkerPool
         """
         self._worker_id = worker_id
-        self._handlers = handlers
-        self._shutdown_event = shutdown_event
-
-        # Create worker-owned resources
-        self._session = _build_session(engine)
-        self._loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(self._loop)
+        self._context = context
 
     @classmethod
-    def run_in_process(
-        cls,
-        worker_id: int,
-        engine: Engine,
-        handlers: dict[str, TaskHandler],
-        shutdown_event: EventClass,
-    ) -> None:
+    def run_in_process(cls, worker_id: int, context: WorkerContext) -> None:
         """Entry point for running a worker in a new process.
-
-        Creates a Worker instance and runs it. This is called by multiprocessing
-        to start a worker in a new process.
 
         Args:
             worker_id: Unique identifier for this worker
-            engine: SQLAlchemy engine to create session from
-            handlers: Task handler registry
-            shutdown_event: Multiprocessing event for coordinated shutdown
+            context: Shared context from WorkerPool
         """
-        instance = cls(worker_id, engine, handlers, shutdown_event)
-        Worker.current = instance
+        instance = cls(worker_id, context)
         instance.run()
 
-    @classproperty
-    def session(cls) -> Session:
-        """Get the current worker's database session.
-
-        Returns:
-            Session from the current worker
-
-        Raises:
-            RuntimeError: If called outside of a worker process
-        """
-        if cls.current is None:
-            raise RuntimeError("Worker.session called outside of worker context")
-
-        return cls.current._session
-
     def run(self) -> None:
-        """Main worker loop - polls queue and processes tasks."""
-        from agentexec.core.queue import dequeue
-
+        """Main worker entry point - sets up async loop and runs."""
+        set_global_session(self._context.engine)
         logger.info(f"Worker {self._worker_id} starting")
 
         try:
-            while not self._shutdown_event.is_set():
-                # Dequeue task (blocks with timeout to check shutdown event)
-                if (task := dequeue()) is not None:
-                    self._process_task(task)
+            asyncio.run(self._run())
         except Exception as e:
             logger.exception(f"Worker {self._worker_id} fatal error: {e}")
             raise
-        finally:
-            self._cleanup()
 
-    def _process_task(self, task: Task) -> None:
-        """Process a single task from the queue.
-
-        Args:
-            task: Task to process
-        """
-        logger.info(f"Worker {self._worker_id} processing task: {task.task_name}")
-
+    async def _run(self) -> None:
+        """Async main loop - polls queue and processes tasks."""
         try:
-            handler = self._handlers[task.task_name]
-            task.started()
+            # No sleep needed - dequeue() uses brpop which blocks waiting for tasks
+            while not self._context.shutdown_event.is_set():
+                if (task := await self._dequeue_task()) is not None:
+                    logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
+                    await task.execute()
+        finally:
+            await close_redis()
+            remove_global_session()
+            logger.info(f"Worker {self._worker_id} shutting down")
 
-            if asyncio.iscoroutinefunction(handler):
-                self._loop.run_until_complete(handler(**task.handler_kwargs))
-            else:
-                handler(**task.handler_kwargs)
+    async def _dequeue_task(self) -> Task | None:
+        """Dequeue and hydrate a task from the Redis queue.
 
-            task.completed()
-            logger.info(f"Worker {self._worker_id} completed task: {task.task_name}")
+        Parses the JSON, reconstructs the typed context using the TaskDefinition,
+        and binds the definition to the task.
 
-        except KeyError:
-            logger.error(f"No handler registered for task: {task.task_name}")
-            raise RuntimeError(f"No handler for task: {task.task_name}")
-        except Exception as e:
-            task.errored(e)
-            logger.exception(f"Worker {self._worker_id} error executing task {task.task_name}: {e}")
+        Returns:
+            Hydrated Task instance if available, else None.
+        """
+        task_json = await dequeue(queue_name=self._context.queue_name)
+        if task_json is None:
+            return None
 
-    def _cleanup(self) -> None:
-        """Clean up worker resources on shutdown."""
-        self._session.close()
-        logger.debug(f"Worker {self._worker_id} closed database session")
-
-        self._loop.close()
-        logger.info(f"Worker {self._worker_id} shutting down")
+        data = json.loads(task_json)
+        task_def = self._context.tasks[data["task_name"]]
+        return Task.from_serialized(task_def, data)
 
 
 class WorkerPool:
     """Manages a pool of worker processes for background task execution.
 
-    The WorkerPool coordinates multiple worker processes, handles task handler
-    registration, and manages graceful shutdown. Each worker runs in a separate
-    process with its own isolated state (session, event loop).
-
-    This allows multiple pools to coexist if needed, each managing their own
-    set of workers and handlers.
+    Tasks are registered via @pool.task() decorator. Workers process tasks
+    from the Redis queue using the pool's task registry.
 
     Example:
+        import agentexec as ax
         from sqlalchemy import create_engine
 
         engine = create_engine("sqlite:///agents.db")
-        pool = WorkerPool(engine=engine)
+        pool = ax.WorkerPool(engine=engine)
 
         @pool.task("research_company")
-        async def research_company(payload: dict, agent_id: str):
-            company_name = payload["company_name"]
-            # Task implementation
-            pass
+        async def research(agent_id: UUID, context: ResearchContext):
+            ...
 
         pool.start()
     """
 
-    _engine: Engine
-    _handlers: dict[str, TaskHandler]
+    _context: WorkerContext
     _processes: list[mp.Process]
-    _shutdown_event: EventClass
 
-    def __init__(self, engine: Engine) -> None:
+    def __init__(self, engine: Engine, queue_name: str | None = None) -> None:
         """Initialize the worker pool.
 
         Args:
-            engine: SQLAlchemy engine for activity tracking.
-                   Each worker will create its own session from this engine.
-
-        Configuration is loaded from agentexec.CONF:
-        - num_workers: Number of worker processes to spawn
-        - queue_name: Name of the Redis list to use as task queue
-        - redis_url: Redis connection URL (via get_redis())
+            engine: SQLAlchemy engine for database sessions.
+            queue_name: Redis queue name. Defaults to CONF.queue_name.
         """
-        self._engine = engine
-        self._handlers: dict[str, TaskHandler] = {}
-        self._processes: list[mp.Process] = []
-        self._shutdown_event: EventClass = mp.Event()
+        self._context = WorkerContext(
+            engine=engine,
+            shutdown_event=mp.Event(),
+            tasks={},
+            queue_name=queue_name or CONF.queue_name,
+        )
+        self._processes = []
 
     def task(self, name: str) -> Callable[[TaskHandler], TaskHandler]:
-        """Decorator to register a task handler.
+        """Decorator to register a task handler with this pool.
+
+        Creates a TaskDefinition that captures the handler and its context class
+        from type annotations.
 
         Args:
-            name: Task type name that will be used when enqueueing.
+            name: Task name used when enqueueing and for worker routing.
 
         Returns:
             Decorator function that registers the handler.
 
         Example:
             @pool.task("research_company")
-            async def research_company(payload: dict, agent_id: str):
-                company_name = payload["company_name"]
-                # Implementation
-                pass
+            async def research(agent_id: UUID, context: ResearchContext):
+                company = context.company_name  # Typed!
+                ...
         """
 
         def decorator(func: TaskHandler) -> TaskHandler:
-            self._handlers[name] = func
-            logger.info(f"Registered task handler: {name}")
+            self._context.tasks[name] = TaskDefinition(
+                name=name,
+                handler=func,
+            )
             return func
 
         return decorator
@@ -263,40 +184,37 @@ class WorkerPool:
     def start(self) -> None:
         """Start the worker processes.
 
-        Spawns N worker processes (configured via num_workers) that will poll
-        the Redis queue and execute registered task handlers.
-
-        Each worker runs independently with its own session and event loop.
+        Spawns N worker processes that poll the Redis queue and execute
+        tasks from this pool's registry.
         """
         logger.info(f"Starting {CONF.num_workers} worker processes")
 
         for worker_id in range(CONF.num_workers):
             process = mp.Process(
                 target=Worker.run_in_process,
-                args=(worker_id, self._engine, self._handlers, self._shutdown_event),
+                args=(worker_id, self._context),
                 daemon=False,
             )
             process.start()
             self._processes.append(process)
-            logger.info(f"Started worker process {worker_id} (PID: {process.pid})")
+            logger.info(f"Started worker {worker_id} (PID: {process.pid})")
 
     def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.
 
         Args:
-            timeout: Maximum seconds to wait for workers to finish current task.
-                    Defaults to CONF.graceful_shutdown_timeout.
+            timeout: Max seconds to wait per worker. Defaults to CONF.graceful_shutdown_timeout.
         """
         if timeout is None:
             timeout = CONF.graceful_shutdown_timeout
 
-        logger.info("Initiating graceful shutdown of worker pool")
-        self._shutdown_event.set()
+        logger.info("Shutting down worker pool")
+        self._context.shutdown_event.set()
 
         for process in self._processes:
             process.join(timeout=timeout)
             if process.is_alive():
-                logger.warning(f"Worker process {process.pid} did not stop gracefully, terminating")
+                logger.warning(f"Worker {process.pid} did not stop, terminating")
                 process.terminate()
                 process.join(timeout=5)
 

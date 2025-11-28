@@ -15,7 +15,7 @@ class TaskRequest(BaseModel):
     """Request to queue a new task."""
 
     task_name: str
-    payload: dict
+    context: dict  # Will be validated against registered context class in worker
     priority: ax.Priority = ax.Priority.LOW
 
 
@@ -35,10 +35,20 @@ async def queue_task(request: TaskRequest, db: Session = Depends(get_db)):
 
     The task will be picked up by a worker and executed asynchronously.
     Use the agent_id to track progress via the activity endpoints.
+
+    Example request body:
+    {
+        "task_name": "research_company",
+        "context": {
+            "company_name": "Anthropic",
+            "input_prompt": "Focus on AI safety research"
+        },
+        "priority": "low"
+    }
     """
     task = ax.enqueue(
         request.task_name,
-        request.payload,
+        request.context,
         priority=request.priority,
     )
 

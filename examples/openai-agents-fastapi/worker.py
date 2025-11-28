@@ -4,6 +4,7 @@ from agents import Agent
 from sqlalchemy.orm import Session
 import agentexec as ax
 
+from .context import ResearchCompanyContext
 from .main import engine
 from .tools import analyze_financial_data, search_company_info
 
@@ -12,17 +13,18 @@ pool = ax.WorkerPool(engine=engine)
 
 
 @pool.task("research_company")
-async def research_company(agent_id: UUID, payload: dict):
+async def research_company(agent_id: UUID, context: ResearchCompanyContext):
     """Research a company using an AI agent with tools.
 
     This demonstrates:
     - Using OpenAI Agents SDK with function tools
     - Automatic activity tracking via OpenAIRunner
     - Agent self-reporting progress via update_status tool
+    - Type-safe context object (automatically deserialized from queue)
     """
-    # TODO stronger typing for payload
-    company_name = payload.get("company_name", "Unknown Company")
-    input_prompt = payload.get("input_prompt", f"Research the company {company_name}.")
+    # Type-safe context access with IDE autocomplete!
+    company_name = context.company_name
+    input_prompt = context.input_prompt or f"Research the company {company_name}."
 
     runner = ax.OpenAIRunner(
         agent_id,

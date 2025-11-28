@@ -9,12 +9,6 @@ class Config(BaseSettings):
         case_sensitive=False,
     )
 
-    debug: bool = Field(
-        default=False,
-        description="Enable debug logging",
-        validation_alias=AliasChoices("AGENTEXEC_DEBUG", "DEBUG"),
-    )
-
     table_prefix: str = Field(
         default="agentexec_",
         description="Prefix for database table names",
@@ -41,19 +35,24 @@ class Config(BaseSettings):
         description="Default message when creating a new agent activity",
         validation_alias="AGENTEXEC_ACTIVITY_MESSAGE_CREATE",
     )
+    activity_message_started: str = Field(
+        default="Task started.",
+        description="Default message when an agent activity starts execution",
+        validation_alias="AGENTEXEC_ACTIVITY_MESSAGE_STARTED",
+    )
     activity_message_complete: str = Field(
-        default="Completed successfully.",
+        default="Task completed successfully.",
         description="Default message when an agent activity completes successfully",
         validation_alias="AGENTEXEC_ACTIVITY_MESSAGE_COMPLETE",
     )
     activity_message_error: str = Field(
-        default="An error occurred during execution.",
+        default="Task failed with error: {error}",
         description="Default message when an agent activity encounters an error",
         validation_alias="AGENTEXEC_ACTIVITY_MESSAGE_ERROR",
     )
 
-    redis_url: str = Field(
-        default="redis://localhost:6379/0",
+    redis_url: str | None = Field(
+        default=None,
         description="Redis connection URL",
         validation_alias=AliasChoices("AGENTEXEC_REDIS_URL", "REDIS_URL"),
     )

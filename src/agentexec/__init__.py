@@ -4,45 +4,39 @@ This library provides:
 - Background worker pool with Redis-backed task queue
 - Activity tracking with pluggable storage backends
 - OpenAI Agents SDK runner with max turns recovery
-- Coordination primitives (counters, locks, barriers)
-- Workflow engine for complex agent orchestration
+- Type-safe task context via Pydantic models
 
 Example:
-    from agents import Agent
+    from uuid import UUID
+    from pydantic import BaseModel
     import agentexec as ax
 
+    # Create worker pool
+    engine = create_engine("sqlite:///agents.db")
+    pool = ax.WorkerPool(engine=engine)
 
-    # create a pool to manage background tasks
-    pool = ax.Pool()
+    # Define typed context for your task
+    class ResearchContext(BaseModel):
+        company_name: str
 
-    # register a background task
+    # Register task with pool
     @pool.task("research_company")
-    async def research_company(payload: dict, agent_id: str):
-        runner = ax.OpenAIRunner(
-            status_tracking=True,
-            max_turns=5,
-        )
-        agent = Agent(tools=[runner.tools.report_status], ...)
-        result = await runner.run(
-            agent,
-            input=f"Research {payload['company_name']}",
-        )
-        return result
+    async def research_company(agent_id: UUID, context: ResearchContext):
+        print(f"Researching {context.company_name}")  # Typed!
 
-    # fork and start the worker pool
+    # Enqueue from anywhere (e.g., web handler)
+    task = ax.enqueue("research_company", ResearchContext(company_name="Acme"))
+
+    # Start worker pool
     pool.start()
-
-    # queue a task from anywhere
-    task = ax.Task(task_type="research_company", payload={"company_name": "Acme Corp"})
-    agent_id = ax.enqueue(task)
 """
 
 from importlib.metadata import PackageNotFoundError, version
 
 from agentexec.config import CONF
-from agentexec.core.models import Base
-from agentexec.core.queue import Priority, dequeue, enqueue
-from agentexec.core.task import Task, TaskHandler, TaskHandlerKwargs
+from agentexec.core.db import Base
+from agentexec.core.queue import Priority, enqueue
+from agentexec.core.task import Task, TaskDefinition, TaskHandler, TaskHandlerKwargs
 from agentexec.core.worker import WorkerPool
 from agentexec.runners import BaseAgentRunner
 
@@ -55,12 +49,12 @@ __all__ = [
     "CONF",
     "Base",
     "WorkerPool",
-    "TaskHandler",
     "Task",
+    "TaskDefinition",
+    "TaskHandler",
     "TaskHandlerKwargs",
     "Priority",
     "enqueue",
-    "dequeue",
     "BaseAgentRunner",
 ]
 

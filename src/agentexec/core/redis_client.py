@@ -1,11 +1,12 @@
-from redis import Redis
+from redis.asyncio import Redis
+
 from agentexec.config import CONF
 
 _redis_client: Redis | None = None
 
 
 def get_redis() -> Redis:
-    """Get the Redis client instance.
+    """Get the async Redis client instance.
 
     Creates and caches a Redis client on first call. Subsequent calls
     return the cached instance.
@@ -16,25 +17,28 @@ def get_redis() -> Redis:
     - redis_pool_timeout: Connection timeout
 
     Returns:
-        Redis client instance.
+        Async Redis client instance.
     """
     global _redis_client
 
     if _redis_client is None:
+        if CONF.redis_url is None:
+            raise ValueError("REDIS_URL must be configured")
+
         _redis_client = Redis.from_url(
             CONF.redis_url,
             max_connections=CONF.redis_pool_size,
             socket_connect_timeout=CONF.redis_pool_timeout,
-            decode_responses=True,  # Automatically decode bytes to strings
+            decode_responses=True,
         )
 
     return _redis_client
 
 
-def close_redis() -> None:
+async def close_redis() -> None:
     """Close the Redis connection and reset the client."""
     global _redis_client
 
     if _redis_client is not None:
-        _redis_client.close()
+        await _redis_client.aclose()
         _redis_client = None
