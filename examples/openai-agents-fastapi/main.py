@@ -9,7 +9,7 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session, sessionmaker
 import agentexec as ax
 
-from .views import router
+from views import router
 
 # Database setup - users manage their own connection
 # For PostgreSQL: "postgresql://user:password@localhost:5432/dbname"

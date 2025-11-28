@@ -5,17 +5,18 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import agentexec as ax
 
+from context import ResearchCompanyContext
 from main import get_db
 
 
 router = APIRouter()
 
 
-class TaskRequest(BaseModel):
-    """Request to queue a new task."""
+class ResearchCompanyRequest(BaseModel):
+    """Request to queue a company research task."""
 
-    task_name: str
-    context: dict  # Will be validated against registered context class in worker
+    company_name: str
+    input_prompt: str | None = None
     priority: ax.Priority = ax.Priority.LOW
 
 
@@ -27,28 +28,33 @@ class TaskResponse(BaseModel):
 
 
 @router.post(
-    "/api/tasks",
+    "/api/tasks/research_company",
     response_model=TaskResponse,
 )
-async def queue_task(request: TaskRequest, db: Session = Depends(get_db)):
-    """Queue a new background task.
+async def queue_research_company(
+    request: ResearchCompanyRequest,
+    db: Session = Depends(get_db),
+):
+    """Queue a company research task.
 
     The task will be picked up by a worker and executed asynchronously.
     Use the agent_id to track progress via the activity endpoints.
 
     Example request body:
     {
-        "task_name": "research_company",
-        "context": {
-            "company_name": "Anthropic",
-            "input_prompt": "Focus on AI safety research"
-        },
+        "company_name": "Anthropic",
+        "input_prompt": "Focus on AI safety research",
         "priority": "low"
     }
     """
-    task = ax.enqueue(
-        request.task_name,
-        request.context,
+    context = ResearchCompanyContext(
+        company_name=request.company_name,
+        input_prompt=request.input_prompt,
+    )
+
+    task = await ax.enqueue(
+        "research_company",
+        context,
         priority=request.priority,
     )
 
