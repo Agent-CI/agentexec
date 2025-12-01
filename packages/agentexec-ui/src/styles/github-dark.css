@@ -522,22 +522,32 @@
 }
 
 /* ========================================
-   Pagination
+   Pagination (react-paginate)
    ======================================== */
 
 .ax-pagination {
   display: flex;
   align-items: center;
   justify-content: center;
-  gap: var(--ax-space-2);
+  gap: var(--ax-space-1);
   padding: var(--ax-space-4);
+  list-style: none;
+  margin: 0;
 }
 
+.ax-pagination li {
+  display: flex;
+}
+
+/* Previous/Next buttons */
 .ax-pagination__btn {
+  display: inline-flex;
+  align-items: center;
   padding: var(--ax-space-2) var(--ax-space-3);
   font-size: var(--ax-font-size-sm);
   font-weight: 500;
   color: var(--ax-color-text-primary);
+  text-decoration: none;
   background-color: var(--ax-color-bg-secondary);
   border: 1px solid var(--ax-color-border-default);
   border-radius: var(--ax-radius-md);
@@ -545,27 +555,36 @@
   transition: background-color 0.15s ease, border-color 0.15s ease;
 }
 
-.ax-pagination__btn:hover:not(:disabled) {
+.ax-pagination__btn:hover {
   background-color: var(--ax-color-bg-tertiary);
 }
 
-.ax-pagination__btn:disabled {
+.ax-pagination__btn--prev {
+  margin-right: var(--ax-space-2);
+}
+
+.ax-pagination__btn--next {
+  margin-left: var(--ax-space-2);
+}
+
+.ax-pagination__item--disabled .ax-pagination__btn,
+.ax-pagination__link--disabled {
   opacity: 0.5;
   cursor: not-allowed;
+  pointer-events: none;
 }
 
-.ax-pagination__pages {
-  display: flex;
-  align-items: center;
-  gap: var(--ax-space-1);
-}
-
+/* Page number links */
 .ax-pagination__page {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   min-width: 32px;
   height: 32px;
   padding: 0 var(--ax-space-2);
   font-size: var(--ax-font-size-sm);
   color: var(--ax-color-text-secondary);
+  text-decoration: none;
   background: none;
   border: 1px solid transparent;
   border-radius: var(--ax-radius-md);
@@ -578,13 +597,21 @@
   color: var(--ax-color-text-primary);
 }
 
-.ax-pagination__page--active {
+.ax-pagination__page-item--active .ax-pagination__page {
   color: var(--ax-color-text-primary);
   background-color: var(--ax-color-bg-tertiary);
   border-color: var(--ax-color-border-default);
 }
 
+/* Ellipsis/break */
 .ax-pagination__ellipsis {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 32px;
+  height: 32px;
   padding: 0 var(--ax-space-1);
   color: var(--ax-color-text-muted);
+  text-decoration: none;
+  cursor: default;
 }
