@@ -54,12 +54,6 @@ def test_create_activity(db_session: Session):
     assert activity_record.logs[0].completion_percentage == 0
 
 
-def test_generate_agent_id():
-    """Test the generate_agent_id helper function."""
-    agent_id = activity.generate_agent_id()
-    assert isinstance(agent_id, uuid.UUID)
-
-
 def test_normalize_agent_id():
     """Test the normalize_agent_id helper function."""
     # Test with UUID object

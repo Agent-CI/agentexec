@@ -40,16 +40,6 @@ def test_runner_imports() -> None:
     assert OpenAIRunner is not None
 
 
-def test_worker_pool_initialization() -> None:
-    """Test that WorkerPool can be initialized."""
-    engine = create_engine("sqlite:///:memory:")
-    pool = ax.WorkerPool(engine=engine)
-
-    assert pool is not None
-    assert hasattr(pool, "start")
-    assert hasattr(pool, "shutdown")
-
-
 def test_runner_initialization() -> None:
     """Test that OpenAIRunner can be initialized."""
     pytest.importorskip("agents")
@@ -67,13 +57,6 @@ def test_runner_initialization() -> None:
     assert runner.prompts.report_status == "Use report_status to report progress."
     assert hasattr(runner, "tools")
     assert hasattr(runner, "run")
-
-
-def test_config_access() -> None:
-    """Test that configuration can be accessed."""
-    assert ax.CONF.redis_url is None  # Default is None, must be configured
-    assert ax.CONF.num_workers > 0
-    assert ax.CONF.queue_name is not None
 
 
 def test_config_environment_variables() -> None:

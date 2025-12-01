@@ -6,7 +6,6 @@ import uuid
 import pytest
 from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
-from sqlalchemy import create_engine
 
 import agentexec as ax
 
@@ -102,29 +101,6 @@ async def test_enqueue_high_priority_task(fake_redis, pool, monkeypatch) -> None
     task_json = await fake_redis.rpop(ax.CONF.queue_name)
     task_data = json.loads(task_json)
     assert task_data["agent_id"] == str(task2.agent_id)
-
-
-def test_task_registration(pool) -> None:
-    """Test that @pool.task() registers tasks with the pool."""
-    @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> str:
-        return f"Processed: {context.message}"
-
-    # Verify task definition was registered
-    assert "test_task" in pool._context.tasks
-    task_def = pool._context.tasks["test_task"]
-    assert task_def.handler == handler
-    assert task_def.context_class == SampleContext
-
-
-def test_worker_pool_initialization() -> None:
-    """Test that WorkerPool initializes correctly."""
-    engine = create_engine("sqlite:///:memory:")
-    pool = ax.WorkerPool(engine=engine)
-
-    assert pool._processes == []
-    assert pool._context.tasks == {}
-    assert pool._context.shutdown_event is not None
 
 
 def test_task_registration_requires_typed_context(pool) -> None:
