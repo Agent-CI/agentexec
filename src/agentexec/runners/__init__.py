@@ -11,3 +11,11 @@ try:
     __all__.append("OpenAIRunner")
 except ImportError:
     pass
+
+# Google ADK runner is only available if google-adk package is installed
+try:
+    from agentexec.runners.google_adk import GoogleADKRunner
+
+    __all__.append("GoogleADKRunner")
+except ImportError:
+    pass
