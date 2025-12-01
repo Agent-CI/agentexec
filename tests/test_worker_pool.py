@@ -6,7 +6,6 @@ import uuid
 import pytest
 from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
-from sqlalchemy import create_engine
 
 import agentexec as ax
 
@@ -104,29 +103,6 @@ async def test_enqueue_high_priority_task(fake_redis, pool, monkeypatch) -> None
     assert task_data["agent_id"] == str(task2.agent_id)
 
 
-def test_task_registration(pool) -> None:
-    """Test that @pool.task() registers tasks with the pool."""
-    @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> str:
-        return f"Processed: {context.message}"
-
-    # Verify task definition was registered
-    assert "test_task" in pool._context.tasks
-    task_def = pool._context.tasks["test_task"]
-    assert task_def.handler == handler
-    assert task_def.context_class == SampleContext
-
-
-def test_worker_pool_initialization() -> None:
-    """Test that WorkerPool initializes correctly."""
-    engine = create_engine("sqlite:///:memory:")
-    pool = ax.WorkerPool(engine=engine)
-
-    assert pool._processes == []
-    assert pool._context.tasks == {}
-    assert pool._context.shutdown_event is not None
-
-
 def test_task_registration_requires_typed_context(pool) -> None:
     """Test that task registration fails without typed context parameter."""
     with pytest.raises(TypeError, match="must have a 'context' parameter"):
@@ -143,3 +119,117 @@ def test_task_registration_requires_basemodel_context(pool) -> None:
         @pool.task("bad_task")
         async def handler_with_dict_context(agent_id: uuid.UUID, context: dict) -> None:
             pass
+
+
+def test_worker_pool_requires_engine_or_database_url() -> None:
+    """Test that WorkerPool requires either engine or database_url."""
+    with pytest.raises(ValueError, match="Either engine or database_url must be provided"):
+        ax.WorkerPool()
+
+
+def test_worker_pool_with_database_url() -> None:
+    """Test that WorkerPool can be created with database_url."""
+    pool = ax.WorkerPool(database_url="sqlite:///:memory:")
+
+    assert pool._context.database_url == "sqlite:///:memory:"
+    assert pool._processes == []
+
+
+def test_worker_pool_with_custom_queue_name() -> None:
+    """Test that WorkerPool can use a custom queue name."""
+    pool = ax.WorkerPool(
+        database_url="sqlite:///:memory:",
+        queue_name="custom_queue",
+    )
+
+    assert pool._context.queue_name == "custom_queue"
+
+
+async def test_worker_dequeue_task(pool, monkeypatch) -> None:
+    """Test Worker._dequeue_task method."""
+    from agentexec.worker.pool import Worker, WorkerContext
+    from agentexec.worker.event import RedisEvent
+
+    @pool.task("test_task")
+    async def handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        pass
+
+    context = WorkerContext(
+        database_url="sqlite:///:memory:",
+        shutdown_event=RedisEvent("test:key"),
+        tasks=pool._context.tasks,
+        queue_name="test_queue",
+    )
+
+    worker = Worker(worker_id=0, context=context)
+
+    # Mock dequeue to return task data
+    agent_id = uuid.uuid4()
+    task_data = {
+        "task_name": "test_task",
+        "context": {"message": "test", "value": 42},
+        "agent_id": str(agent_id),
+    }
+
+    async def mock_dequeue(**kwargs):
+        return task_data
+
+    monkeypatch.setattr("agentexec.worker.pool.dequeue", mock_dequeue)
+
+    task = await worker._dequeue_task()
+
+    assert task is not None
+    assert task.task_name == "test_task"
+    assert isinstance(task.context, SampleContext)
+    assert task.context.message == "test"
+    assert task.agent_id == agent_id
+
+
+async def test_worker_dequeue_task_returns_none_on_empty_queue(pool, monkeypatch) -> None:
+    """Test Worker._dequeue_task returns None when queue is empty."""
+    from agentexec.worker.pool import Worker, WorkerContext
+    from agentexec.worker.event import RedisEvent
+
+    context = WorkerContext(
+        database_url="sqlite:///:memory:",
+        shutdown_event=RedisEvent("test:key"),
+        tasks=pool._context.tasks,
+        queue_name="test_queue",
+    )
+
+    worker = Worker(worker_id=0, context=context)
+
+    async def mock_dequeue(**kwargs):
+        return None
+
+    monkeypatch.setattr("agentexec.worker.pool.dequeue", mock_dequeue)
+
+    task = await worker._dequeue_task()
+
+    assert task is None
+
+
+def test_worker_pool_shutdown_with_no_processes(pool, monkeypatch) -> None:
+    """Test shutdown when no processes have been started."""
+    # Mock the shutdown event to avoid Redis dependency
+    from unittest.mock import MagicMock
+
+    pool._context.shutdown_event = MagicMock()
+
+    # Should not raise even with empty process list
+    pool.shutdown(timeout=1)
+
+    assert pool._processes == []
+    pool._context.shutdown_event.set.assert_called_once()
+
+
+def test_get_pool_id() -> None:
+    """Test _get_pool_id generates unique IDs."""
+    from agentexec.worker.pool import _get_pool_id
+
+    id1 = _get_pool_id()
+    id2 = _get_pool_id()
+
+    assert len(id1) == 8
+    assert len(id2) == 8
+    assert id1 != id2
