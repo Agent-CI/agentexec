@@ -99,9 +99,7 @@ The example includes a React frontend built with **agentexec-ui** components. Th
 - Task detail panel with full activity log history
 - GitHub-inspired dark mode styling
 
-### Running the Frontend
-
-**Development mode (with hot reload):**
+### Running the UI
 
 ```bash
 # In one terminal - start the API
@@ -112,19 +110,6 @@ cd ui
 npm install
 npm run dev
 # Opens at http://localhost:3000 with API proxy to :8000
-```
-
-**Production mode (served by FastAPI):**
-
-```bash
-# Build the UI
-cd ui
-npm install
-npm run build
-
-# Start the API (serves frontend automatically)
-uvicorn main:app
-# Opens at http://localhost:8000
 ```
 
 ### Using agentexec-ui in Your Own Project
@@ -158,6 +143,5 @@ REDIS_URL="redis://localhost:6379/0"
 QUEUE_NAME="agentexec:tasks"
 NUM_WORKERS="4"
 OPENAI_API_KEY="sk-..."
-SERVE_FRONTEND="true"                           # Set to "false" to disable frontend serving
 ```
 
