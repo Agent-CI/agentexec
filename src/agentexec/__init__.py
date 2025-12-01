@@ -1,4 +1,4 @@
-"""Agent Runner - Production-ready orchestration for OpenAI Agents.
+"""`agentexec` - Production-ready orchestration for OpenAI Agents.
 
 This library provides:
 - Background worker pool with Redis-backed task queue
@@ -43,7 +43,7 @@ from agentexec.pipeline import Pipeline
 from agentexec.runners import BaseAgentRunner
 
 try:
-    __version__ = version("agent-runner")
+    __version__ = version("agentexec")
 except PackageNotFoundError:
     __version__ = "0.0.0.dev"
 
