@@ -369,6 +369,49 @@ AgentExec creates two tables (prefix configurable):
 
 ---
 
+## Docker Deployment
+
+Deploy workers using the official Docker image:
+
+### 1. Create your worker Dockerfile
+
+```dockerfile
+FROM ghcr.io/agent-ci/agentexec-worker:latest
+
+COPY ./src /app/src
+ENV AGENTEXEC_WORKER_MODULE=src.worker
+```
+
+### 2. Create your worker module
+
+```python
+# src/worker.py
+import os
+import agentexec as ax
+
+pool = ax.WorkerPool(database_url=os.environ["DATABASE_URL"])
+
+@pool.task("my_task")
+async def my_task(agent_id, context):
+    # Your task implementation
+    pass
+```
+
+### 3. Run with Docker
+
+```bash
+docker build -t my-worker .
+docker run \
+  -e DATABASE_URL=postgresql://... \
+  -e REDIS_URL=redis://... \
+  -e OPENAI_API_KEY=sk-... \
+  my-worker
+```
+
+See **[docker/README.md](docker/README.md)** for full documentation including Docker Compose examples.
+
+---
+
 ## Development
 
 ```bash
