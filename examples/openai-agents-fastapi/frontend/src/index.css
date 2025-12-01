@@ -121,6 +121,29 @@ body {
   border-bottom: 1px solid var(--ax-color-border-default);
 }
 
+.main__header-row {
+  margin-bottom: var(--ax-space-3);
+}
+
+.main__back-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: var(--ax-space-2);
+  padding: var(--ax-space-1) var(--ax-space-2);
+  font-size: var(--ax-font-size-sm);
+  color: var(--ax-color-text-secondary);
+  background: none;
+  border: none;
+  border-radius: var(--ax-radius-md);
+  cursor: pointer;
+  transition: color 0.15s ease, background-color 0.15s ease;
+}
+
+.main__back-btn:hover {
+  color: var(--ax-color-text-primary);
+  background-color: var(--ax-color-bg-tertiary);
+}
+
 .main__title {
   font-size: var(--ax-font-size-lg);
   font-weight: 600;
@@ -179,6 +202,16 @@ body {
 }
 
 .task-panel__detail .ax-task-detail {
+  height: 100%;
+}
+
+/* Detail view (full page) */
+.task-panel--detail-view {
+  flex: 1;
+  overflow: hidden;
+}
+
+.task-panel--detail-view .ax-task-detail {
   height: 100%;
 }
 
