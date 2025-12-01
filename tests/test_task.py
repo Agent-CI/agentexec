@@ -3,28 +3,53 @@
 import json
 import uuid
 
+import pytest
+from pydantic import BaseModel
+
+import agentexec as ax
 
 
-def test_task_creation() -> None:
-    """Test that tasks can be created with minimal parameters."""
-    from agentexec import Task
+class SampleContext(BaseModel):
+    """Sample context for task tests."""
 
-    task = Task(task_name="test_task", payload={"message": "hello"}, agent_id=uuid.uuid4())
+    message: str
+    value: int = 0
+
+
+class NestedContext(BaseModel):
+    """Sample context with nested data."""
+
+    message: str
+    nested: dict
+
+
+@pytest.fixture
+def pool():
+    """Create a WorkerPool for testing."""
+    from sqlalchemy import create_engine
+
+    engine = create_engine("sqlite:///:memory:")
+    return ax.WorkerPool(engine=engine)
+
+
+def test_task_creation_with_basemodel() -> None:
+    """Test that tasks can be created with BaseModel context."""
+    ctx = SampleContext(message="hello", value=42)
+    task = ax.Task(task_name="test_task", context=ctx, agent_id=uuid.uuid4())
 
     assert task.task_name == "test_task"
-    assert task.payload == {"message": "hello"}
-    assert task.agent_id is not None
-    assert isinstance(task.agent_id, uuid.UUID)
+    assert task.context == ctx
+    assert task.context.message == "hello"
+    assert task.context.value == 42
 
 
 def test_task_with_custom_agent_id() -> None:
     """Test that tasks can be created with a custom agent_id."""
-    from agentexec import Task
-
     custom_id = uuid.uuid4()
-    task = Task(
+    ctx = SampleContext(message="hello")
+    task = ax.Task(
         task_name="test_task",
-        payload={"message": "hello"},
+        context=ctx,
         agent_id=custom_id,
     )
 
@@ -33,12 +58,11 @@ def test_task_with_custom_agent_id() -> None:
 
 def test_task_serialization() -> None:
     """Test that tasks can be serialized to JSON."""
-    from agentexec import Task
-
     agent_id = uuid.uuid4()
-    task = Task(
+    ctx = SampleContext(message="hello", value=42)
+    task = ax.Task(
         task_name="test_task",
-        payload={"message": "hello", "value": 42},
+        context=ctx,
         agent_id=agent_id,
     )
 
@@ -46,65 +70,100 @@ def test_task_serialization() -> None:
     task_data = json.loads(task_json)
 
     assert task_data["task_name"] == "test_task"
-    assert task_data["payload"]["message"] == "hello"
-    assert task_data["payload"]["value"] == 42
+    assert task_data["context"]["message"] == "hello"
+    assert task_data["context"]["value"] == 42
     assert task_data["agent_id"] == str(agent_id)
 
 
-def test_task_deserialization() -> None:
-    """Test that tasks can be deserialized from JSON."""
-    from agentexec import Task
+def test_task_deserialization(pool) -> None:
+    """Test that tasks can be deserialized using context_class."""
+    # Register a task to get a TaskDefinition
+    @pool.task("test_task")
+    async def handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        pass
+
+    task_def = pool._context.tasks["test_task"]
 
     agent_id = uuid.uuid4()
-    task_json = json.dumps(
-        {
-            "task_name": "test_task",
-            "payload": {"message": "hello", "value": 42},
-            "agent_id": str(agent_id),
-        }
+    data = {
+        "task_name": "test_task",
+        "context": {"message": "hello", "value": 42},
+        "agent_id": str(agent_id),
+    }
+
+    task = ax.Task(
+        task_name=data["task_name"],
+        context=task_def.context_class.model_validate(data["context"]),
+        agent_id=data["agent_id"],
     )
 
-    task = Task.model_validate_json(task_json)
-
     assert task.task_name == "test_task"
-    assert task.payload == {"message": "hello", "value": 42}
+    assert isinstance(task.context, SampleContext)
+    assert task.context.message == "hello"
+    assert task.context.value == 42
     assert task.agent_id == agent_id
 
 
-def test_task_round_trip() -> None:
+def test_task_round_trip(pool) -> None:
     """Test that tasks can be serialized and deserialized."""
-    from agentexec import Task
+    # Register task for deserialization
+    @pool.task("test_task")
+    async def handler(agent_id: uuid.UUID, context: NestedContext) -> None:
+        pass
 
-    original = Task(
+    task_def = pool._context.tasks["test_task"]
+
+    original_ctx = NestedContext(message="hello", nested={"key": "value"})
+    original = ax.Task(
         task_name="test_task",
-        payload={"message": "hello", "nested": {"key": "value"}},
+        context=original_ctx,
         agent_id=uuid.uuid4(),
     )
 
+    # Serialize → JSON → Deserialize
     serialized = original.model_dump_json()
-    deserialized = Task.model_validate_json(serialized)
+    data = json.loads(serialized)
+    deserialized = ax.Task(
+        task_name=data["task_name"],
+        context=task_def.context_class.model_validate(data["context"]),
+        agent_id=data["agent_id"],
+    )
 
     assert deserialized.task_name == original.task_name
-    assert deserialized.payload == original.payload
+    assert deserialized.context.message == original.context.message
+    assert deserialized.context.nested == original.context.nested
     assert deserialized.agent_id == original.agent_id
 
 
-def test_task_handler_kwargs() -> None:
-    """Test that handler_kwargs has correct structure."""
-    from agentexec import Task
+def test_task_create_with_basemodel(monkeypatch) -> None:
+    """Test Task.create() with a BaseModel context."""
+    # Mock activity.create to avoid database dependency
+    def mock_create(*args, **kwargs):
+        return uuid.uuid4()
 
-    agent_id = uuid.uuid4()
-    task = Task(
-        task_name="test_task",
-        payload={"message": "hello", "value": 42},
-        agent_id=agent_id,
-    )
+    monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
 
-    kwargs = task.handler_kwargs
+    ctx = SampleContext(message="hello", value=42)
+    task = ax.Task.create("test_task", ctx)
 
-    # Verify structure: payload and agent_id as separate keys
-    assert "payload" in kwargs
-    assert "agent_id" in kwargs
-    assert kwargs["agent_id"] == agent_id
-    assert kwargs["payload"]["message"] == "hello"
-    assert kwargs["payload"]["value"] == 42
+    assert task.task_name == "test_task"
+    # Context is the typed object
+    assert isinstance(task.context, SampleContext)
+    assert task.context.message == "hello"
+    assert task.context.value == 42
+
+
+def test_task_create_preserves_nested(monkeypatch) -> None:
+    """Test Task.create() preserves nested Pydantic models."""
+    # Mock activity.create to avoid database dependency
+    def mock_create(*args, **kwargs):
+        return uuid.uuid4()
+
+    monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
+
+    ctx = NestedContext(message="hello", nested={"key": "value"})
+    task = ax.Task.create("test_task", ctx)
+
+    assert isinstance(task.context, NestedContext)
+    assert task.context.message == "hello"
+    assert task.context.nested == {"key": "value"}
