@@ -20,9 +20,6 @@ pnpm add agentexec-ui
 import { TaskList, TaskDetail, ActiveAgentsBadge } from 'agentexec-ui';
 import type { ActivityListItem } from 'agentexec-ui';
 
-// Import the GitHub dark theme
-import 'agentexec-ui/styles';
-
 function App() {
   // Use your preferred data fetching solution (TanStack Query, SWR, etc.)
   const { data, isLoading } = useYourDataFetching();
@@ -94,25 +91,28 @@ Displays completion progress for an agent.
 
 ## Styling
 
-The package includes a GitHub-inspired dark theme. Import it in your app:
-
-```tsx
-import 'agentexec-ui/styles';
-```
-
-All components use CSS custom properties (CSS variables) that you can override:
+Components use CSS custom properties (CSS variables) for theming. You must provide your own stylesheet that defines these variables:
 
 ```css
 :root {
   --ax-color-bg-primary: #0d1117;
   --ax-color-bg-secondary: #161b22;
+  --ax-color-bg-tertiary: #21262d;
+  --ax-color-border-default: #30363d;
   --ax-color-text-primary: #e6edf3;
+  --ax-color-text-secondary: #8b949e;
+  --ax-color-status-queued: #8b949e;
   --ax-color-status-running: #58a6ff;
-  /* ... see github-dark.css for all variables */
+  --ax-color-status-complete: #3fb950;
+  --ax-color-status-error: #f85149;
+  --ax-color-status-canceled: #f0883e;
+  /* ... and more */
 }
 ```
 
-The styles also include pagination classes (`.ax-pagination*`) compatible with [react-paginate](https://www.npmjs.com/package/react-paginate).
+See the [example frontend](../../examples/openai-agents-fastapi/ui/src/styles/github-dark.css) for a complete GitHub-inspired dark theme implementation.
+
+The example styles also include pagination classes (`.ax-pagination*`) compatible with [react-paginate](https://www.npmjs.com/package/react-paginate).
 
 ## TypeScript
 
@@ -133,7 +133,7 @@ import type {
 
 This library does not include data fetching utilities. We recommend using [TanStack Query](https://tanstack.com/query) for data fetching with polling support.
 
-See the [FastAPI example frontend](../../examples/openai-agents-fastapi/frontend) for a complete implementation using TanStack Query.
+See the [FastAPI example frontend](../../examples/openai-agents-fastapi/ui) for a complete implementation using TanStack Query.
 
 ## API Compatibility
 

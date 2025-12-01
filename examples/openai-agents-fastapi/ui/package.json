@@ -11,7 +11,7 @@
   },
   "dependencies": {
     "@tanstack/react-query": "^5.59.0",
-    "agentexec-ui": "file:../../../packages/agentexec-ui",
+    "agentexec-ui": "file:../../../ui",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
     "react-paginate": "^8.2.0",

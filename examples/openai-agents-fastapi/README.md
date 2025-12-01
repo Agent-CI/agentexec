@@ -12,7 +12,7 @@ This example demonstrates a complete FastAPI application using **agentexec** to 
 - **Database session management** (`main.py`) - Standard SQLAlchemy patterns with full control
 - **Agent self-reporting** - Agents report progress via built-in `report_status` tool
 - **Max turns recovery** - Automatic handling of conversation limits with wrap-up prompts
-- **React Frontend** (`frontend/`) - GitHub-inspired dark mode UI for monitoring agents
+- **React Frontend** (`ui/`) - GitHub-inspired dark mode UI for monitoring agents
 
 ### Key Patterns Shown
 
@@ -107,8 +107,8 @@ The example includes a React frontend built with **agentexec-ui** components. Th
 # In one terminal - start the API
 uvicorn main:app --reload
 
-# In another terminal - start the frontend dev server
-cd frontend
+# In another terminal - start the UI dev server
+cd ui
 npm install
 npm run dev
 # Opens at http://localhost:3000 with API proxy to :8000
@@ -117,8 +117,8 @@ npm run dev
 **Production mode (served by FastAPI):**
 
 ```bash
-# Build the frontend
-cd frontend
+# Build the UI
+cd ui
 npm install
 npm run build
 
@@ -137,7 +137,6 @@ npm install agentexec-ui
 
 ```tsx
 import { TaskList, TaskDetail, useActivityList } from 'agentexec-ui';
-import 'agentexec-ui/styles';
 
 function MyApp() {
   const { data } = useActivityList({ pollInterval: 15000 });
@@ -145,7 +144,9 @@ function MyApp() {
 }
 ```
 
-See [agentexec-ui README](../../packages/agentexec-ui/README.md) for full documentation.
+Components use CSS custom properties (e.g., `--ax-color-bg-primary`) for theming. See `ui/src/styles/github-dark.css` in this example for a reference theme implementation.
+
+See [agentexec-ui README](../../ui/README.md) for full documentation.
 
 ## Configuration
 

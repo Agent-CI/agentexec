@@ -5,7 +5,7 @@ import { AgentListPage } from './pages/AgentListPage';
 import { AgentDetailPage } from './pages/AgentDetailPage';
 
 // Import the GitHub dark theme styles
-import 'agentexec-ui/styles';
+import './styles/github-dark.css';
 
 const queryClient = new QueryClient({
   defaultOptions: {

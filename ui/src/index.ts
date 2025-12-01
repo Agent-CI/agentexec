@@ -21,6 +21,3 @@ export {
   ActiveAgentsBadge,
   type ActiveAgentsBadgeProps,
 } from './components';
-
-// Import CSS for side effects (users can also import directly)
-import './styles/github-dark.css';

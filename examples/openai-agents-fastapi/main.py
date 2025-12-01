@@ -13,7 +13,7 @@ from db import SessionLocal
 from views import router
 
 # Check if frontend build exists
-FRONTEND_DIR = Path(__file__).parent / "frontend" / "dist"
+FRONTEND_DIR = Path(__file__).parent / "ui" / "dist"
 SERVE_FRONTEND = FRONTEND_DIR.exists() and os.getenv("SERVE_FRONTEND", "true").lower() != "false"
 
 
