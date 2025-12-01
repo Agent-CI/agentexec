@@ -19,7 +19,10 @@ This example demonstrates a complete FastAPI application using **agentexec** to 
 **Task Registration:**
 ```python
 @pool.task("research_company")
-async def research_company(agent_id: UUID, payload: dict):
+async def research_company(
+    agent_id: UUID,
+    context: ResearchCompanyContext,
+) -> ResearchCompanyResult:
     # Create LangChain agent
     llm = ChatOpenAI(model="gpt-4o-mini")
     agent = create_react_agent(llm, tools, prompt)
@@ -33,7 +36,8 @@ async def research_company(agent_id: UUID, payload: dict):
     )
 
     # Execute with activity tracking
-    result = await runner.run(input_prompt, max_iterations=15)
+    result = await runner.run(context.input_prompt, max_iterations=15)
+    return ResearchCompanyResult(summary=result["output"])
 ```
 
 **Activity Tracking API:**
@@ -50,9 +54,10 @@ ax.activity.cancel_pending(db)
 
 **Queueing Tasks:**
 ```python
-task = ax.enqueue(
-    task_name="research_company",
-    payload={"company_name": "Acme"},
+context = ResearchCompanyContext(company_name="Acme")
+task = await ax.enqueue(
+    "research_company",
+    context,
     priority=ax.Priority.HIGH,
 )
 ```
@@ -84,11 +89,11 @@ uvicorn langchain_agents_fastapi.main:app --reload
 
 Queue a task:
 ```bash
-curl -X POST "http://localhost:8000/api/tasks" \
+curl -X POST "http://localhost:8000/api/tasks/research_company" \
   -H "Content-Type: application/json" \
   -d '{
-    "task_name": "research_company",
-    "payload": {"company_name": "Anthropic"}
+    "company_name": "Anthropic",
+    "input_prompt": "Focus on their AI safety research"
   }'
 ```
 

@@ -1,4 +1,8 @@
-"""LangChain agent runner with activity tracking."""
+"""LangChain agent runner with activity tracking.
+
+Supports both classic AgentExecutor and LangGraph agents with automatic
+max iterations handling via LangChain's built-in early_stopping_method.
+"""
 
 import logging
 import uuid
@@ -97,9 +101,18 @@ class LangChainRunner(BaseAgentRunner):
             agent_id: UUID for tracking this agent's activity.
             agent_executor: LangChain AgentExecutor instance.
             max_turns_recovery: Enable automatic recovery when max iterations exceeded.
-            wrap_up_prompt: Prompt to use for recovery run.
-            recovery_turns: Number of turns allowed for recovery.
+                When True, uses LangChain's early_stopping_method='generate' to have the
+                LLM generate a final answer when max iterations is reached.
+            wrap_up_prompt: Prompt to use for recovery run (not used with built-in method).
+            recovery_turns: Number of turns allowed for recovery (not used with built-in method).
             report_status_prompt: Instruction snippet about using the status tool.
+
+        Note:
+            LangChain's AgentExecutor has built-in max iterations handling via
+            early_stopping_method. When max_turns_recovery=True, we leverage this
+            instead of manually catching exceptions. The agent will automatically
+            call the LLM one final time to generate a summary when max_iterations
+            is reached.
         """
         super().__init__(
             agent_id,
@@ -109,6 +122,15 @@ class LangChainRunner(BaseAgentRunner):
             report_status_prompt=report_status_prompt,
         )
         self.agent_executor = agent_executor
+
+        # Configure early stopping for max iterations
+        # 'generate' calls LLM one final time to create answer (like wrap-up)
+        # 'force' just returns "Agent stopped due to iteration limit"
+        if max_turns_recovery and self.agent_executor.early_stopping_method == "force":
+            logger.info(
+                "Enabling early_stopping_method='generate' for max iterations recovery"
+            )
+            self.agent_executor.early_stopping_method = "generate"
 
         # Override with LangChain-specific tools
         self.tools = _LangChainRunnerTools(self.agent_id)
@@ -126,16 +148,28 @@ class LangChainRunner(BaseAgentRunner):
     ) -> dict[str, Any]:
         """Run the LangChain agent with automatic activity tracking.
 
+        LangChain's AgentExecutor handles max iterations internally via
+        early_stopping_method. If max_turns_recovery=True was set during
+        initialization, the agent will automatically generate a final answer
+        when max_iterations is reached.
+
         Args:
             input: User input/prompt for the agent. Can be a string or dict with "input" key.
             max_iterations: Maximum number of agent iterations.
             **kwargs: Additional arguments passed to AgentExecutor.ainvoke().
 
         Returns:
-            Result from the agent execution.
+            Result from the agent execution. When max iterations is reached with
+            early_stopping_method='generate', the result will contain the LLM's
+            final generated answer.
 
         Raises:
-            Exception: If agent execution fails.
+            Exception: If agent execution fails (non-max-iterations errors).
+
+        Note:
+            Unlike OpenAI's MaxTurnsExceeded exception, LangChain's AgentExecutor
+            handles max iterations gracefully and returns a normal result, so no
+            exception handling is needed.
         """
         # Normalize input to dict format expected by AgentExecutor
         if isinstance(input, str):
@@ -143,29 +177,11 @@ class LangChainRunner(BaseAgentRunner):
         else:
             agent_input = input
 
-        try:
-            result = await self.agent_executor.ainvoke(
-                agent_input,
-                config={"max_iterations": max_iterations, **kwargs.get("config", {})},
-            )
-            return result
-        except Exception as e:
-            # Check if this is a max iterations error
-            if "iterations" in str(e).lower() and self.max_turns_recovery:
-                logger.info("Max iterations exceeded, attempting recovery")
-
-                # Create recovery input with wrap-up prompt
-                recovery_input = {
-                    "input": self.prompts.wrap_up,
-                    "chat_history": agent_input.get("chat_history", []),
-                }
-
-                result = await self.agent_executor.ainvoke(
-                    recovery_input,
-                    config={"max_iterations": self.recovery_turns},
-                )
-                return result
-            raise
+        result = await self.agent_executor.ainvoke(
+            agent_input,
+            config={"max_iterations": max_iterations, **kwargs.get("config", {})},
+        )
+        return result
 
     async def run_streamed(
         self,
@@ -178,6 +194,10 @@ class LangChainRunner(BaseAgentRunner):
         This method uses LangChain's astream_events API to provide granular streaming
         of agent execution, including intermediate steps, tool calls, and LLM responses.
 
+        LangChain's AgentExecutor handles max iterations internally, so streaming
+        will continue until completion or max_iterations is reached (with early
+        stopping applied if configured).
+
         Args:
             input: User input/prompt for the agent. Can be a string or dict with "input" key.
             max_iterations: Maximum number of agent iterations.
@@ -187,7 +207,7 @@ class LangChainRunner(BaseAgentRunner):
             Event dictionaries from the agent execution.
 
         Raises:
-            Exception: If agent execution fails.
+            Exception: If agent execution fails (non-max-iterations errors).
 
         Example:
             async for event in runner.run_streamed("Research topic"):
@@ -200,29 +220,9 @@ class LangChainRunner(BaseAgentRunner):
         else:
             agent_input = input
 
-        try:
-            async for event in self.agent_executor.astream_events(
-                agent_input,
-                version="v2",
-                config={"max_iterations": max_iterations, **kwargs.get("config", {})},
-            ):
-                yield event
-        except Exception as e:
-            # Check if this is a max iterations error
-            if "iterations" in str(e).lower() and self.max_turns_recovery:
-                logger.info("Max iterations exceeded, attempting recovery in streaming mode")
-
-                # Create recovery input with wrap-up prompt
-                recovery_input = {
-                    "input": self.prompts.wrap_up,
-                    "chat_history": agent_input.get("chat_history", []),
-                }
-
-                async for event in self.agent_executor.astream_events(
-                    recovery_input,
-                    version="v2",
-                    config={"max_iterations": self.recovery_turns},
-                ):
-                    yield event
-            else:
-                raise
+        async for event in self.agent_executor.astream_events(
+            agent_input,
+            version="v2",
+            config={"max_iterations": max_iterations, **kwargs.get("config", {})},
+        ):
+            yield event

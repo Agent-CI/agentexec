@@ -5,27 +5,44 @@ from uuid import UUID
 from langchain.agents import AgentExecutor, create_react_agent
 from langchain_core.prompts import PromptTemplate
 from langchain_openai import ChatOpenAI
-from sqlalchemy.orm import Session
+from pydantic import BaseModel
 import agentexec as ax
 
-from .main import engine
-from .tools import analyze_financial_data, search_company_info
+from context import ResearchCompanyContext
+from db import engine
+from tools import analyze_financial_data, search_company_info
+
+
+class ResearchCompanyResult(BaseModel):
+    """Result from company research task."""
+
+    summary: str
+    financial_performance: str | None = None
+    recent_news: str | None = None
+    products_services: str | None = None
+    team_structure: str | None = None
 
 
 pool = ax.WorkerPool(engine=engine)
 
 
 @pool.task("research_company")
-async def research_company(agent_id: UUID, payload: dict):
+async def research_company(
+    agent_id: UUID,
+    context: ResearchCompanyContext,
+) -> ResearchCompanyResult:
     """Research a company using a LangChain ReAct agent with tools.
 
     This demonstrates:
     - Using LangChain with ReAct agent pattern
     - Automatic activity tracking via LangChainRunner
     - Agent self-reporting progress via report_activity tool
+    - Type-safe context object (automatically deserialized from queue)
+    - Typed result return value
     """
-    company_name = payload.get("company_name", "Unknown Company")
-    input_prompt = payload.get("input_prompt", f"Research the company {company_name}.")
+    # Type-safe context access with IDE autocomplete!
+    company_name = context.company_name
+    input_prompt = context.input_prompt or f"Research the company {company_name}."
 
     # Initialize the LLM
     llm = ChatOpenAI(model="gpt-4o-mini", temperature=0)
@@ -97,11 +114,20 @@ Thought:{agent_scratchpad}"""
         max_iterations=15,
     )
 
-    # Extract the output
-    report = result.get("output", "No output generated")
+    # Extract the output from LangChain's result dict
+    output = result.get("output", "No output generated")
 
     print(f"✓ Completed research for {company_name} (agent_id: {agent_id})")
-    print(f"Report preview: {report[:200]}...")
+    print(f"Report preview: {output[:200]}...")
+
+    # Return typed result
+    return ResearchCompanyResult(
+        summary=output,
+        financial_performance="See report",
+        recent_news="See report",
+        products_services="See report",
+        team_structure="See report",
+    )
 
 
 if __name__ == "__main__":
@@ -110,17 +136,5 @@ if __name__ == "__main__":
     print(f"Queue: {ax.CONF.queue_name}")
     print("Press Ctrl+C to shutdown gracefully")
 
-    try:
-        pool.start()
-
-    except KeyboardInterrupt:
-        print("\nShutting down worker pool...")
-        pool.shutdown()
-
-        # Cancel any pending tasks
-        with Session(engine) as session:
-            canceled = ax.activity.cancel_pending(session)
-            session.commit()
-            print(f"Canceled {canceled} pending agents")
-
-        print("Worker pool stopped.")
+    # run() blocks and handles log streaming from workers
+    pool.run()
