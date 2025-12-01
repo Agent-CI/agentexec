@@ -20,7 +20,7 @@ from sqlalchemy.engine import RowMapping
 from sqlalchemy.orm import Mapped, Session, aliased, mapped_column, relationship, declared_attr
 
 from agentexec.config import CONF
-from agentexec.core.models import Base
+from agentexec.core.db import Base
 
 
 class Status(str, PyEnum):

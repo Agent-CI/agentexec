@@ -3,7 +3,23 @@
 import uuid
 
 import pytest
+from pydantic import BaseModel
 from sqlalchemy import create_engine
+
+import agentexec as ax
+
+
+class SampleContext(BaseModel):
+    """Sample context for public API tests."""
+
+    param: str
+
+
+@pytest.fixture
+def pool():
+    """Create a WorkerPool for testing."""
+    engine = create_engine("sqlite:///:memory:")
+    return ax.WorkerPool(engine=engine)
 
 
 def test_main_imports() -> None:
@@ -26,12 +42,10 @@ def test_runner_imports() -> None:
 
 def test_worker_pool_initialization() -> None:
     """Test that WorkerPool can be initialized."""
-    from agentexec import WorkerPool
-
     engine = create_engine("sqlite:///:memory:")
-    pool = WorkerPool(engine=engine)
+    pool = ax.WorkerPool(engine=engine)
+
     assert pool is not None
-    assert hasattr(pool, "task")
     assert hasattr(pool, "start")
     assert hasattr(pool, "shutdown")
 
@@ -57,11 +71,9 @@ def test_runner_initialization() -> None:
 
 def test_config_access() -> None:
     """Test that configuration can be accessed."""
-    from agentexec import CONF
-
-    assert CONF.redis_url is not None
-    assert CONF.num_workers > 0
-    assert CONF.queue_name is not None
+    assert ax.CONF.redis_url is None  # Default is None, must be configured
+    assert ax.CONF.num_workers > 0
+    assert ax.CONF.queue_name is not None
 
 
 def test_config_environment_variables() -> None:
@@ -82,18 +94,14 @@ def test_config_environment_variables() -> None:
     del os.environ["AGENTEXEC_NUM_WORKERS"]
 
 
-def test_task_decorator_interface() -> None:
-    """Test that the task decorator interface works."""
-    from agentexec import WorkerPool
-
-    engine = create_engine("sqlite:///:memory:")
-    pool = WorkerPool(engine=engine)
-
-    # Test decorator registration
+def test_task_decorator_interface(pool) -> None:
+    """Test that @pool.task() decorator works."""
     @pool.task("test_task")
-    async def test_handler(agent_id: uuid.UUID, payload: dict) -> str:
-        return f"Processed: {payload.get('param')}"
+    async def test_handler(agent_id: uuid.UUID, context: SampleContext) -> str:
+        return f"Processed: {context.param}"
 
-    # Verify handler was registered
-    assert "test_task" in pool._handlers
-    assert pool._handlers["test_task"] == test_handler
+    # Verify task definition was registered with pool
+    assert "test_task" in pool._context.tasks
+    task_def = pool._context.tasks["test_task"]
+    assert task_def.handler == test_handler
+    assert task_def.context_class == SampleContext

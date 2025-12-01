@@ -57,18 +57,29 @@ uv add langchain-openai  # or langchain-anthropic, etc.
 ### 1. Set Up Your Worker
 
 ```python
-import agentexec as ax
-from agents import Agent
-from sqlalchemy import Session, create_engine
+from uuid import UUID
 
-# database for activity tracking (share with your app)
+from agents import Agent
+from pydantic import BaseModel
+from sqlalchemy import create_engine
+
+import agentexec as ax
+
+
+# Define typed context for your task
+class ResearchContext(BaseModel):
+    company: str
+
+
+# Database for activity tracking (share with your app)
 engine = create_engine("sqlite:///agents.db")
 
-# create worker pool
+# Create worker pool
 pool = ax.WorkerPool(engine=engine)
 
+
 @pool.task("research_company")
-async def research_company(agent_id: UUID, payload: dict) -> None:
+async def research_company(agent_id: UUID, context: ResearchContext) -> None:
     """Background task that runs an AI agent."""
     runner = ax.OpenAIRunner(
         agent_id=agent_id,
@@ -78,14 +89,14 @@ async def research_company(agent_id: UUID, payload: dict) -> None:
     agent = Agent(
         name="Research Agent",
         instructions=(
-            f"Research {payload['company']}.\n"
+            f"Research {context.company}.\n"  # Typed access!
             "\n"
             f"{runner.prompts.report_status}"
         ),
         tools=[
             runner.tools.report_status,
         ],
-        model="gpt-5.1",
+        model="gpt-4o",
     )
 
     result = await runner.run(
@@ -95,19 +106,26 @@ async def research_company(agent_id: UUID, payload: dict) -> None:
     )
     print(f"Done! {result.final_output}")
 
+
 if __name__ == "__main__":
-    pool.start()  # start workers
+    pool.start()  # Start workers
 ```
 
 ### 2. Queue Tasks from Your Application
 
 ```python
 import agentexec as ax
+from pydantic import BaseModel
 
-# enqueue a task (from your API, web app, etc.)
-task = ax.enqueue(
+
+class ResearchContext(BaseModel):
+    company: str
+
+
+# Enqueue a task (from your async API handler, etc.)
+task = await ax.enqueue(
     "research_company",
-    {"company": "Anthropic"},
+    ResearchContext(company="Anthropic"),
 )
 
 print(f"Task queued: {task.agent_id}")
@@ -181,11 +199,42 @@ Control task execution order:
 
 ```python
 # High priority - processed first
-ax.enqueue("urgent_task", payload, priority=ax.Priority.HIGH)
+await ax.enqueue("urgent_task", context, priority=ax.Priority.HIGH)
 
 # Low priority - processed later
-ax.enqueue("batch_job", payload, priority=ax.Priority.LOW)
+await ax.enqueue("batch_job", context, priority=ax.Priority.LOW)
 ```
+
+### Pipelines
+
+Orchestrate multi-step workflows with parallel task execution:
+
+```python
+import agentexec as ax
+
+pipeline = ax.Pipeline(pool=pool)
+
+
+class MyPipeline(pipeline.Base):
+    @pipeline.step(0)
+    async def parallel_research(self, input_ctx: InputContext):
+        """Run multiple tasks in parallel."""
+        task1 = await ax.enqueue("research_brand", BrandContext(...))
+        task2 = await ax.enqueue("research_market", MarketContext(...))
+        return await ax.gather(task1, task2)
+
+    @pipeline.step(1)
+    async def analyze(self, brand_result, market_result):
+        """Combine results from previous step."""
+        task = await ax.enqueue("analyze", AnalysisContext(...))
+        return await ax.get_result(task.agent_id)
+
+
+# Run the pipeline
+result = await pipeline.run(context=InputContext(company="Anthropic"))
+```
+
+See **[examples/openai-agents-fastapi/pipeline.py](examples/openai-agents-fastapi/pipeline.py)** for a complete example.
 
 ---
 
@@ -219,15 +268,21 @@ See **[examples/langchain-agents-fastapi/](examples/langchain-agents-fastapi/)**
 Configure via environment variables or `.env` file:
 
 ```bash
+# Redis connection (required)
+REDIS_URL=redis://localhost:6379/0
+
 # Worker settings
 AGENTEXEC_NUM_WORKERS=4
-
-# Redis settings
-AGENTEXEC_REDIS_URL=redis://localhost:6379/0
-AGENTEXEC_QUEUE_NAME=agentexec:tasks
+AGENTEXEC_QUEUE_NAME=agentexec_tasks
 
 # Database table prefix
 AGENTEXEC_TABLE_PREFIX=agentexec_
+
+# Activity messages (optional)
+AGENTEXEC_ACTIVITY_MESSAGE_CREATE="Waiting to start."
+AGENTEXEC_ACTIVITY_MESSAGE_STARTED="Task started."
+AGENTEXEC_ACTIVITY_MESSAGE_COMPLETE="Task completed successfully."
+AGENTEXEC_ACTIVITY_MESSAGE_ERROR="Task failed with error: {error}"
 ```
 ---
 
@@ -236,8 +291,8 @@ AGENTEXEC_TABLE_PREFIX=agentexec_
 ### Task Queue
 
 ```python
-# Enqueue task
-task = ax.enqueue(task_name, payload, priority=ax.Priority.LOW)
+# Enqueue task (async)
+task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)
 ```
 
 ### Activity Tracking
@@ -246,18 +301,26 @@ task = ax.enqueue(task_name, payload, priority=ax.Priority.LOW)
 # Query activities
 activities = ax.activity.list(session, page=1, page_size=50)
 activity = ax.activity.detail(session, agent_id)
-
 ```
 
 ### Worker Pool
 
 ```python
+from pydantic import BaseModel
+
+
+class MyContext(BaseModel):
+    param: str
+
+
 pool = ax.WorkerPool(engine=engine)
 
+
 @pool.task("task_name")
-async def handler(agent_id: UUID, payload: dict) -> None:
-    # Task implementation
-    pass
+async def handler(agent_id: UUID, context: MyContext) -> None:
+    # Task implementation - context is typed!
+    print(context.param)
+
 
 pool.start()  # Start worker processes
 ```
@@ -352,6 +415,49 @@ AgentExec creates two tables (prefix configurable):
 - `status` - QUEUED, RUNNING, COMPLETE, ERROR, CANCELED
 - `completion_percentage` - Progress (0-100)
 - `created_at` - When log was created
+
+---
+
+## Docker Deployment
+
+Deploy workers using the official Docker image:
+
+### 1. Create your worker Dockerfile
+
+```dockerfile
+FROM ghcr.io/agent-ci/agentexec-worker:latest
+
+COPY ./src /app/src
+ENV AGENTEXEC_WORKER_MODULE=src.worker
+```
+
+### 2. Create your worker module
+
+```python
+# src/worker.py
+import os
+import agentexec as ax
+
+pool = ax.WorkerPool(database_url=os.environ["DATABASE_URL"])
+
+@pool.task("my_task")
+async def my_task(agent_id, context):
+    # Your task implementation
+    pass
+```
+
+### 3. Run with Docker
+
+```bash
+docker build -t my-worker .
+docker run \
+  -e DATABASE_URL=postgresql://... \
+  -e REDIS_URL=redis://... \
+  -e OPENAI_API_KEY=sk-... \
+  my-worker
+```
+
+See **[docker/README.md](docker/README.md)** for full documentation including Docker Compose examples.
 
 ---
 

@@ -8,6 +8,7 @@ from agentexec.activity.schemas import (
     ActivityListItemSchema,
     ActivityListSchema,
 )
+from agentexec.core.db import get_global_session
 
 
 def generate_agent_id() -> uuid.UUID:
@@ -57,11 +58,7 @@ def create(
     """
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
 
-    if session is None:
-        from agentexec.core.worker import get_worker_session
-        db = get_worker_session()
-    else:
-        db = session
+    db = session or get_global_session()
 
     activity_record = Activity(
         agent_id=agent_id,
@@ -106,11 +103,7 @@ def update(
     Raises:
         ValueError: If agent_id not found
     """
-    if session is None:
-        from agentexec.core.worker import get_worker_session
-        db = get_worker_session()
-    else:
-        db = session
+    db = session or get_global_session()
 
     Activity.append_log(
         session=db,
@@ -142,11 +135,7 @@ def complete(
     Raises:
         ValueError: If agent_id not found
     """
-    if session is None:
-        from agentexec.core.worker import get_worker_session
-        db = get_worker_session()
-    else:
-        db = session
+    db = session or get_global_session()
 
     Activity.append_log(
         session=db,
@@ -170,7 +159,7 @@ def error(
         agent_id: The agent_id of the agent to mark as failed
         message: Log message (default: "Agent failed")
         completion_percentage: Completion percentage (default: 100)
-        session: Optional SQLAlchemy session. If not provided, uses global session factory.
+        session: Optional SQLAlchemy session. If not provided, uses ScopedSession.
 
     Returns:
         True if successful
@@ -178,11 +167,7 @@ def error(
     Raises:
         ValueError: If agent_id not found
     """
-    if session is None:
-        from agentexec.core.worker import get_worker_session
-        db = get_worker_session()
-    else:
-        db = session
+    db = session or get_global_session()
 
     Activity.append_log(
         session=db,
@@ -204,11 +189,7 @@ def cancel_pending(
     Returns:
         Number of agents that were canceled
     """
-    if session is None:
-        from agentexec.core.worker import get_worker_session
-        db = get_worker_session()
-    else:
-        db = session
+    db = session or get_global_session()
 
     pending_agent_ids = Activity.get_pending_ids(db)
     for agent_id in pending_agent_ids:
