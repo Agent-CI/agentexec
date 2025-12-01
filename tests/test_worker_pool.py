@@ -92,7 +92,7 @@ async def test_enqueue_high_priority_task(fake_redis, pool, monkeypatch) -> None
 
     # Enqueue low priority task
     ctx1 = SampleContext(message="low", value=1)
-    task1 = await ax.enqueue("low_task", ctx1, priority=ax.Priority.LOW)
+    _ = await ax.enqueue("low_task", ctx1, priority=ax.Priority.LOW)
 
     # Enqueue high priority task
     ctx2 = SampleContext(message="high", value=2)

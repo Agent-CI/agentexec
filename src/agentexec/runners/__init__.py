@@ -11,3 +11,11 @@ try:
     __all__.append("OpenAIRunner")
 except ImportError:
     pass
+
+# Pydantic AI runner is only available if pydantic-ai package is installed
+try:
+    from agentexec.runners.pydantic_ai import PydanticAIRunner
+
+    __all__.append("PydanticAIRunner")
+except ImportError:
+    pass
