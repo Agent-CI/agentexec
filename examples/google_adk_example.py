@@ -4,6 +4,7 @@ This example demonstrates how to:
 1. Create a Google ADK agent with tools
 2. Use GoogleADKRunner for execution
 3. Track activity with the built-in report_status tool
+4. Control execution limits using RunConfig
 
 Requirements:
     pip install google-adk agentexec
@@ -16,6 +17,7 @@ import asyncio
 import uuid
 
 from google.adk.agents import LlmAgent
+from google.adk.core.run_config import RunConfig
 
 import agentexec as ax
 
@@ -44,7 +46,6 @@ async def main():
     runner = ax.GoogleADKRunner(
         agent_id=agent_id,
         app_name="company_research",
-        max_turns_recovery=False,
         report_status_prompt="Use report_activity(message, percentage) to report your progress.",
     )
 
@@ -67,14 +68,19 @@ When researching a company:
         ],
     )
 
-    # Run the agent
+    # Run the agent with execution control
+    # RunConfig controls execution limits (default max_llm_calls=500)
     print(f"Starting research with agent_id: {agent_id}")
     print("-" * 60)
+
+    run_config = RunConfig(
+        max_llm_calls=100,  # Limit to 100 LLM calls to prevent runaway execution
+    )
 
     result = await runner.run(
         agent=research_agent,
         input="Research Acme Corporation and provide a brief overview.",
-        max_turns=10,
+        run_config=run_config,
     )
 
     # Extract and display the result

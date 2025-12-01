@@ -3,7 +3,8 @@ import uuid
 from typing import Any, Callable
 
 from google.adk.agents import LlmAgent
-from google.adk.runners import InMemoryRunner, Runner
+from google.adk.core.run_config import RunConfig
+from google.adk.runners import Runner
 from google.adk.sessions import InMemorySessionService
 from google.genai import types
 
@@ -62,12 +63,14 @@ class GoogleADKRunner(BaseAgentRunner):
     - Session management with InMemorySessionService
     - Status update tool with agent_id pre-baked
     - Streaming event support
+    - Execution control via RunConfig (max_llm_calls, etc.)
 
     Example:
+        from google.adk.core.run_config import RunConfig
+
         runner = agentexec.GoogleADKRunner(
             agent_id=agent_id,
             app_name="my_app",
-            max_turns_recovery=False,
             report_status_prompt="Use report_activity(message, percentage) to report progress.",
         )
 
@@ -78,10 +81,13 @@ class GoogleADKRunner(BaseAgentRunner):
             tools=[runner.tools.report_status],
         )
 
+        # Use RunConfig to control execution limits (default max_llm_calls=500)
+        run_config = RunConfig(max_llm_calls=100)
+
         result = await runner.run(
             agent=agent,
             input="Research Acme Corp",
-            max_turns=15,
+            run_config=run_config,
         )
     """
 
@@ -94,9 +100,6 @@ class GoogleADKRunner(BaseAgentRunner):
         agent_id: uuid.UUID,
         *,
         app_name: str = "agentexec",
-        max_turns_recovery: bool = False,
-        wrap_up_prompt: str | None = None,
-        recovery_turns: int = 5,
         report_status_prompt: str | None = None,
     ) -> None:
         """Initialize the Google ADK runner.
@@ -104,16 +107,15 @@ class GoogleADKRunner(BaseAgentRunner):
         Args:
             agent_id: UUID for tracking this agent's activity.
             app_name: Application name for session management.
-            max_turns_recovery: Enable automatic recovery when max turns exceeded.
-            wrap_up_prompt: Prompt to use for recovery run.
-            recovery_turns: Number of turns allowed for recovery.
             report_status_prompt: Instruction snippet about using the status tool.
         """
+        # Google ADK handles execution control via RunConfig, so we disable
+        # the base class's max_turns_recovery feature
         super().__init__(
             agent_id,
-            max_turns_recovery=max_turns_recovery,
-            recovery_turns=recovery_turns,
-            wrap_up_prompt=wrap_up_prompt,
+            max_turns_recovery=False,
+            recovery_turns=0,
+            wrap_up_prompt=None,
             report_status_prompt=report_status_prompt,
         )
         # Override with Google ADK-specific tools
@@ -162,8 +164,7 @@ class GoogleADKRunner(BaseAgentRunner):
         self,
         agent: LlmAgent,
         input: str | types.Content,
-        max_turns: int = 10,
-        context: Any | None = None,
+        run_config: RunConfig | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
     ) -> GoogleADKRunResult:
@@ -172,8 +173,8 @@ class GoogleADKRunner(BaseAgentRunner):
         Args:
             agent: LlmAgent instance.
             input: User input/prompt for the agent (string or Content object).
-            max_turns: Maximum number of agent iterations (Note: Google ADK manages this internally).
-            context: Optional context for the agent run (not used by Google ADK currently).
+            run_config: Optional RunConfig for execution control (max_llm_calls, etc.).
+                       Defaults to RunConfig() with max_llm_calls=500.
             user_id: User ID for session management (defaults to agent_id).
             session_id: Session ID (defaults to agent_id).
 
@@ -199,6 +200,10 @@ class GoogleADKRunner(BaseAgentRunner):
         else:
             content = input
 
+        # Use default RunConfig if not provided
+        if run_config is None:
+            run_config = RunConfig()
+
         # Run the agent and collect events
         events = []
         final_content = None
@@ -208,6 +213,7 @@ class GoogleADKRunner(BaseAgentRunner):
                 user_id=user_id,
                 session_id=session_id,
                 new_message=content,
+                run_config=run_config,
             ):
                 events.append(event)
                 if hasattr(event, "is_final_response") and event.is_final_response():
@@ -223,8 +229,7 @@ class GoogleADKRunner(BaseAgentRunner):
         self,
         agent: LlmAgent,
         input: str | types.Content,
-        max_turns: int = 10,
-        context: Any | None = None,
+        run_config: RunConfig | None = None,
         forwarder: Callable | None = None,
         user_id: str | None = None,
         session_id: str | None = None,
@@ -232,13 +237,15 @@ class GoogleADKRunner(BaseAgentRunner):
         """Run the agent in streaming mode with automatic activity tracking.
 
         The forwarder callback receives each event as it's generated, allowing
-        real-time processing of agent execution.
+        real-time processing of agent execution. This method is functionally
+        equivalent to run() but emphasizes the streaming nature of ADK's
+        run_async() method.
 
         Args:
             agent: LlmAgent instance.
             input: User input/prompt for the agent (string or Content object).
-            max_turns: Maximum number of agent iterations (Note: Google ADK manages this internally).
-            context: Optional context for the agent run (not used by Google ADK currently).
+            run_config: Optional RunConfig for execution control (max_llm_calls, etc.).
+                       Defaults to RunConfig() with max_llm_calls=500.
             forwarder: Optional async callback to process each event as it arrives.
             user_id: User ID for session management (defaults to agent_id).
             session_id: Session ID (defaults to agent_id).
@@ -247,12 +254,15 @@ class GoogleADKRunner(BaseAgentRunner):
             GoogleADKRunResult with final output and events.
 
         Example:
+            from google.adk.core.run_config import RunConfig
+
             async def handle_event(event):
                 print(f"Event: {event}")
 
             result = await runner.run_streamed(
                 agent=agent,
                 input="Research XYZ",
+                run_config=RunConfig(max_llm_calls=100),
                 forwarder=handle_event
             )
         """
@@ -275,6 +285,10 @@ class GoogleADKRunner(BaseAgentRunner):
         else:
             content = input
 
+        # Use default RunConfig if not provided
+        if run_config is None:
+            run_config = RunConfig()
+
         # Run the agent in streaming mode
         events = []
         final_content = None
@@ -284,6 +298,7 @@ class GoogleADKRunner(BaseAgentRunner):
                 user_id=user_id,
                 session_id=session_id,
                 new_message=content,
+                run_config=run_config,
             ):
                 events.append(event)
 
