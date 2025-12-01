@@ -1,0 +1,230 @@
+/**
+ * App-level styles for the AgentExec demo
+ * Extends the agentexec-ui theme
+ */
+
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  font-family: var(--ax-font-family);
+  font-size: var(--ax-font-size-sm);
+  color: var(--ax-color-text-primary);
+  background-color: var(--ax-color-bg-canvas);
+  line-height: 1.5;
+}
+
+/* ========================================
+   App Layout
+   ======================================== */
+
+.app {
+  display: flex;
+  height: 100%;
+}
+
+/* ========================================
+   Sidebar
+   ======================================== */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  width: 280px;
+  height: 100%;
+  background-color: var(--ax-color-bg-secondary);
+  border-right: 1px solid var(--ax-color-border-default);
+}
+
+.sidebar__header {
+  padding: var(--ax-space-4);
+  border-bottom: 1px solid var(--ax-color-border-muted);
+}
+
+.sidebar__title {
+  font-size: var(--ax-font-size-lg);
+  font-weight: 600;
+  color: var(--ax-color-text-primary);
+}
+
+.sidebar__nav {
+  flex: 1;
+  padding: var(--ax-space-3);
+}
+
+.sidebar__nav-item {
+  display: flex;
+  align-items: center;
+  gap: var(--ax-space-3);
+  padding: var(--ax-space-2) var(--ax-space-3);
+  color: var(--ax-color-text-secondary);
+  text-decoration: none;
+  border-radius: var(--ax-radius-md);
+  transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.sidebar__nav-item:hover {
+  background-color: var(--ax-color-bg-tertiary);
+  color: var(--ax-color-text-primary);
+}
+
+.sidebar__nav-item--active {
+  background-color: var(--ax-color-bg-tertiary);
+  color: var(--ax-color-text-primary);
+}
+
+.sidebar__nav-icon {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+}
+
+.sidebar__nav-text {
+  flex: 1;
+  font-weight: 500;
+}
+
+.sidebar__footer {
+  padding: var(--ax-space-3) var(--ax-space-4);
+  border-top: 1px solid var(--ax-color-border-muted);
+}
+
+.sidebar__footer-text {
+  font-size: var(--ax-font-size-xs);
+  color: var(--ax-color-text-muted);
+}
+
+/* ========================================
+   Main Content
+   ======================================== */
+
+.main {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  overflow: hidden;
+}
+
+.main__header {
+  padding: var(--ax-space-4) var(--ax-space-5);
+  background-color: var(--ax-color-bg-primary);
+  border-bottom: 1px solid var(--ax-color-border-default);
+}
+
+.main__title {
+  font-size: var(--ax-font-size-lg);
+  font-weight: 600;
+  color: var(--ax-color-text-primary);
+  margin-bottom: var(--ax-space-1);
+}
+
+.main__subtitle {
+  font-size: var(--ax-font-size-sm);
+  color: var(--ax-color-text-secondary);
+}
+
+.main__content {
+  flex: 1;
+  overflow: hidden;
+}
+
+/* ========================================
+   Task Panel (List + Detail Split View)
+   ======================================== */
+
+.task-panel {
+  display: flex;
+  height: 100%;
+}
+
+.task-panel__list {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  background-color: var(--ax-color-bg-primary);
+}
+
+.task-panel__list .ax-task-list {
+  flex: 1;
+  overflow-y: auto;
+}
+
+.task-panel__detail {
+  width: 0;
+  overflow: hidden;
+  background-color: var(--ax-color-bg-primary);
+  border-left: 1px solid var(--ax-color-border-default);
+  transition: width 0.2s ease;
+}
+
+.task-panel--with-detail .task-panel__list {
+  flex: 1;
+  min-width: 0;
+}
+
+.task-panel--with-detail .task-panel__detail {
+  width: 450px;
+  overflow: hidden;
+}
+
+.task-panel__detail .ax-task-detail {
+  height: 100%;
+}
+
+/* ========================================
+   Responsive
+   ======================================== */
+
+@media (max-width: 1024px) {
+  .task-panel--with-detail .task-panel__detail {
+    width: 380px;
+  }
+}
+
+@media (max-width: 768px) {
+  .sidebar {
+    width: 60px;
+  }
+
+  .sidebar__header {
+    padding: var(--ax-space-3);
+  }
+
+  .sidebar__title {
+    display: none;
+  }
+
+  .sidebar__nav-text {
+    display: none;
+  }
+
+  .sidebar__footer {
+    display: none;
+  }
+
+  .task-panel--with-detail {
+    flex-direction: column;
+  }
+
+  .task-panel--with-detail .task-panel__list {
+    height: 50%;
+  }
+
+  .task-panel--with-detail .task-panel__detail {
+    width: 100%;
+    height: 50%;
+    border-left: none;
+    border-top: 1px solid var(--ax-color-border-default);
+  }
+}

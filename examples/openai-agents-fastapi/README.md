@@ -1,6 +1,6 @@
 # OpenAI Agents FastAPI Example
 
-This example demonstrates a complete FastAPI application using **agentexec** to orchestrate OpenAI Agents SDK in production.
+This example demonstrates a complete FastAPI application using **agentexec** to orchestrate OpenAI Agents SDK in production, including a React frontend for monitoring agents.
 
 ## What This Example Demonstrates
 
@@ -12,6 +12,7 @@ This example demonstrates a complete FastAPI application using **agentexec** to 
 - **Database session management** (`main.py`) - Standard SQLAlchemy patterns with full control
 - **Agent self-reporting** - Agents report progress via built-in `report_status` tool
 - **Max turns recovery** - Automatic handling of conversation limits with wrap-up prompts
+- **React Frontend** (`frontend/`) - GitHub-inspired dark mode UI for monitoring agents
 
 ### Key Patterns Shown
 
@@ -89,6 +90,63 @@ curl "http://localhost:8000/api/agents/activity/{agent_id}"
 ```
 
 
+## Frontend
+
+The example includes a React frontend built with **agentexec-ui** components. The UI provides:
+
+- Sidebar navigation with active agent count badge (updates every 15 seconds)
+- Paginated task list showing status and progress
+- Task detail panel with full activity log history
+- GitHub-inspired dark mode styling
+
+### Running the Frontend
+
+**Development mode (with hot reload):**
+
+```bash
+# In one terminal - start the API
+uvicorn main:app --reload
+
+# In another terminal - start the frontend dev server
+cd frontend
+npm install
+npm run dev
+# Opens at http://localhost:3000 with API proxy to :8000
+```
+
+**Production mode (served by FastAPI):**
+
+```bash
+# Build the frontend
+cd frontend
+npm install
+npm run build
+
+# Start the API (serves frontend automatically)
+uvicorn main:app
+# Opens at http://localhost:8000
+```
+
+### Using agentexec-ui in Your Own Project
+
+The frontend uses the `agentexec-ui` package which can be installed separately:
+
+```bash
+npm install agentexec-ui
+```
+
+```tsx
+import { TaskList, TaskDetail, useActivityList } from 'agentexec-ui';
+import 'agentexec-ui/styles';
+
+function MyApp() {
+  const { data } = useActivityList({ pollInterval: 15000 });
+  return <TaskList items={data?.items || []} />;
+}
+```
+
+See [agentexec-ui README](../../packages/agentexec-ui/README.md) for full documentation.
+
 ## Configuration
 
 Set via environment variables:
@@ -99,5 +157,6 @@ REDIS_URL="redis://localhost:6379/0"
 QUEUE_NAME="agentexec:tasks"
 NUM_WORKERS="4"
 OPENAI_API_KEY="sk-..."
+SERVE_FRONTEND="true"                           # Set to "false" to disable frontend serving
 ```
 

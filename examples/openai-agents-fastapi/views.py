@@ -97,3 +97,22 @@ async def get_agent(agent_id: str, db: Session = Depends(get_db)):
         raise HTTPException(status_code=404, detail=f"Agent {agent_id} not found")
 
     return activity_obj
+
+
+class ActiveCountResponse(BaseModel):
+    """Response for active agent count."""
+
+    count: int
+
+
+@router.get(
+    "/api/agents/active/count",
+    response_model=ActiveCountResponse,
+)
+async def get_active_count(db: Session = Depends(get_db)):
+    """Get count of currently active (queued or running) agents.
+
+    Uses agentexec's public API: activity.count_active()
+    """
+    count = ax.activity.count_active(db)
+    return ActiveCountResponse(count=count)
