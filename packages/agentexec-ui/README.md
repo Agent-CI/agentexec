@@ -2,6 +2,8 @@
 
 React components for monitoring agentexec background agents. Provides a GitHub-inspired dark mode UI for tracking agent execution status and progress.
 
+This is a **presentational component library** - you bring your own data fetching solution (we recommend [TanStack Query](https://tanstack.com/query)).
+
 ## Installation
 
 ```bash
@@ -15,27 +17,24 @@ pnpm add agentexec-ui
 ## Quick Start
 
 ```tsx
-import {
-  TaskList,
-  TaskDetail,
-  ActiveAgentsBadge,
-  Pagination,
-  useActivityList,
-  useActivityDetail,
-  useActiveCount,
-} from 'agentexec-ui';
+import { TaskList, TaskDetail, ActiveAgentsBadge } from 'agentexec-ui';
+import type { ActivityListItem } from 'agentexec-ui';
 
 // Import the GitHub dark theme
 import 'agentexec-ui/styles';
 
 function App() {
-  const { count } = useActiveCount({ pollInterval: 15000 });
-  const { data } = useActivityList({ page: 1, pageSize: 20 });
+  // Use your preferred data fetching solution (TanStack Query, SWR, etc.)
+  const { data, isLoading } = useYourDataFetching();
 
   return (
     <div>
-      <ActiveAgentsBadge count={count} />
-      <TaskList items={data?.items || []} />
+      <ActiveAgentsBadge count={data?.activeCount ?? 0} loading={isLoading} />
+      <TaskList
+        items={data?.items || []}
+        loading={isLoading}
+        onTaskClick={(agentId) => console.log('Selected:', agentId)}
+      />
     </div>
   );
 }
@@ -45,13 +44,13 @@ function App() {
 
 ### TaskList
 
-Displays a paginated list of agent tasks with status and progress.
+Displays a list of agent tasks with status and progress.
 
 ```tsx
 <TaskList
   items={activityList.items}
   loading={isLoading}
-  onTaskClick={(agentId) => setSelectedId(agentId)}
+  onTaskClick={(agentId) => navigate(`/agents/${agentId}`)}
   selectedAgentId={selectedId}
 />
 ```
@@ -65,7 +64,7 @@ Shows detailed information about a specific agent including full log history.
   activity={activityDetail}
   loading={isLoading}
   error={error}
-  onClose={() => setSelectedId(null)}
+  onClose={() => navigate('/agents')}
 />
 ```
 
@@ -93,56 +92,6 @@ Displays completion progress for an agent.
 <ProgressBar percentage={75} status="running" />
 ```
 
-### Pagination
-
-Navigation component for paginated lists.
-
-```tsx
-<Pagination
-  page={currentPage}
-  totalPages={totalPages}
-  onPageChange={setCurrentPage}
-/>
-```
-
-## Hooks
-
-### useActivityList
-
-Fetches paginated activity list with optional polling.
-
-```tsx
-const { data, loading, error, refetch } = useActivityList({
-  baseUrl: '',        // API base URL (default: '')
-  page: 1,            // Page number
-  pageSize: 50,       // Items per page
-  pollInterval: 15000 // Poll interval in ms (optional)
-});
-```
-
-### useActivityDetail
-
-Fetches detailed activity for a specific agent.
-
-```tsx
-const { data, loading, error, refetch } = useActivityDetail({
-  baseUrl: '',
-  agentId: 'uuid-here',
-  pollInterval: 5000
-});
-```
-
-### useActiveCount
-
-Fetches the count of active agents.
-
-```tsx
-const { count, loading, error, refetch } = useActiveCount({
-  baseUrl: '',
-  pollInterval: 15000
-});
-```
-
 ## Styling
 
 The package includes a GitHub-inspired dark theme. Import it in your app:
@@ -163,6 +112,8 @@ All components use CSS custom properties (CSS variables) that you can override:
 }
 ```
 
+The styles also include pagination classes (`.ax-pagination*`) compatible with [react-paginate](https://www.npmjs.com/package/react-paginate).
+
 ## TypeScript
 
 Full TypeScript support with exported types:
@@ -174,18 +125,23 @@ import type {
   ActivityDetail,
   ActivityListItem,
   ActivityList,
+  ActiveCountResponse,
 } from 'agentexec-ui';
 ```
 
-## API Requirements
+## Data Fetching
 
-This library expects your API to provide the following endpoints:
+This library does not include data fetching utilities. We recommend using [TanStack Query](https://tanstack.com/query) for data fetching with polling support.
 
-- `GET /api/agents/activity` - List activities (paginated)
-- `GET /api/agents/activity/{agent_id}` - Get activity detail
-- `GET /api/agents/active/count` - Get active agent count
+See the [FastAPI example frontend](../../examples/openai-agents-fastapi/frontend) for a complete implementation using TanStack Query.
 
-See the [agentexec FastAPI example](../../examples/openai-agents-fastapi) for reference implementations.
+## API Compatibility
+
+The types in this library match the agentexec Python package API schemas:
+
+- `ActivityList` - Response from `GET /api/agents/activity`
+- `ActivityDetail` - Response from `GET /api/agents/activity/{agent_id}`
+- `ActiveCountResponse` - Response from `GET /api/agents/active/count`
 
 ## License
 

@@ -57,10 +57,3 @@ export interface ActivityList {
 export interface ActiveCountResponse {
   count: number;
 }
-
-/**
- * API client configuration
- */
-export interface ApiConfig {
-  baseUrl: string;
-}

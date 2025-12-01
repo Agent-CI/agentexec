@@ -6,13 +6,7 @@ export type {
   ActivityListItem,
   ActivityList,
   ActiveCountResponse,
-  ApiConfig,
 } from './types';
-
-// Hooks
-export { useActivityList } from './hooks/useActivityList';
-export { useActivityDetail } from './hooks/useActivityDetail';
-export { useActiveCount } from './hooks/useActiveCount';
 
 // Components
 export {
@@ -26,8 +20,6 @@ export {
   type TaskDetailProps,
   ActiveAgentsBadge,
   type ActiveAgentsBadgeProps,
-  Pagination,
-  type PaginationProps,
 } from './components';
 
 // Import CSS for side effects (users can also import directly)

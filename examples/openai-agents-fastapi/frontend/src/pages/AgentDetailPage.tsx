@@ -1,16 +1,12 @@
 import { useParams, useNavigate } from 'react-router-dom';
-import { useActivityDetail, TaskDetail } from 'agentexec-ui';
-
-const POLL_INTERVAL = 5000; // 5 seconds for detail view
+import { TaskDetail } from 'agentexec-ui';
+import { useActivityDetail } from '../api/queries';
 
 export function AgentDetailPage() {
   const { agentId } = useParams<{ agentId: string }>();
   const navigate = useNavigate();
 
-  const { data: taskDetail, loading: detailLoading, error: detailError } = useActivityDetail({
-    agentId: agentId || null,
-    pollInterval: POLL_INTERVAL,
-  });
+  const { data: taskDetail, isLoading, error } = useActivityDetail(agentId ?? null);
 
   const handleClose = () => {
     navigate('/agents');
@@ -38,9 +34,9 @@ export function AgentDetailPage() {
       <div className="main__content">
         <div className="task-panel task-panel--detail-view">
           <TaskDetail
-            activity={taskDetail}
-            loading={detailLoading}
-            error={detailError}
+            activity={taskDetail ?? null}
+            loading={isLoading}
+            error={error instanceof Error ? error : null}
           />
         </div>
       </div>

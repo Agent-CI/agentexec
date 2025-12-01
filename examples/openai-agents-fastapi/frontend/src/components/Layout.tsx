@@ -1,12 +1,9 @@
 import { Outlet, NavLink } from 'react-router-dom';
-import { useActiveCount, ActiveAgentsBadge } from 'agentexec-ui';
-
-const POLL_INTERVAL = 15000; // 15 seconds
+import { ActiveAgentsBadge } from 'agentexec-ui';
+import { useActiveCount } from '../api/queries';
 
 export function Layout() {
-  const { count: activeCount, loading: countLoading } = useActiveCount({
-    pollInterval: POLL_INTERVAL,
-  });
+  const { data, isLoading } = useActiveCount();
 
   return (
     <div className="app">
@@ -25,7 +22,7 @@ export function Layout() {
               <path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0ZM1.5 8a6.5 6.5 0 1 0 13 0 6.5 6.5 0 0 0-13 0Zm4.879-2.773 4.264 2.559a.25.25 0 0 1 0 .428l-4.264 2.559A.25.25 0 0 1 6 10.559V5.442a.25.25 0 0 1 .379-.215Z" />
             </svg>
             <span className="sidebar__nav-text">Background Agents</span>
-            <ActiveAgentsBadge count={activeCount} loading={countLoading} />
+            <ActiveAgentsBadge count={data?.count ?? 0} loading={isLoading} />
           </NavLink>
         </nav>
         <div className="sidebar__footer">

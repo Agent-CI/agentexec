@@ -1,22 +1,23 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { useActivityList, TaskList, Pagination } from 'agentexec-ui';
+import ReactPaginate from 'react-paginate';
+import { TaskList } from 'agentexec-ui';
+import { useActivityList } from '../api/queries';
 
-const POLL_INTERVAL = 15000; // 15 seconds
 const PAGE_SIZE = 20;
 
 export function AgentListPage() {
   const navigate = useNavigate();
   const [page, setPage] = useState(1);
 
-  const { data: activityList, loading: listLoading } = useActivityList({
-    page,
-    pageSize: PAGE_SIZE,
-    pollInterval: POLL_INTERVAL,
-  });
+  const { data: activityList, isLoading } = useActivityList(page, PAGE_SIZE);
 
   const handleTaskClick = (agentId: string) => {
     navigate(`/agents/${agentId}`);
+  };
+
+  const handlePageChange = (event: { selected: number }) => {
+    setPage(event.selected + 1);
   };
 
   return (
@@ -33,14 +34,30 @@ export function AgentListPage() {
           <div className="task-panel__list">
             <TaskList
               items={activityList?.items || []}
-              loading={listLoading}
+              loading={isLoading}
               onTaskClick={handleTaskClick}
             />
             {activityList && activityList.total_pages > 1 && (
-              <Pagination
-                page={page}
-                totalPages={activityList.total_pages}
-                onPageChange={setPage}
+              <ReactPaginate
+                pageCount={activityList.total_pages}
+                forcePage={page - 1}
+                onPageChange={handlePageChange}
+                pageRangeDisplayed={3}
+                marginPagesDisplayed={1}
+                previousLabel="Previous"
+                nextLabel="Next"
+                breakLabel="..."
+                containerClassName="ax-pagination"
+                pageClassName="ax-pagination__page-item"
+                pageLinkClassName="ax-pagination__page"
+                activeClassName="ax-pagination__page-item--active"
+                previousClassName="ax-pagination__btn-item"
+                previousLinkClassName="ax-pagination__btn ax-pagination__btn--prev"
+                nextClassName="ax-pagination__btn-item"
+                nextLinkClassName="ax-pagination__btn ax-pagination__btn--next"
+                breakClassName="ax-pagination__break-item"
+                breakLinkClassName="ax-pagination__ellipsis"
+                disabledClassName="ax-pagination__item--disabled"
               />
             )}
           </div>
