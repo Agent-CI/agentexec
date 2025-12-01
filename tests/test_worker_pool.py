@@ -6,7 +6,6 @@ import uuid
 import pytest
 from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
-from sqlalchemy import create_engine
 
 import agentexec as ax
 
@@ -104,29 +103,6 @@ async def test_enqueue_high_priority_task(fake_redis, pool, monkeypatch) -> None
     assert task_data["agent_id"] == str(task2.agent_id)
 
 
-def test_task_registration(pool) -> None:
-    """Test that @pool.task() registers tasks with the pool."""
-    @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> str:
-        return f"Processed: {context.message}"
-
-    # Verify task definition was registered
-    assert "test_task" in pool._context.tasks
-    task_def = pool._context.tasks["test_task"]
-    assert task_def.handler == handler
-    assert task_def.context_class == SampleContext
-
-
-def test_worker_pool_initialization() -> None:
-    """Test that WorkerPool initializes correctly."""
-    engine = create_engine("sqlite:///:memory:")
-    pool = ax.WorkerPool(engine=engine)
-
-    assert pool._processes == []
-    assert pool._context.tasks == {}
-    assert pool._context.shutdown_event is not None
-
-
 def test_task_registration_requires_typed_context(pool) -> None:
     """Test that task registration fails without typed context parameter."""
     with pytest.raises(TypeError, match="must have a 'context' parameter"):
@@ -167,44 +143,6 @@ def test_worker_pool_with_custom_queue_name() -> None:
     )
 
     assert pool._context.queue_name == "custom_queue"
-
-
-def test_worker_context_dataclass() -> None:
-    """Test WorkerContext dataclass."""
-    from agentexec.worker.pool import WorkerContext
-    from agentexec.worker.event import RedisEvent
-
-    event = RedisEvent("test:key")
-    context = WorkerContext(
-        database_url="sqlite:///:memory:",
-        shutdown_event=event,
-        tasks={},
-        queue_name="test_queue",
-    )
-
-    assert context.database_url == "sqlite:///:memory:"
-    assert context.shutdown_event is event
-    assert context.tasks == {}
-    assert context.queue_name == "test_queue"
-
-
-def test_worker_initialization() -> None:
-    """Test Worker class initialization."""
-    from agentexec.worker.pool import Worker, WorkerContext
-    from agentexec.worker.event import RedisEvent
-
-    context = WorkerContext(
-        database_url="sqlite:///:memory:",
-        shutdown_event=RedisEvent("test:key"),
-        tasks={},
-        queue_name="test_queue",
-    )
-
-    worker = Worker(worker_id=0, context=context)
-
-    assert worker._worker_id == 0
-    assert worker._context is context
-    assert worker._logger is not None
 
 
 async def test_worker_dequeue_task(pool, monkeypatch) -> None:

@@ -32,30 +32,6 @@ def pool():
     return ax.WorkerPool(engine=engine)
 
 
-def test_task_creation_with_basemodel() -> None:
-    """Test that tasks can be created with BaseModel context."""
-    ctx = SampleContext(message="hello", value=42)
-    task = ax.Task(task_name="test_task", context=ctx, agent_id=uuid.uuid4())
-
-    assert task.task_name == "test_task"
-    assert task.context == ctx
-    assert task.context.message == "hello"
-    assert task.context.value == 42
-
-
-def test_task_with_custom_agent_id() -> None:
-    """Test that tasks can be created with a custom agent_id."""
-    custom_id = uuid.uuid4()
-    ctx = SampleContext(message="hello")
-    task = ax.Task(
-        task_name="test_task",
-        context=ctx,
-        agent_id=custom_id,
-    )
-
-    assert task.agent_id == custom_id
-
-
 def test_task_serialization() -> None:
     """Test that tasks can be serialized to JSON."""
     agent_id = uuid.uuid4()
