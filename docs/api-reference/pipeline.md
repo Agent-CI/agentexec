@@ -78,32 +78,52 @@ def step(self, order: int | str) -> Callable
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `order` | `int \| str` | Step execution order |
+| `order` | `int \| str` | Step execution order (sorted using Python's `sorted()`) |
 
 ### Behavior
 
-- Steps execute in order based on `order` parameter
+- Steps are sorted using Python's built-in `sorted()` function on the `order` value
+- Steps execute in sorted order (numeric or alphabetical)
 - Each step receives the return value of the previous step
 - Tuple returns are unpacked as separate arguments
+
+### Sorting Rules
+
+The `order` parameter is sorted using Python's standard `sorted()` function:
+
+```python
+# Numeric values: sorted by value
+sorted([2, 0, 1])  # → [0, 1, 2]
+
+# String values: sorted alphabetically
+sorted(["c_save", "a_fetch", "b_process"])  # → ["a_fetch", "b_process", "c_save"]
+```
+
+> **Warning**: Do not mix integers and strings in the same pipeline, as `sorted()` cannot compare them.
 
 ### Example
 
 ```python
-@pipeline.step(0)  # Numeric order
+# Numeric ordering
+@pipeline.step(0)  # Runs first
 async def first(self, ctx: InputContext):
     return "result"
 
-@pipeline.step(1)
+@pipeline.step(1)  # Runs second
 async def second(self, previous_result: str):
     return previous_result.upper()
 
-# Or with string identifiers
-@pipeline.step("fetch")
+# Alphabetical string ordering
+@pipeline.step("a_fetch")     # Runs first
 async def fetch(self, ctx):
     ...
 
-@pipeline.step("process")
+@pipeline.step("b_process")   # Runs second
 async def process(self, data):
+    ...
+
+@pipeline.step("c_finalize")  # Runs third
+async def finalize(self, result):
     ...
 ```
 

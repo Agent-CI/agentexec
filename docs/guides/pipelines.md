@@ -141,7 +141,9 @@ class UnpackingPipeline(pipeline.Base):
 
 ### Step Order
 
-Steps are executed in order based on their step number:
+Steps are sorted and executed using Python's built-in `sorted()` function on the `order` argument. This means you can use either numeric or string values, and they will be sorted according to Python's standard sorting rules.
+
+**Numeric ordering:**
 
 ```python
 @pipeline.step(0)  # Runs first
@@ -157,21 +159,37 @@ async def third_step(self, result):
     ...
 ```
 
-You can also use string identifiers:
+**Alphabetical string ordering:**
 
 ```python
-@pipeline.step("fetch")
+@pipeline.step("a_fetch")      # Runs first (alphabetically first)
 async def fetch(self, ctx):
     ...
 
-@pipeline.step("process")
+@pipeline.step("b_process")    # Runs second
 async def process(self, data):
     ...
 
-@pipeline.step("finalize")
+@pipeline.step("c_finalize")   # Runs third
 async def finalize(self, result):
     ...
 ```
+
+**How sorting works:**
+
+Since Python's `sorted()` is used, the order follows standard Python comparison rules:
+
+```python
+# Numeric: sorted by value
+sorted([2, 0, 1])  # → [0, 1, 2]
+
+# Strings: sorted alphabetically
+sorted(["process", "fetch", "save"])  # → ["fetch", "process", "save"]
+
+# Mixed types will raise TypeError - don't mix integers and strings!
+```
+
+> **Important**: Don't mix integers and strings as step order values in the same pipeline, as Python's `sorted()` cannot compare them and will raise a `TypeError`.
 
 ### Type Annotations
 
