@@ -469,6 +469,8 @@ Workers handle SIGTERM by:
 
 ## Database Migrations
 
+agentexec recommends using **Alembic** for database migrations in production. This ensures your database schema is version-controlled and migrations run before services start. See the [Basic Usage Guide](../guides/basic-usage.md#database-setup) for Alembic configuration with agentexec.
+
 Run migrations before starting services:
 
 ```yaml

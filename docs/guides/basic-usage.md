@@ -351,7 +351,94 @@ if __name__ == "__main__":
 
 ## Database Setup
 
-### Using SQLite (Development)
+The preferred method for managing database tables is **Alembic migrations**. This gives you version-controlled, reversible migrations that work well in production. For quick prototyping, you can use SQLAlchemy's `create_all()` as a simple fallback.
+
+### Recommended: Alembic Migrations
+
+Alembic provides proper migration management for production applications.
+
+**1. Initialize Alembic in your project:**
+
+```bash
+uv add alembic
+alembic init alembic
+```
+
+**2. Configure `alembic/env.py` to include agentexec models:**
+
+```python
+# alembic/env.py
+import os
+from logging.config import fileConfig
+
+from alembic import context
+from sqlalchemy import engine_from_config, pool
+
+# Import your application's models
+from myapp.models import Base as AppBase
+
+# Import agentexec
+import agentexec as ax
+
+config = context.config
+
+# Get database URL from environment
+DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agents.db")
+config.set_main_option("sqlalchemy.url", DATABASE_URL)
+
+if config.config_file_name is not None:
+    fileConfig(config.config_file_name)
+
+# Combine metadata from both your app and agentexec
+# This allows Alembic to manage tables from both sources
+target_metadata = [AppBase.metadata, ax.Base.metadata]
+
+
+def run_migrations_offline() -> None:
+    url = config.get_main_option("sqlalchemy.url")
+    context.configure(
+        url=url,
+        target_metadata=target_metadata,
+        literal_binds=True,
+        dialect_opts={"paramstyle": "named"},
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    connectable = engine_from_config(
+        config.get_section(config.config_ini_section, {}),
+        prefix="sqlalchemy.",
+        poolclass=pool.NullPool,
+    )
+    with connectable.connect() as connection:
+        context.configure(connection=connection, target_metadata=target_metadata)
+        with context.begin_transaction():
+            context.run_migrations()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+```
+
+**3. Generate and run migrations:**
+
+```bash
+# Generate migration for agentexec tables
+alembic revision --autogenerate -m "Add agentexec tables"
+
+# Apply migrations
+alembic upgrade head
+```
+
+See the [examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi) directory for a complete Alembic setup.
+
+### Quick Start: SQLAlchemy create_all()
+
+For quick prototyping or simple scripts, you can use `create_all()`:
 
 ```python
 # db.py
@@ -361,41 +448,11 @@ import agentexec as ax
 DATABASE_URL = "sqlite:///agents.db"
 engine = create_engine(DATABASE_URL)
 
-# Create tables
+# Create tables (simple approach for getting started)
 ax.Base.metadata.create_all(engine)
 ```
 
-### Using PostgreSQL (Production)
-
-```python
-# db.py
-import os
-from sqlalchemy import create_engine
-import agentexec as ax
-
-DATABASE_URL = os.getenv("DATABASE_URL")
-engine = create_engine(DATABASE_URL, pool_size=10, max_overflow=20)
-
-ax.Base.metadata.create_all(engine)
-```
-
-### Using Alembic Migrations
-
-```python
-# alembic/env.py
-from agentexec import Base
-
-target_metadata = Base.metadata
-
-# alembic.ini
-# sqlalchemy.url = postgresql://user:pass@localhost/mydb
-```
-
-Generate migration:
-```bash
-alembic revision --autogenerate -m "Add agentexec tables"
-alembic upgrade head
-```
+> **Note**: `create_all()` only creates tables that don't exist. It won't update existing tables when agentexec is upgraded. For production, use Alembic migrations.
 
 ## Error Handling Patterns
 

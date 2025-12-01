@@ -24,6 +24,10 @@ my-fastapi-project/
 
 ### Database Configuration
 
+For production applications, use **Alembic migrations** to manage your database schema. See the [Basic Usage Guide](basic-usage.md#database-setup) for complete Alembic setup instructions, or the [examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi) directory for a working example.
+
+For quick prototyping, you can use `create_all()`:
+
 ```python
 # db.py
 import os
@@ -36,7 +40,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agents.db")
 engine = create_engine(DATABASE_URL)
 SessionLocal = sessionmaker(bind=engine)
 
-# Create tables
+# Quick start approach; use Alembic migrations for production
 ax.Base.metadata.create_all(engine)
 ```
 

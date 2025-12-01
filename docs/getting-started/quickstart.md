@@ -50,7 +50,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agents.db")
 
 # Create database engine and tables
 engine = create_engine(DATABASE_URL)
-ax.Base.metadata.create_all(engine)
+ax.Base.metadata.create_all(engine)  # Quick start; use Alembic for production
 
 
 # Define your task context - what data your task needs
@@ -287,6 +287,8 @@ You've successfully created a background task system with AI agents. Here's what
 - [Pipelines](../guides/pipelines.md) - Orchestrate multi-step workflows
 - [Architecture](../concepts/architecture.md) - Understand how agentexec works
 
+> **Note on Database Migrations**: This quickstart uses `create_all()` for simplicity. For production applications, we recommend using [Alembic](https://alembic.sqlalchemy.org/) for database migrations. See the [Basic Usage Guide](../guides/basic-usage.md#database-setup) for Alembic setup instructions.
+
 ## Complete Example
 
-For a complete, production-ready example with FastAPI, see the [examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi) directory in the repository.
+For a complete, production-ready example with FastAPI and Alembic migrations, see the [examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi) directory in the repository.

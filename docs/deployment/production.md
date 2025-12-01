@@ -25,20 +25,22 @@ This guide covers best practices for deploying agentexec in production environme
 
 ## Database Configuration
 
+agentexec recommends using **Alembic** for database migrations in production. See the [Basic Usage Guide](../guides/basic-usage.md#database-setup) for Alembic configuration that includes agentexec models.
+
 ### PostgreSQL Setup
 
 ```sql
 -- Create database
 CREATE DATABASE agentexec;
 
--- Create user with limited privileges
+-- Create user with limited privileges (for application)
 CREATE USER agentexec_app WITH PASSWORD 'secure_password';
 GRANT CONNECT ON DATABASE agentexec TO agentexec_app;
 GRANT USAGE ON SCHEMA public TO agentexec_app;
 GRANT SELECT, INSERT, UPDATE, DELETE ON ALL TABLES IN SCHEMA public TO agentexec_app;
 GRANT USAGE, SELECT ON ALL SEQUENCES IN SCHEMA public TO agentexec_app;
 
--- For migrations (separate user)
+-- For Alembic migrations (separate user with elevated privileges)
 CREATE USER agentexec_migrate WITH PASSWORD 'migrate_password';
 GRANT ALL PRIVILEGES ON DATABASE agentexec TO agentexec_migrate;
 ```
@@ -572,6 +574,7 @@ redis-cli INFO memory
 
 Before going to production:
 
+- [ ] Alembic migrations configured for agentexec tables
 - [ ] PostgreSQL with SSL enabled
 - [ ] Redis with password and persistence
 - [ ] Connection pooling configured
