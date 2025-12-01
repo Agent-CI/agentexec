@@ -36,8 +36,10 @@ from importlib.metadata import PackageNotFoundError, version
 from agentexec.config import CONF
 from agentexec.core.db import Base
 from agentexec.core.queue import Priority, enqueue
+from agentexec.core.results import gather, get_result
 from agentexec.core.task import Task, TaskDefinition, TaskHandler, TaskHandlerKwargs
-from agentexec.core.worker import WorkerPool
+from agentexec.worker import WorkerPool
+from agentexec.pipeline import Pipeline
 from agentexec.runners import BaseAgentRunner
 
 try:
@@ -48,6 +50,7 @@ except PackageNotFoundError:
 __all__ = [
     "CONF",
     "Base",
+    "Pipeline",
     "WorkerPool",
     "Task",
     "TaskDefinition",
@@ -55,6 +58,8 @@ __all__ = [
     "TaskHandlerKwargs",
     "Priority",
     "enqueue",
+    "gather",
+    "get_result",
     "BaseAgentRunner",
 ]
 

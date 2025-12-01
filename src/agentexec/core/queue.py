@@ -1,17 +1,17 @@
 """Task queue operations using Redis."""
 
 import json
-import logging
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
 
 from agentexec.config import CONF
+from agentexec.core.logging import get_logger
 from agentexec.core.redis_client import get_redis
 from agentexec.core.task import Task
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Priority(str, Enum):
@@ -96,6 +96,6 @@ async def dequeue(
     if result is None:
         return None
 
-    _, task_json = result
-    data: dict[str, Any] = json.loads(task_json)
+    _, task_bytes = result
+    data: dict[str, Any] = json.loads(task_bytes.decode("utf-8"))
     return data

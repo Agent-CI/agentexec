@@ -1,11 +1,13 @@
-from redis.asyncio import Redis
+import redis
+import redis.asyncio
 
 from agentexec.config import CONF
 
-_redis_client: Redis | None = None
+_redis_client: redis.asyncio.Redis | None = None
+_redis_sync_client: redis.Redis | None = None
 
 
-def get_redis() -> Redis:
+def get_redis() -> redis.asyncio.Redis:
     """Get the async Redis client instance.
 
     Creates and caches a Redis client on first call. Subsequent calls
@@ -25,14 +27,39 @@ def get_redis() -> Redis:
         if CONF.redis_url is None:
             raise ValueError("REDIS_URL must be configured")
 
-        _redis_client = Redis.from_url(
+        _redis_client = redis.asyncio.Redis.from_url(
             CONF.redis_url,
             max_connections=CONF.redis_pool_size,
             socket_connect_timeout=CONF.redis_pool_timeout,
-            decode_responses=True,
+            decode_responses=False,  # Handle binary data (pickled results)
         )
 
     return _redis_client
+
+
+def get_redis_sync() -> redis.Redis:
+    """Get the synchronous Redis client instance.
+
+    Creates and caches a Redis client on first call. Subsequent calls
+    return the cached instance. Used by worker processes for log publishing.
+
+    Returns:
+        Synchronous Redis client instance.
+    """
+    global _redis_sync_client
+
+    if _redis_sync_client is None:
+        if CONF.redis_url is None:
+            raise ValueError("REDIS_URL must be configured")
+
+        _redis_sync_client = redis.Redis.from_url(
+            CONF.redis_url,
+            max_connections=CONF.redis_pool_size,
+            socket_connect_timeout=CONF.redis_pool_timeout,
+            decode_responses=False,
+        )
+
+    return _redis_sync_client
 
 
 async def close_redis() -> None:

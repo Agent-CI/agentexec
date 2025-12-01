@@ -1,20 +1,30 @@
 from uuid import UUID
 
+from pydantic import BaseModel
 from agents import Agent
-from sqlalchemy.orm import Session
 
 import agentexec as ax
 
 from context import ResearchCompanyContext
-from main import engine
+from db import engine
 from tools import analyze_financial_data, search_company_info
+
+
+class ResearchCompanyResult(BaseModel):
+    financial_performance: str
+    recent_news: str
+    products_services: str
+    team_structure: str
 
 
 pool = ax.WorkerPool(engine=engine)
 
 
 @pool.task("research_company")
-async def research_company(agent_id: UUID, context: ResearchCompanyContext):
+async def research_company(
+    agent_id: UUID,
+    context: ResearchCompanyContext,
+) -> ResearchCompanyResult:
     """Research a company using an AI agent with tools.
 
     This demonstrates:
@@ -51,6 +61,7 @@ async def research_company(agent_id: UUID, context: ResearchCompanyContext):
             runner.tools.report_status,
         ],
         model="gpt-4o-mini",
+        output_type=ResearchCompanyResult,
     )
 
     result = await runner.run(
@@ -59,10 +70,7 @@ async def research_company(agent_id: UUID, context: ResearchCompanyContext):
         max_turns=15,
     )
     # `result` is a native OpenAI Agents `RunResult` object
-    report = result.final_output
-
-    print(f"✓ Completed research for {company_name} (agent_id: {agent_id})")
-    print(f"Report preview: {report[:200]}...")
+    return result.final_output_as(ResearchCompanyResult)
 
 
 if __name__ == "__main__":
@@ -71,17 +79,5 @@ if __name__ == "__main__":
     print(f"Queue: {ax.CONF.queue_name}")
     print("Press Ctrl+C to shutdown gracefully")
 
-    try:
-        pool.start()
-
-    except KeyboardInterrupt:
-        print("\nShutting down worker pool...")
-        pool.shutdown()
-
-        # Cancel any pending tasks
-        with Session(engine) as session:
-            canceled = ax.activity.cancel_pending(session)
-            session.commit()
-            print(f"Canceled {canceled} pending agents")
-
-        print("Worker pool stopped.")
+    # run() blocks and handles log streaming from workers
+    pool.run()

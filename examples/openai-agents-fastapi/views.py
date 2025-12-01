@@ -6,7 +6,7 @@ from sqlalchemy.orm import Session
 import agentexec as ax
 
 from context import ResearchCompanyContext
-from main import get_db
+from db import get_db
 
 
 router = APIRouter()

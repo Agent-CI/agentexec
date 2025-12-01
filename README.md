@@ -196,6 +196,37 @@ await ax.enqueue("urgent_task", context, priority=ax.Priority.HIGH)
 await ax.enqueue("batch_job", context, priority=ax.Priority.LOW)
 ```
 
+### Pipelines
+
+Orchestrate multi-step workflows with parallel task execution:
+
+```python
+import agentexec as ax
+
+pipeline = ax.Pipeline(pool=pool)
+
+
+class MyPipeline(pipeline.Base):
+    @pipeline.step(0)
+    async def parallel_research(self, input_ctx: InputContext):
+        """Run multiple tasks in parallel."""
+        task1 = await ax.enqueue("research_brand", BrandContext(...))
+        task2 = await ax.enqueue("research_market", MarketContext(...))
+        return await ax.gather(task1, task2)
+
+    @pipeline.step(1)
+    async def analyze(self, brand_result, market_result):
+        """Combine results from previous step."""
+        task = await ax.enqueue("analyze", AnalysisContext(...))
+        return await ax.get_result(task.agent_id)
+
+
+# Run the pipeline
+result = await pipeline.run(context=InputContext(company="Anthropic"))
+```
+
+See **[examples/openai-agents-fastapi/pipeline.py](examples/openai-agents-fastapi/pipeline.py)** for a complete example.
+
 ---
 
 ## Full Example: FastAPI Integration

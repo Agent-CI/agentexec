@@ -1,6 +1,6 @@
 [project]
 name = "agentexec"
-version = "0.1.1"
+version = "0.1.2"
 description = "Production-ready orchestration for OpenAI Agents with Redis-backed coordination, activity tracking, and workflow management"
 readme = "README.md"
 requires-python = ">=3.11"

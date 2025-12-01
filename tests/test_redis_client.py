@@ -24,8 +24,8 @@ def test_get_redis() -> None:
     redis = get_redis()
 
     assert redis is not None
-    # Verify it's configured with decode_responses=True
-    assert redis.connection_pool.connection_kwargs.get("decode_responses") is True
+    # Verify it's configured with decode_responses=False (for binary data like pickled results)
+    assert redis.connection_pool.connection_kwargs.get("decode_responses") is False
 
 
 def test_redis_singleton() -> None:

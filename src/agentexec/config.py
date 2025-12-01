@@ -67,5 +67,11 @@ class Config(BaseSettings):
         validation_alias=AliasChoices("AGENTEXEC_REDIS_POOL_TIMEOUT", "REDIS_POOL_TIMEOUT"),
     )
 
+    result_ttl: int = Field(
+        default=3600,
+        description="TTL in seconds for task results in Redis",
+        validation_alias="AGENTEXEC_RESULT_TTL",
+    )
+
 
 CONF = Config()
