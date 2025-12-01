@@ -31,13 +31,13 @@ class Pipeline:
         pipeline = ax.Pipeline(pool=pool)
 
         class ResearchPipeline(pipeline.Base):
-            @pipeline.step(0, weight=0.4)
+            @pipeline.step(0)
             async def research(self, ctx: InputContext) -> tuple[A, B]:
                 a = await ax.enqueue("task_a", ctx)
                 b = await ax.enqueue("task_b", ctx)
                 return await ax.gather(a, b)
 
-            @pipeline.step(1, weight=0.6)
+            @pipeline.step(1)
             async def analyze(self, a: A, b: B) -> Result:
                 ...
 
@@ -74,18 +74,14 @@ class Pipeline:
 
         return PipelineBase
 
-    def step(
-        self,
-        order: Any,
-    ) -> Callable[[StepHandler], StepHandler]:
+    def step(self, order: Any) -> Callable[[StepHandler], StepHandler]:
         """Decorator to register a method as a pipeline step.
 
         Args:
             order: Sortable value for step sequencing (0, 1, 2 or 'a', 'b', 'c')
-            weight: Relative weight for progress tracking (0.0 to 1.0)
 
         Returns:
-            Decorator function
+            Decorated function
         """
 
         def decorator(func: StepHandler) -> StepHandler:

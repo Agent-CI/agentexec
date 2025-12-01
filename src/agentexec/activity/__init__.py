@@ -11,6 +11,7 @@ from agentexec.activity.schemas import (
 from agentexec.activity.tracker import (
     cancel_pending,
     complete,
+    count_active,
     create,
     detail,
     error,
@@ -44,6 +45,7 @@ __all__ = [
     # Query API
     "list",
     "detail",
+    "count_active",
 ]
 
 # Users manage their own database setup with SQLAlchemy

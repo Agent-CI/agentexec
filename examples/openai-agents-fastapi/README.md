@@ -1,6 +1,6 @@
 # OpenAI Agents FastAPI Example
 
-This example demonstrates a complete FastAPI application using **agentexec** to orchestrate OpenAI Agents SDK in production.
+This example demonstrates a complete FastAPI application using **agentexec** to orchestrate OpenAI Agents SDK in production, including a React frontend for monitoring agents.
 
 ## What This Example Demonstrates
 
@@ -12,6 +12,7 @@ This example demonstrates a complete FastAPI application using **agentexec** to 
 - **Database session management** (`main.py`) - Standard SQLAlchemy patterns with full control
 - **Agent self-reporting** - Agents report progress via built-in `report_status` tool
 - **Max turns recovery** - Automatic handling of conversation limits with wrap-up prompts
+- **React Frontend** (`ui/`) - GitHub-inspired dark mode UI for monitoring agents
 
 ### Key Patterns Shown
 
@@ -88,6 +89,49 @@ curl "http://localhost:8000/api/agents/activity"
 curl "http://localhost:8000/api/agents/activity/{agent_id}"
 ```
 
+
+## Frontend
+
+The example includes a React frontend built with **agentexec-ui** components. The UI provides:
+
+- Sidebar navigation with active agent count badge (updates every 15 seconds)
+- Paginated task list showing status and progress
+- Task detail panel with full activity log history
+- GitHub-inspired dark mode styling
+
+### Running the UI
+
+```bash
+# In one terminal - start the API
+uvicorn main:app --reload
+
+# In another terminal - start the UI dev server
+cd ui
+npm install
+npm run dev
+# Opens at http://localhost:3000 with API proxy to :8000
+```
+
+### Using agentexec-ui in Your Own Project
+
+The frontend uses the `agentexec-ui` package which can be installed separately:
+
+```bash
+npm install agentexec-ui
+```
+
+```tsx
+import { TaskList, TaskDetail, useActivityList } from 'agentexec-ui';
+
+function MyApp() {
+  const { data } = useActivityList({ pollInterval: 15000 });
+  return <TaskList items={data?.items || []} />;
+}
+```
+
+Components use CSS custom properties (e.g., `--ax-color-bg-primary`) for theming. See `ui/src/styles/github-dark.css` in this example for a reference theme implementation.
+
+See [agentexec-ui README](../../ui/README.md) for full documentation.
 
 ## Configuration
 
