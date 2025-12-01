@@ -2,20 +2,28 @@
 
 ## v0.1.2
 
+### New Features
+
+**Pipelines**
+- Multi-step workflow orchestration with `ax.Pipeline`
+- Define steps with `@pipeline.step(order)` decorator
+- Parallel task execution with `ax.gather()`
+- Result retrieval with `ax.get_result()`
+
+**Worker logging via Redis pubsub**
+- Workers publish logs to Redis, collected by main process
+- Use `pool.run()` to see worker logs in real-time
+
 ### Internal Improvements
+
+**Reorganized worker module**
+- Worker code moved to `agentexec.worker` subpackage
+- `RedisEvent` for cross-process shutdown coordination
+- `get_worker_logger()` configures logging and returns logger in one call
 
 **Refactored Redis client usage**
 - Added `get_redis_sync()` for synchronous Redis operations
-- Worker logging now uses sync Redis client (required for `logging.Handler.emit()`)
-
-**Simplified WorkerPool shutdown**
-- `RedisEvent.set()` and `clear()` are now synchronous
-- `WorkerPool.run()` now reuses `start()` to avoid code duplication
-- Removed nested `asyncio.run()` calls in pool lifecycle methods
-
-**Reorganized worker module**
-- Moved `RedisEvent` from `core/sync.py` to `worker/event.py`
-- Removed unused `RedisEvent.wait()` method
+- Sync/async Redis clients for different contexts
 
 ## v0.1.1
 
