@@ -27,6 +27,12 @@ dependencies = [
     "openai-agents>=0.1.0",
 ]
 
+[project.optional-dependencies]
+langchain = [
+    "langchain>=0.3.0",
+    "langchain-core>=0.3.0",
+]
+
 
 [project.urls]
 Homepage = "https://github.com/Agent-CI/agentexec"
