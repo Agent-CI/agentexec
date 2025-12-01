@@ -4,12 +4,17 @@ import pytest
 
 
 @pytest.fixture(autouse=True)
-def cleanup_redis() -> None:
-    """Cleanup Redis client after each test."""
+async def cleanup_redis(monkeypatch) -> None:
+    """Setup test redis URL and cleanup after each test."""
+    from agentexec.config import CONF
+
+    monkeypatch.setattr(CONF, "redis_url", "redis://localhost:6379/0")
+
     yield
+
     from agentexec.core.redis_client import close_redis
 
-    close_redis()
+    await close_redis()
 
 
 def test_get_redis() -> None:
@@ -19,8 +24,8 @@ def test_get_redis() -> None:
     redis = get_redis()
 
     assert redis is not None
-    # Verify it's configured with decode_responses=True
-    assert redis.connection_pool.connection_kwargs.get("decode_responses") is True
+    # Verify it's configured with decode_responses=False (for binary data like pickled results)
+    assert redis.connection_pool.connection_kwargs.get("decode_responses") is False
 
 
 def test_redis_singleton() -> None:
@@ -46,12 +51,12 @@ def test_redis_uses_config() -> None:
     assert pool.connection_kwargs.get("socket_connect_timeout") == CONF.redis_pool_timeout
 
 
-def test_close_redis() -> None:
+async def test_close_redis() -> None:
     """Test that close_redis resets the client."""
     from agentexec.core.redis_client import close_redis, get_redis
 
     redis1 = get_redis()
-    close_redis()
+    await close_redis()
     redis2 = get_redis()
 
     # Should be a new instance after close

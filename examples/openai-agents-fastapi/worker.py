@@ -1,28 +1,41 @@
 from uuid import UUID
 
+from pydantic import BaseModel
 from agents import Agent
-from sqlalchemy.orm import Session
+
 import agentexec as ax
 
-from .main import engine
-from .tools import analyze_financial_data, search_company_info
+from context import ResearchCompanyContext
+from db import engine
+from tools import analyze_financial_data, search_company_info
+
+
+class ResearchCompanyResult(BaseModel):
+    financial_performance: str
+    recent_news: str
+    products_services: str
+    team_structure: str
 
 
 pool = ax.WorkerPool(engine=engine)
 
 
 @pool.task("research_company")
-async def research_company(agent_id: UUID, payload: dict):
+async def research_company(
+    agent_id: UUID,
+    context: ResearchCompanyContext,
+) -> ResearchCompanyResult:
     """Research a company using an AI agent with tools.
 
     This demonstrates:
     - Using OpenAI Agents SDK with function tools
     - Automatic activity tracking via OpenAIRunner
     - Agent self-reporting progress via update_status tool
+    - Type-safe context object (automatically deserialized from queue)
     """
-    # TODO stronger typing for payload
-    company_name = payload.get("company_name", "Unknown Company")
-    input_prompt = payload.get("input_prompt", f"Research the company {company_name}.")
+    # Type-safe context access with IDE autocomplete!
+    company_name = context.company_name
+    input_prompt = context.input_prompt or f"Research the company {company_name}."
 
     runner = ax.OpenAIRunner(
         agent_id,
@@ -48,6 +61,7 @@ async def research_company(agent_id: UUID, payload: dict):
             runner.tools.report_status,
         ],
         model="gpt-4o-mini",
+        output_type=ResearchCompanyResult,
     )
 
     result = await runner.run(
@@ -56,10 +70,7 @@ async def research_company(agent_id: UUID, payload: dict):
         max_turns=15,
     )
     # `result` is a native OpenAI Agents `RunResult` object
-    report = result.final_output
-
-    print(f"✓ Completed research for {company_name} (agent_id: {agent_id})")
-    print(f"Report preview: {report[:200]}...")
+    return result.final_output_as(ResearchCompanyResult)
 
 
 if __name__ == "__main__":
@@ -68,17 +79,5 @@ if __name__ == "__main__":
     print(f"Queue: {ax.CONF.queue_name}")
     print("Press Ctrl+C to shutdown gracefully")
 
-    try:
-        pool.start()
-
-    except KeyboardInterrupt:
-        print("\nShutting down worker pool...")
-        pool.shutdown()
-
-        # Cancel any pending tasks
-        with Session(engine) as session:
-            canceled = ax.activity.cancel_pending(session)
-            session.commit()
-            print(f"Canceled {canceled} pending agents")
-
-        print("Worker pool stopped.")
+    # run() blocks and handles log streaming from workers
+    pool.run()
