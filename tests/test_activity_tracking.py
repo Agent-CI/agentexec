@@ -81,3 +81,274 @@ def test_database_tables_created():
     assert "agentexec_activity_log" in table_names
 
     engine.dispose()
+
+
+def test_update_activity(db_session: Session):
+    """Test updating an activity with a new log message."""
+    # First create an activity
+    agent_id = activity.create(
+        task_name="test_task",
+        message="Initial message",
+        session=db_session,
+    )
+
+    # Update the activity
+    result = activity.update(
+        agent_id=agent_id,
+        message="Processing...",
+        completion_percentage=50,
+        session=db_session,
+    )
+
+    assert result is True
+
+    # Verify the update
+    activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert len(activity_record.logs) == 2
+    assert activity_record.logs[1].message == "Processing..."
+    assert activity_record.logs[1].status == Status.RUNNING
+    assert activity_record.logs[1].completion_percentage == 50
+
+
+def test_update_activity_with_custom_status(db_session: Session):
+    """Test updating an activity with a custom status."""
+    agent_id = activity.create(
+        task_name="test_task",
+        message="Initial",
+        session=db_session,
+    )
+
+    activity.update(
+        agent_id=agent_id,
+        message="Custom status update",
+        status=Status.RUNNING,
+        completion_percentage=25,
+        session=db_session,
+    )
+
+    activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    latest_log = activity_record.logs[-1]
+    assert latest_log.status == Status.RUNNING
+
+
+def test_complete_activity(db_session: Session):
+    """Test marking an activity as complete."""
+    agent_id = activity.create(
+        task_name="test_task",
+        message="Started",
+        session=db_session,
+    )
+
+    result = activity.complete(
+        agent_id=agent_id,
+        message="Successfully completed",
+        session=db_session,
+    )
+
+    assert result is True
+
+    activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    latest_log = activity_record.logs[-1]
+    assert latest_log.message == "Successfully completed"
+    assert latest_log.status == Status.COMPLETE
+    assert latest_log.completion_percentage == 100
+
+
+def test_complete_activity_custom_percentage(db_session: Session):
+    """Test marking an activity complete with custom percentage."""
+    agent_id = activity.create(
+        task_name="test_task",
+        message="Started",
+        session=db_session,
+    )
+
+    activity.complete(
+        agent_id=agent_id,
+        message="Done",
+        completion_percentage=95,
+        session=db_session,
+    )
+
+    activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    latest_log = activity_record.logs[-1]
+    assert latest_log.completion_percentage == 95
+
+
+def test_error_activity(db_session: Session):
+    """Test marking an activity as errored."""
+    agent_id = activity.create(
+        task_name="test_task",
+        message="Started",
+        session=db_session,
+    )
+
+    result = activity.error(
+        agent_id=agent_id,
+        message="Task failed: connection timeout",
+        session=db_session,
+    )
+
+    assert result is True
+
+    activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    latest_log = activity_record.logs[-1]
+    assert latest_log.message == "Task failed: connection timeout"
+    assert latest_log.status == Status.ERROR
+    assert latest_log.completion_percentage == 100
+
+
+def test_cancel_pending_activities(db_session: Session):
+    """Test canceling all pending activities."""
+    # Create some activities in different states
+    queued_id = activity.create(
+        task_name="queued_task",
+        message="Waiting",
+        session=db_session,
+    )
+
+    running_id = activity.create(
+        task_name="running_task",
+        message="Started",
+        session=db_session,
+    )
+    activity.update(
+        agent_id=running_id,
+        message="Running...",
+        status=Status.RUNNING,
+        session=db_session,
+    )
+
+    complete_id = activity.create(
+        task_name="complete_task",
+        message="Started",
+        session=db_session,
+    )
+    activity.complete(agent_id=complete_id, session=db_session)
+
+    # Cancel pending activities
+    canceled_count = activity.cancel_pending(session=db_session)
+
+    # Should have canceled the queued and running activities
+    assert canceled_count == 2
+
+    # Verify the states
+    queued_record = Activity.get_by_agent_id(db_session, queued_id)
+    running_record = Activity.get_by_agent_id(db_session, running_id)
+    complete_record = Activity.get_by_agent_id(db_session, complete_id)
+
+    assert queued_record.logs[-1].status == Status.CANCELED
+    assert running_record.logs[-1].status == Status.CANCELED
+    assert complete_record.logs[-1].status == Status.COMPLETE  # Not changed
+
+
+def test_list_activities(db_session: Session):
+    """Test listing activities with pagination."""
+    # Create several activities
+    for i in range(5):
+        activity.create(
+            task_name=f"task_{i}",
+            message=f"Message {i}",
+            session=db_session,
+        )
+
+    # List activities
+    result = activity.list(db_session, page=1, page_size=3)
+
+    assert len(result.items) == 3
+    assert result.total == 5
+    assert result.page == 1
+    assert result.page_size == 3
+
+
+def test_list_activities_second_page(db_session: Session):
+    """Test listing activities on second page."""
+    for i in range(5):
+        activity.create(
+            task_name=f"task_{i}",
+            message=f"Message {i}",
+            session=db_session,
+        )
+
+    result = activity.list(db_session, page=2, page_size=3)
+
+    assert len(result.items) == 2  # Remaining items
+    assert result.total == 5
+    assert result.page == 2
+
+
+def test_detail_activity(db_session: Session):
+    """Test getting activity detail with all logs."""
+    agent_id = activity.create(
+        task_name="detailed_task",
+        message="Initial",
+        session=db_session,
+    )
+    activity.update(
+        agent_id=agent_id,
+        message="Processing",
+        completion_percentage=50,
+        session=db_session,
+    )
+    activity.complete(agent_id=agent_id, session=db_session)
+
+    result = activity.detail(db_session, agent_id)
+
+    assert result is not None
+    assert result.agent_id == agent_id
+    assert result.agent_type == "detailed_task"
+    assert len(result.logs) == 3
+    assert result.logs[0].message == "Initial"
+    assert result.logs[1].message == "Processing"
+    assert result.logs[2].status == Status.COMPLETE
+
+
+def test_detail_activity_not_found(db_session: Session):
+    """Test getting detail for non-existent activity returns None."""
+    fake_id = uuid.uuid4()
+    result = activity.detail(db_session, fake_id)
+
+    assert result is None
+
+
+def test_detail_activity_with_string_id(db_session: Session):
+    """Test getting activity detail with string agent_id."""
+    agent_id = activity.create(
+        task_name="string_id_task",
+        message="Test",
+        session=db_session,
+    )
+
+    # Use string ID
+    result = activity.detail(db_session, str(agent_id))
+
+    assert result is not None
+    assert result.agent_id == agent_id
+
+
+def test_create_activity_with_custom_agent_id(db_session: Session):
+    """Test creating activity with a custom agent_id."""
+    custom_id = uuid.uuid4()
+    agent_id = activity.create(
+        task_name="custom_id_task",
+        message="Test",
+        agent_id=custom_id,
+        session=db_session,
+    )
+
+    assert agent_id == custom_id
+
+    activity_record = Activity.get_by_agent_id(db_session, custom_id)
+    assert activity_record is not None
+
+
+def test_create_activity_with_string_agent_id(db_session: Session):
+    """Test creating activity with a string agent_id."""
+    custom_id = uuid.uuid4()
+    agent_id = activity.create(
+        task_name="string_agent_id_task",
+        message="Test",
+        agent_id=str(custom_id),
+        session=db_session,
+    )
+
+    assert agent_id == custom_id
