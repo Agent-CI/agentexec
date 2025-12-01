@@ -200,7 +200,8 @@ class TestPydanticAIRunnerRecovery:
             )
 
     @pytest.mark.asyncio
-    async def test_recovery_enabled_retries(self) -> None:
+    @patch("agentexec.runners.pydantic_ai.capture_run_messages")
+    async def test_recovery_enabled_retries(self, mock_capture: Mock) -> None:
         """Test that recovery mechanism retries with wrap-up prompt."""
         agent_id = uuid.uuid4()
         wrap_up_prompt = "Please summarize"
@@ -213,12 +214,17 @@ class TestPydanticAIRunnerRecovery:
 
         mock_agent = Mock(spec=Agent)
 
-        # First call raises UsageLimitExceeded
-        mock_exception = UsageLimitExceeded("Request limit exceeded")
-        mock_exception.message_history = [
+        # Mock messages that would be captured
+        captured_messages = [
             ModelRequest(parts=[UserPromptPart(content="Original prompt")]),
             Mock(spec=ModelResponse),  # Mock a response
         ]
+
+        # Mock capture_run_messages to populate the list
+        mock_capture.return_value.__enter__.return_value = captured_messages
+
+        # First call raises UsageLimitExceeded
+        mock_exception = UsageLimitExceeded("Request limit exceeded")
 
         # Second call (recovery) succeeds
         mock_recovery_result = Mock(spec=AgentRunResult)
@@ -242,14 +248,15 @@ class TestPydanticAIRunnerRecovery:
 
         # Verify wrap-up prompt was added to message history
         recovery_messages = second_call_kwargs["message_history"]
-        assert len(recovery_messages) > 0
+        assert len(recovery_messages) == len(captured_messages) + 1
         # Last message should be the wrap-up prompt
         last_message = recovery_messages[-1]
         assert isinstance(last_message, ModelRequest)
         assert last_message.parts[0].content == wrap_up_prompt
 
     @pytest.mark.asyncio
-    async def test_recovery_preserves_message_history(self) -> None:
+    @patch("agentexec.runners.pydantic_ai.capture_run_messages")
+    async def test_recovery_preserves_message_history(self, mock_capture: Mock) -> None:
         """Test that recovery preserves conversation history."""
         agent_id = uuid.uuid4()
         runner = PydanticAIRunner(
@@ -260,17 +267,18 @@ class TestPydanticAIRunnerRecovery:
 
         mock_agent = Mock(spec=Agent)
 
-        # Create mock message history
-        original_messages = [
+        # Create mock message history that would be captured
+        captured_messages = [
             ModelRequest(parts=[UserPromptPart(content="Message 1")]),
             Mock(spec=ModelResponse),
             ModelRequest(parts=[UserPromptPart(content="Message 2")]),
             Mock(spec=ModelResponse),
         ]
 
-        mock_exception = UsageLimitExceeded("Request limit exceeded")
-        mock_exception.message_history = original_messages
+        # Mock capture_run_messages to populate the list
+        mock_capture.return_value.__enter__.return_value = captured_messages
 
+        mock_exception = UsageLimitExceeded("Request limit exceeded")
         mock_recovery_result = Mock(spec=AgentRunResult)
         mock_agent.run = AsyncMock(side_effect=[mock_exception, mock_recovery_result])
 
@@ -284,8 +292,8 @@ class TestPydanticAIRunnerRecovery:
         recovery_call_kwargs = mock_agent.run.call_args_list[1].kwargs
         recovery_messages = recovery_call_kwargs["message_history"]
 
-        # Should have original messages plus wrap-up prompt
-        assert len(recovery_messages) == len(original_messages) + 1
+        # Should have captured messages plus wrap-up prompt
+        assert len(recovery_messages) == len(captured_messages) + 1
 
     @pytest.mark.asyncio
     async def test_other_exceptions_not_caught(self) -> None:
@@ -332,7 +340,8 @@ class TestPydanticAIRunnerStreaming:
         assert call_kwargs["usage_limits"].request_limit == 10
 
     @pytest.mark.asyncio
-    async def test_streaming_with_recovery(self) -> None:
+    @patch("agentexec.runners.pydantic_ai.capture_run_messages")
+    async def test_streaming_with_recovery(self, mock_capture: Mock) -> None:
         """Test that streaming works with recovery mechanism."""
         agent_id = uuid.uuid4()
         runner = PydanticAIRunner(
@@ -343,11 +352,13 @@ class TestPydanticAIRunnerStreaming:
 
         mock_agent = Mock(spec=Agent)
 
-        mock_exception = UsageLimitExceeded("Request limit exceeded")
-        mock_exception.message_history = [
+        # Mock captured messages
+        captured_messages = [
             ModelRequest(parts=[UserPromptPart(content="Original")]),
         ]
+        mock_capture.return_value.__enter__.return_value = captured_messages
 
+        mock_exception = UsageLimitExceeded("Request limit exceeded")
         mock_recovery_result = Mock(spec=StreamedRunResult)
         mock_agent.run_stream = AsyncMock(
             side_effect=[mock_exception, mock_recovery_result]
