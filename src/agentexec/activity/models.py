@@ -265,6 +265,45 @@ class Activity(Base):
         # Extract UUIDs from result tuples
         return [agent_id for (agent_id,) in result]
 
+    @classmethod
+    def get_active_count(cls, session: Session) -> int:
+        """Get count of activities with QUEUED or RUNNING status.
+
+        Args:
+            session: SQLAlchemy session to use for the query
+
+        Returns:
+            Count of active (queued or running) activities
+
+        Example:
+            count = Activity.get_active_count(session)
+            print(f"Active agents: {count}")
+        """
+        # Subquery to get the latest log status for each activity
+        latest_log_subq = select(
+            ActivityLog.activity_id,
+            ActivityLog.status,
+            func.row_number()
+            .over(
+                partition_by=ActivityLog.activity_id,
+                order_by=ActivityLog.created_at.desc(),
+            )
+            .label("rn"),
+        ).subquery()
+
+        # Count activities where latest status is queued or running
+        result = (
+            session.query(func.count(cls.id))
+            .join(
+                latest_log_subq,
+                (cls.id == latest_log_subq.c.activity_id) & (latest_log_subq.c.rn == 1),
+            )
+            .filter(latest_log_subq.c.status.in_([Status.QUEUED, Status.RUNNING]))
+            .scalar()
+        )
+
+        return result or 0
+
 
 class ActivityLog(Base):
     """Individual log messages from background agents.

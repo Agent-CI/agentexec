@@ -246,3 +246,15 @@ def detail(
     if item := Activity.get_by_agent_id(session, agent_id):
         return ActivityDetailSchema.model_validate(item)
     return None
+
+
+def count_active(session: Session) -> int:
+    """Get count of active (queued or running) agents.
+
+    Args:
+        session: SQLAlchemy session to use for the query
+
+    Returns:
+        Count of agents with QUEUED or RUNNING status
+    """
+    return Activity.get_active_count(session)
