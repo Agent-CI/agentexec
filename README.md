@@ -1,5 +1,7 @@
 # `agentexec`
 
+[![codecov](https://codecov.io/gh/Agent-CI/agentexec/branch/main/graph/badge.svg)](https://codecov.io/gh/Agent-CI/agentexec)
+
 **Production-ready orchestration for OpenAI Agents SDK** with Redis-backed task queues, SQLAlchemy activity tracking, and multiprocessing worker pools.
 
 Build reliable, scalable AI agent applications with automatic lifecycle management, progress tracking, and fault tolerance.
