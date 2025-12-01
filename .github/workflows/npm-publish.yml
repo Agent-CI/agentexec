@@ -1,0 +1,48 @@
+name: Publish agentexec-ui to npm
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (leave empty to use package.json version)'
+        required: false
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  publish:
+    # Only run for releases tagged with ui-v* or manual triggers
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/ui-v')
+    runs-on: ubuntu-latest
+
+    defaults:
+      run:
+        working-directory: ui
+
+    steps:
+    - uses: actions/checkout@v4
+
+    - name: Setup Node.js
+      uses: actions/setup-node@v4
+      with:
+        node-version: '20'
+        registry-url: 'https://registry.npmjs.org'
+
+    - name: Install dependencies
+      run: npm install
+
+    - name: Update version (if specified)
+      if: inputs.version != ''
+      run: npm version ${{ inputs.version }} --no-git-tag-version
+
+    - name: Build package
+      run: npm run build
+
+    - name: Publish to npm
+      run: npm publish --access public
+      env:
+        NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
