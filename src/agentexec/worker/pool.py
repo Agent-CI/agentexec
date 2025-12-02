@@ -15,11 +15,11 @@ from uuid import uuid4
 
 from sqlalchemy import Engine, create_engine
 
+from agentexec import state
 from agentexec.config import CONF
 from agentexec.core.db import remove_global_session, set_global_session
 from agentexec.core.queue import dequeue
-from agentexec.core.redis_client import close_redis, get_redis
-from agentexec.worker.event import RedisEvent
+from agentexec.worker.event import StateEvent
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec.worker.logging import (
     DEFAULT_FORMAT,
@@ -45,7 +45,7 @@ class WorkerContext:
     """Shared context passed from WorkerPool to Worker processes."""
 
     database_url: str
-    shutdown_event: RedisEvent
+    shutdown_event: StateEvent
     tasks: dict[str, TaskDefinition]
     queue_name: str
 
@@ -111,7 +111,7 @@ class Worker:
             # TODO allow configurable behavior here (retry, backoff, fail)
             # TODO all of the actual logic is handled in task.execute(), so I don't know why we ever end up here.
         finally:
-            await close_redis()
+            await state.backend.close()
             remove_global_session()
             self._logger.info(f"Worker {self._worker_id} shutting down")
 
@@ -182,7 +182,7 @@ class WorkerPool:
 
         self._context = WorkerContext(
             database_url=database_url or str(engine.url),
-            shutdown_event=RedisEvent(f"agentexec:shutdown:{_get_pool_id()}"),
+            shutdown_event=StateEvent("shutdown", _get_pool_id()),
             tasks={},
             queue_name=queue_name or CONF.queue_name,
         )
@@ -252,7 +252,7 @@ class WorkerPool:
                 pass
             finally:
                 self.shutdown()
-                await close_redis()  # logs use a separate Redis client
+                await state.backend.close()
 
         try:
             self.start()
@@ -275,29 +275,30 @@ class WorkerPool:
             print(f"Started worker {worker_id} (PID: {process.pid})")
 
     async def _collect_logs(self) -> None:
-        """Listen for log messages from workers via Redis pubsub."""
+        """Listen for log messages from workers via state backend pubsub."""
         assert self._log_handler, "Log handler not initialized"
 
-        redis = get_redis()
-        pubsub = redis.pubsub()
-        await pubsub.subscribe(LOG_CHANNEL)
+        # Create task to subscribe to logs
+        log_task = asyncio.create_task(self._process_log_stream())
 
         try:
-            while True:
-                message = await pubsub.get_message(
-                    ignore_subscribe_messages=True,
-                    timeout=0.1,
-                )
-                if message and message["type"] == "message":
-                    log_message = LogMessage.model_validate_json(message["data"])
-                    self._log_handler.emit(log_message.to_log_record())
-
-                # Exit when all workers have stopped
-                if not any(p.is_alive() for p in self._processes):
-                    break
+            # Poll worker processes
+            while any(p.is_alive() for p in self._processes):
+                await asyncio.sleep(0.1)
         finally:
-            await pubsub.unsubscribe(LOG_CHANNEL)
-            await pubsub.close()
+            log_task.cancel()
+            try:
+                await log_task
+            except asyncio.CancelledError:
+                pass
+
+    async def _process_log_stream(self) -> None:
+        """Process log messages from the state backend."""
+        assert self._log_handler, "Log handler not initialized"
+
+        async for message in state.subscribe_logs():
+            log_message = LogMessage.model_validate_json(message)
+            self._log_handler.emit(log_message.to_log_record())
 
     def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.

@@ -174,8 +174,7 @@ def test_task_from_serialized(pool) -> None:
 
 async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     """Test Task.execute with an async handler."""
-    from unittest.mock import AsyncMock, MagicMock
-    import pickle
+    from unittest.mock import AsyncMock
 
     # Track activity updates
     activity_updates = []
@@ -183,12 +182,14 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    # Mock Redis
-    mock_redis = MagicMock()
-    mock_redis.set = AsyncMock()
+    # Mock state.aset_result
+    aset_result_calls = []
+
+    async def mock_aset_result(agent_id, data, ttl_seconds=None):
+        aset_result_calls.append((agent_id, data, ttl_seconds))
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.get_redis", lambda: mock_redis)
+    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
 
     execution_result = {"status": "success"}
 
@@ -218,27 +219,24 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     # Second update marks task as completed
     assert activity_updates[1]["completion_percentage"] == 100
 
-    # Verify result was stored in Redis
-    mock_redis.set.assert_called_once()
-    call_args = mock_redis.set.call_args
-    assert call_args[0][0] == f"result:{agent_id}"
-    assert pickle.loads(call_args[0][1]) == execution_result
+    # Verify result was stored
+    assert len(aset_result_calls) == 1
+    assert aset_result_calls[0][0] == agent_id  # Can be UUID or str
+    assert aset_result_calls[0][1] == execution_result
 
 
 async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
     """Test Task.execute with a sync handler."""
-    from unittest.mock import AsyncMock, MagicMock
-
     activity_updates = []
 
     def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    mock_redis = MagicMock()
-    mock_redis.set = AsyncMock()
+    async def mock_aset_result(agent_id, data, ttl_seconds=None):
+        pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.get_redis", lambda: mock_redis)
+    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
 
     @pool.task("sync_task")
     def sync_handler(agent_id: uuid.UUID, context: SampleContext) -> str:
@@ -276,7 +274,6 @@ async def test_task_execute_without_definition_raises() -> None:
 
 async def test_task_execute_error_marks_activity_errored(pool, monkeypatch) -> None:
     """Test Task.execute marks activity as errored on exception."""
-    from unittest.mock import AsyncMock, MagicMock
     from agentexec.activity.models import Status
 
     activity_updates = []
@@ -284,11 +281,11 @@ async def test_task_execute_error_marks_activity_errored(pool, monkeypatch) -> N
     def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    mock_redis = MagicMock()
-    mock_redis.set = AsyncMock()
+    async def mock_aset_result(agent_id, data, ttl_seconds=None):
+        pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.get_redis", lambda: mock_redis)
+    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
 
     @pool.task("failing_task")
     async def failing_handler(agent_id: uuid.UUID, context: SampleContext) -> None:

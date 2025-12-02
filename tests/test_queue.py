@@ -20,13 +20,22 @@ class SampleContext(BaseModel):
 
 @pytest.fixture
 def fake_redis(monkeypatch):
-    """Setup fake async redis."""
-    fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
+    """Setup fake redis for state backend with shared state."""
+    import fakeredis
 
-    def get_fake_redis():
+    # Create a shared FakeServer so sync and async clients share data
+    server = fakeredis.FakeServer()
+    fake_redis_sync = fakeredis.FakeRedis(server=server, decode_responses=False)
+    fake_redis = fake_aioredis.FakeRedis(server=server, decode_responses=False)
+
+    def get_fake_sync_client():
+        return fake_redis_sync
+
+    def get_fake_async_client():
         return fake_redis
 
-    monkeypatch.setattr("agentexec.core.queue.get_redis", get_fake_redis)
+    monkeypatch.setattr("agentexec.state.redis_backend._get_sync_client", get_fake_sync_client)
+    monkeypatch.setattr("agentexec.state.redis_backend._get_async_client", get_fake_async_client)
 
     yield fake_redis
 

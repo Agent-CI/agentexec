@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from pydantic import BaseModel
-from agentexec.core.redis_client import get_redis_sync
+from agentexec import state
 
 LOGGER_NAME = "agentexec"
 LOG_CHANNEL = "agentexec:logs"
@@ -9,7 +9,7 @@ DEFAULT_FORMAT = "[%(levelname)s/%(processName)s] %(name)s: %(message)s"
 
 
 class LogMessage(BaseModel):
-    """Schema for log messages sent via Redis pubsub."""
+    """Schema for log messages sent via state backend pubsub."""
 
     name: str
     levelno: int
@@ -51,8 +51,8 @@ class LogMessage(BaseModel):
         return record
 
 
-class RedisLogHandler(logging.Handler):
-    """Logging handler that publishes log records to Redis pubsub.
+class StateLogHandler(logging.Handler):
+    """Logging handler that publishes log records to state backend pubsub.
 
     Used by worker processes to send logs to the main process.
     """
@@ -62,11 +62,10 @@ class RedisLogHandler(logging.Handler):
         self.channel = channel
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Publish log record to Redis channel."""
-        # TODO: Try using asyncio.run() with async Redis to consolidate clients.
+        """Publish log record to log channel."""
         try:
             message = LogMessage.from_log_record(record)
-            get_redis_sync().publish(self.channel, message.model_dump_json())
+            state.publish_log(message.model_dump_json())
         except Exception:
             self.handleError(record)
 
@@ -77,8 +76,8 @@ _worker_logging_configured = False
 def get_worker_logger(name: str) -> logging.Logger:
     """Configure worker logging and return a logger.
 
-    On first call, sets up a Redis handler that publishes log records
-    to the main process via Redis pubsub. Subsequent calls just return
+    On first call, sets up a state handler that publishes log records
+    to the main process via state backend pubsub. Subsequent calls just return
     a logger under the agentexec namespace.
 
     Args:
@@ -96,7 +95,7 @@ def get_worker_logger(name: str) -> logging.Logger:
     if not _worker_logging_configured:
         root = logging.getLogger(LOGGER_NAME)
         root.setLevel(logging.INFO)
-        root.addHandler(RedisLogHandler())
+        root.addHandler(StateLogHandler())
         root.propagate = False
         _worker_logging_configured = True
 

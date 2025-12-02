@@ -52,9 +52,7 @@ class StateBackend(Protocol):
         """
         ...
 
-    async def brpop(
-        self, key: str, timeout: int = 0
-    ) -> Optional[tuple[str, str]]:
+    async def brpop(self, key: str, timeout: int = 0) -> Optional[tuple[str, str]]:
         """Pop value from the right of the list with blocking.
 
         Args:
@@ -104,9 +102,7 @@ class StateBackend(Protocol):
         """
         ...
 
-    def set(
-        self, key: str, value: bytes, ttl_seconds: Optional[int] = None
-    ) -> bool:
+    def set(self, key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
         """Set value for key synchronously with optional TTL.
 
         Args:

@@ -11,7 +11,7 @@ from agentexec.worker.logging import (
     LOG_CHANNEL,
     LOGGER_NAME,
     LogMessage,
-    RedisLogHandler,
+    StateLogHandler,
     get_worker_logger,
 )
 
@@ -135,39 +135,39 @@ class TestLogMessage:
         assert log_message.thread is None
 
 
-class TestRedisLogHandler:
-    """Tests for RedisLogHandler."""
+class TestStateLogHandler:
+    """Tests for StateLogHandler."""
 
     @pytest.fixture
-    def fake_redis_sync(self, monkeypatch):
-        """Setup fake sync redis."""
+    def fake_redis_backend(self, monkeypatch):
+        """Setup fake redis backend for state."""
         fake_redis = fakeredis.FakeRedis(decode_responses=False)
 
-        def get_fake_redis_sync():
+        def get_fake_sync_client():
             return fake_redis
 
         monkeypatch.setattr(
-            "agentexec.worker.logging.get_redis_sync", get_fake_redis_sync
+            "agentexec.state.redis_backend._get_sync_client", get_fake_sync_client
         )
 
         return fake_redis
 
     def test_handler_initialization(self):
-        """Test RedisLogHandler initializes with default channel."""
-        handler = RedisLogHandler()
+        """Test StateLogHandler initializes with default channel."""
+        handler = StateLogHandler()
         assert handler.channel == LOG_CHANNEL
 
     def test_handler_custom_channel(self):
-        """Test RedisLogHandler with custom channel."""
-        handler = RedisLogHandler(channel="custom:logs")
+        """Test StateLogHandler with custom channel."""
+        handler = StateLogHandler(channel="custom:logs")
         assert handler.channel == "custom:logs"
 
-    def test_handler_emit(self, fake_redis_sync):
-        """Test RedisLogHandler.emit() publishes to Redis."""
-        handler = RedisLogHandler()
+    def test_handler_emit(self, fake_redis_backend):
+        """Test StateLogHandler.emit() publishes to state backend."""
+        handler = StateLogHandler()
 
         # Subscribe to the channel to capture the message
-        pubsub = fake_redis_sync.pubsub()
+        pubsub = fake_redis_backend.pubsub()
         pubsub.subscribe(LOG_CHANNEL)
         # Get the subscribe message
         pubsub.get_message()
@@ -207,10 +207,10 @@ class TestGetWorkerLogger:
         # Reset the global state
         monkeypatch.setattr("agentexec.worker.logging._worker_logging_configured", False)
 
-        # Setup fake redis
+        # Setup fake redis backend
         fake_redis = fakeredis.FakeRedis(decode_responses=False)
         monkeypatch.setattr(
-            "agentexec.worker.logging.get_redis_sync", lambda: fake_redis
+            "agentexec.state.redis_backend._get_sync_client", lambda: fake_redis
         )
 
         yield
@@ -239,13 +239,13 @@ class TestGetWorkerLogger:
         assert logger.name == f"{LOGGER_NAME}.submodule"
 
     def test_get_worker_logger_configures_handler(self):
-        """Test get_worker_logger adds RedisLogHandler on first call."""
+        """Test get_worker_logger adds StateLogHandler on first call."""
         logger = get_worker_logger("first.call")
 
         root = logging.getLogger(LOGGER_NAME)
         handler_types = [type(h).__name__ for h in root.handlers]
 
-        assert "RedisLogHandler" in handler_types
+        assert "StateLogHandler" in handler_types
 
     def test_get_worker_logger_idempotent(self):
         """Test get_worker_logger only configures once."""

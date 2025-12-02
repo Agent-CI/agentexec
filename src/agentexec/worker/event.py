@@ -1,23 +1,21 @@
 from __future__ import annotations
-from dataclasses import dataclass
-from agentexec.core.redis_client import get_redis, get_redis_sync
+from agentexec import state
 
 
-@dataclass
-class RedisEvent:
-    """Event primitive backed by Redis.
+class StateEvent:
+    """Event primitive backed by the state backend.
 
     Provides an interface similar to threading.Event/multiprocessing.Event,
-    but backed by Redis for cross-process and cross-machine coordination.
+    but backed by the state backend for cross-process and cross-machine coordination.
 
-    This class is fully picklable (just stores a key string) and works
-    across any process that can connect to the same Redis instance.
+    This class is fully picklable (just stores name and optional id) and works
+    across any process that can connect to the same state backend.
 
     set() and clear() are synchronous for use from pool management code.
-    is_set() and wait() are async for use from worker event loops.
+    is_set() is async for use from worker event loops.
 
     Example:
-        event = RedisEvent("myapp:shutdown")
+        event = StateEvent("shutdown", "pool1")
 
         # In pool (sync context)
         event.set()
@@ -27,17 +25,24 @@ class RedisEvent:
             print("Shutdown signal received")
     """
 
-    key: str
+    def __init__(self, name: str, id: str) -> None:
+        """Initialize the event.
+
+        Args:
+            name: Event name (e.g., "shutdown", "ready")
+            id: Identifier to scope the event (e.g., pool id)
+        """
+        self.name = name
+        self.id = id
 
     def set(self) -> None:
         """Set the event flag to True."""
-        get_redis_sync().set(self.key, "1")
+        state.set_event(self.name, self.id)
 
     def clear(self) -> None:
         """Reset the event flag to False."""
-        get_redis_sync().delete(self.key)
+        state.clear_event(self.name, self.id)
 
     async def is_set(self) -> bool:
         """Check if the event flag is True."""
-        redis = get_redis()
-        return await redis.get(self.key) is not None
+        return await state.acheck_event(self.name, self.id)

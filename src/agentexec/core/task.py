@@ -2,15 +2,13 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-import pickle
 from typing import Any, Callable, Protocol, TypedDict, Unpack, get_type_hints
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
 
-from agentexec import activity
+from agentexec import activity, state
 from agentexec.config import CONF
-from agentexec.core.redis_client import get_redis
 
 
 class TaskHandlerKwargs(TypedDict):
@@ -221,12 +219,11 @@ class Task(BaseModel):
             else:
                 result = self._definition.handler(**kwargs)
 
-            # Store result in Redis for pipeline coordination
-            redis = get_redis()
-            await redis.set(
-                f"result:{self.agent_id}",
-                pickle.dumps(result),
-                ex=CONF.result_ttl,
+            # Store result for pipeline coordination
+            await state.aset_result(
+                self.agent_id,
+                result,
+                ttl_seconds=CONF.result_ttl,
             )
 
             activity.update(

@@ -1,14 +1,12 @@
-"""Task queue operations using Redis."""
-
 import json
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
 
+from agentexec import state
 from agentexec.config import CONF
 from agentexec.core.logging import get_logger
-from agentexec.core.redis_client import get_redis
 from agentexec.core.task import Task
 
 logger = get_logger(__name__)
@@ -34,14 +32,14 @@ async def enqueue(
 ) -> Task:
     """Enqueue a task for background execution.
 
-    Pushes the task to Redis for worker processing. The task must be
+    Pushes the task to the queue for worker processing. The task must be
     registered with a WorkerPool via @pool.task() decorator.
 
     Args:
         task_name: Name of the task to execute.
         context: Task context as a Pydantic BaseModel.
         priority: Task priority (Priority.HIGH or Priority.LOW).
-        queue_name: Redis queue name. Defaults to CONF.queue_name.
+        queue_name: Queue name. Defaults to CONF.queue_name.
 
     Returns:
         Task instance with typed context and agent_id for tracking.
@@ -53,17 +51,16 @@ async def enqueue(
 
         task = await ax.enqueue("research_company", ResearchContext(company="Acme"))
     """
-    redis = get_redis()
-    redis_push = {
-        Priority.HIGH: redis.rpush,
-        Priority.LOW: redis.lpush,
+    push_func = {
+        Priority.HIGH: state.backend.rpush,
+        Priority.LOW: state.backend.lpush,
     }[priority]
 
     task = Task.create(
         task_name=task_name,
         context=context,
     )
-    await redis_push(  # type: ignore[misc]
+    push_func(
         queue_name or CONF.queue_name,
         task.model_dump_json(),
     )
@@ -81,21 +78,20 @@ async def dequeue(
     Blocks for up to timeout seconds waiting for a task.
 
     Args:
-        queue_name: Redis queue name. Defaults to CONF.queue_name.
+        queue_name: Queue name. Defaults to CONF.queue_name.
         timeout: Maximum seconds to wait for a task.
 
     Returns:
         Parsed task data if available, None otherwise.
     """
-    redis = get_redis()
-    result = await redis.brpop(  # type: ignore[misc]
-        [queue_name or CONF.queue_name],
+    result = await state.backend.brpop(
+        queue_name or CONF.queue_name,
         timeout=timeout,
     )
 
     if result is None:
         return None
 
-    _, task_bytes = result
-    data: dict[str, Any] = json.loads(task_bytes.decode("utf-8"))
+    _, task_data = result
+    data: dict[str, Any] = json.loads(task_data)
     return data

@@ -3,18 +3,17 @@
 from __future__ import annotations
 
 import asyncio
-import pickle
 import time
 from typing import TYPE_CHECKING, Any
 
-from agentexec.core.redis_client import get_redis
+from agentexec import state
 
 if TYPE_CHECKING:
     from agentexec.core.task import Task
 
 
 async def get_result(task: Task, timeout: float = 300) -> Any:
-    """Poll Redis for a task result.
+    """Poll for a task result.
 
     Waits for a task to complete and returns its result.
 
@@ -23,18 +22,17 @@ async def get_result(task: Task, timeout: float = 300) -> Any:
         timeout: Maximum seconds to wait for result
 
     Returns:
-        The task's return value (unpickled)
+        The task's return value
 
     Raises:
         TimeoutError: If result not available within timeout
     """
-    redis = get_redis()
     start = time.time()
 
     while time.time() - start < timeout:
-        data = await redis.get(f"result:{task.agent_id}")
-        if data is not None:
-            return pickle.loads(data)
+        result = await state.aget_result(task.agent_id)
+        if result is not None:
+            return result
         await asyncio.sleep(0.5)
 
     raise TimeoutError(f"Result for {task.agent_id} not available within {timeout}s")

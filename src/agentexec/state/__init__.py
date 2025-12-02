@@ -1,10 +1,12 @@
 # cspell:ignore acheck
 
 from typing import AsyncGenerator, Coroutine
+from uuid import UUID
+
 from agentexec.config import CONF
 
 KEY_RESULT = (CONF.key_prefix, "result")
-KEY_SHUTDOWN = (CONF.key_prefix, "shutdown")
+KEY_EVENT = (CONF.key_prefix, "event")
 CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
 
@@ -23,50 +25,50 @@ __all__ = [
     "aset_result",
     "delete_result",
     "adelete_result",
-    "set_shutdown_flag",
-    "check_shutdown_flag",
-    "acheck_shutdown_flag",
-    "clear_shutdown_flag",
     "publish_log",
     "subscribe_logs",
+    "set_event",
+    "clear_event",
+    "check_event",
+    "acheck_event",
 ]
 
 
-def get_result(agent_id: str) -> object | None:
+def get_result(agent_id: UUID | str) -> object | None:
     """Get result for an agent (sync).
 
     Args:
-        agent_id: Unique agent identifier
+        agent_id: Unique agent identifier (UUID or string)
 
     Returns:
         Deserialized result object or None if not found
     """
-    data = backend.get(backend.format_key(*KEY_RESULT, agent_id))
+    data = backend.get(backend.format_key(*KEY_RESULT, str(agent_id)))
     return backend.deserialize(data) if data else None
 
 
-def aget_result(agent_id: str) -> Coroutine[None, None, object | None]:
+def aget_result(agent_id: UUID | str) -> Coroutine[None, None, object | None]:
     """Get result for an agent (async).
 
     Args:
-        agent_id: Unique agent identifier
+        agent_id: Unique agent identifier (UUID or string)
 
     Returns:
         Coroutine that resolves to deserialized result object or None if not found
     """
 
     async def _get() -> object | None:
-        data = await backend.aget(backend.format_key(*KEY_RESULT, agent_id))
+        data = await backend.aget(backend.format_key(*KEY_RESULT, str(agent_id)))
         return backend.deserialize(data) if data else None
 
     return _get()
 
 
-def set_result(agent_id: str, data: object, ttl_seconds: int | None = None) -> bool:
+def set_result(agent_id: UUID | str, data: object, ttl_seconds: int | None = None) -> bool:
     """Set result for an agent (sync).
 
     Args:
-        agent_id: Unique agent identifier
+        agent_id: Unique agent identifier (UUID or string)
         data: Result data to store
         ttl_seconds: Optional time-to-live in seconds
 
@@ -74,21 +76,21 @@ def set_result(agent_id: str, data: object, ttl_seconds: int | None = None) -> b
         True if successful
     """
     return backend.set(
-        backend.format_key(*KEY_RESULT, agent_id),
+        backend.format_key(*KEY_RESULT, str(agent_id)),
         backend.serialize(data),
         ttl_seconds=ttl_seconds,
     )
 
 
 def aset_result(
-    agent_id: str,
+    agent_id: UUID | str,
     data: object,
     ttl_seconds: int | None = None,
 ) -> Coroutine[None, None, bool]:
     """Set result for an agent (async).
 
     Args:
-        agent_id: Unique agent identifier
+        agent_id: Unique agent identifier (UUID or string)
         data: Result data to store
         ttl_seconds: Optional time-to-live in seconds
 
@@ -96,86 +98,34 @@ def aset_result(
         Coroutine that resolves to True if successful
     """
     return backend.aset(
-        backend.format_key(*KEY_RESULT, agent_id),
+        backend.format_key(*KEY_RESULT, str(agent_id)),
         backend.serialize(data),
         ttl_seconds=ttl_seconds,
     )
 
 
-def delete_result(agent_id: str) -> int:
+def delete_result(agent_id: UUID | str) -> int:
     """Delete result for an agent (sync).
 
     Args:
-        agent_id: Unique agent identifier
+        agent_id: Unique agent identifier (UUID or string)
 
     Returns:
         Number of keys deleted (0 or 1)
     """
-    return backend.delete(backend.format_key(*KEY_RESULT, agent_id))
+    return backend.delete(backend.format_key(*KEY_RESULT, str(agent_id)))
 
 
-def adelete_result(agent_id: str) -> Coroutine[None, None, int]:
+def adelete_result(agent_id: UUID | str) -> Coroutine[None, None, int]:
     """Delete result for an agent (async).
 
     Args:
-        agent_id: Unique agent identifier
+        agent_id: Unique agent identifier (UUID or string)
 
     Returns:
         Coroutine that resolves to number of keys deleted (0 or 1)
     """
-    return backend.adelete(backend.format_key(*KEY_RESULT, agent_id))
-
-
-def set_shutdown_flag(pool_id: str) -> bool:
-    """Set shutdown flag for a worker pool (sync).
-
-    Args:
-        pool_id: Worker pool identifier
-
-    Returns:
-        True if successful
-    """
-    return backend.set(backend.format_key(*KEY_SHUTDOWN, pool_id), b"1")
-
-
-def check_shutdown_flag(pool_id: str) -> bool:
-    """Check if shutdown flag is set (sync).
-
-    Args:
-        pool_id: Worker pool identifier
-
-    Returns:
-        True if shutdown flag is set, False otherwise
-    """
-    return backend.get(backend.format_key(*KEY_SHUTDOWN, pool_id)) is not None
-
-
-def acheck_shutdown_flag(pool_id: str) -> Coroutine[None, None, bool]:
-    """Check if shutdown flag is set (async).
-
-    Args:
-        pool_id: Worker pool identifier
-
-    Returns:
-        Coroutine that resolves to True if shutdown flag is set, False otherwise
-    """
-
-    async def _check() -> bool:
-        return await backend.aget(backend.format_key(*KEY_SHUTDOWN, pool_id)) is not None
-
-    return _check()
-
-
-def clear_shutdown_flag(pool_id: str) -> int:
-    """Clear shutdown flag for a worker pool (sync).
-
-    Args:
-        pool_id: Worker pool identifier
-
-    Returns:
-        Number of keys deleted (0 or 1)
-    """
-    return backend.delete(backend.format_key(*KEY_SHUTDOWN, pool_id))
+    return backend.adelete(backend.format_key(*KEY_RESULT, str(agent_id)))
 
 
 def publish_log(message: str) -> None:
@@ -194,3 +144,59 @@ def subscribe_logs() -> AsyncGenerator[str, None]:
         Log messages from the channel
     """
     return backend.subscribe(backend.format_key(*CHANNEL_LOGS))
+
+
+def set_event(name: str, id: str) -> bool:
+    """Set an event flag.
+
+    Args:
+        name: Event name (e.g., "shutdown", "ready")
+        id: Event identifier (e.g., pool id)
+
+    Returns:
+        True if successful
+    """
+    return backend.set(backend.format_key(*KEY_EVENT, name, id), b"1")
+
+
+def clear_event(name: str, id: str) -> int:
+    """Clear an event flag.
+
+    Args:
+        name: Event name (e.g., "shutdown", "ready")
+        id: Event identifier (e.g., pool id)
+
+    Returns:
+        Number of keys deleted (0 or 1)
+    """
+    return backend.delete(backend.format_key(*KEY_EVENT, name, id))
+
+
+def check_event(name: str, id: str) -> bool:
+    """Check if an event flag is set (sync).
+
+    Args:
+        name: Event name (e.g., "shutdown", "ready")
+        id: Event identifier (e.g., pool id)
+
+    Returns:
+        True if event is set, False otherwise
+    """
+    return backend.get(backend.format_key(*KEY_EVENT, name, id)) is not None
+
+
+def acheck_event(name: str, id: str) -> Coroutine[None, None, bool]:
+    """Check if an event flag is set (async).
+
+    Args:
+        name: Event name (e.g., "shutdown", "ready")
+        id: Event identifier (e.g., pool id)
+
+    Returns:
+        Coroutine that resolves to True if event is set, False otherwise
+    """
+
+    async def _check() -> bool:
+        return await backend.aget(backend.format_key(*KEY_EVENT, name, id)) is not None
+
+    return _check()

@@ -148,7 +148,7 @@ def test_worker_pool_with_custom_queue_name() -> None:
 async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     """Test Worker._dequeue_task method."""
     from agentexec.worker.pool import Worker, WorkerContext
-    from agentexec.worker.event import RedisEvent
+    from agentexec.worker.event import StateEvent
 
     @pool.task("test_task")
     async def handler(agent_id: uuid.UUID, context: SampleContext) -> None:
@@ -156,7 +156,7 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
 
     context = WorkerContext(
         database_url="sqlite:///:memory:",
-        shutdown_event=RedisEvent("test:key"),
+        shutdown_event=StateEvent("test:key"),
         tasks=pool._context.tasks,
         queue_name="test_queue",
     )
@@ -188,11 +188,11 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
 async def test_worker_dequeue_task_returns_none_on_empty_queue(pool, monkeypatch) -> None:
     """Test Worker._dequeue_task returns None when queue is empty."""
     from agentexec.worker.pool import Worker, WorkerContext
-    from agentexec.worker.event import RedisEvent
+    from agentexec.worker.event import StateEvent
 
     context = WorkerContext(
         database_url="sqlite:///:memory:",
-        shutdown_event=RedisEvent("test:key"),
+        shutdown_event=StateEvent("test:key"),
         tasks=pool._context.tasks,
         queue_name="test_queue",
     )

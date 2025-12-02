@@ -113,62 +113,6 @@ class TestResultOperations:
             assert count == 1
 
 
-class TestShutdownOperations:
-    """Tests for shutdown flag operations."""
-
-    def test_set_shutdown_flag(self):
-        """Test setting shutdown flag."""
-        with patch.object(state.backend, "set", return_value=True) as mock_set:
-            success = state.set_shutdown_flag("pool1")
-
-            mock_set.assert_called_once_with("agentexec:shutdown:pool1", b"1")
-            assert success is True
-
-    def test_check_shutdown_flag_set(self):
-        """Test checking shutdown flag when set."""
-        with patch.object(state.backend, "get", return_value=b"1") as mock_get:
-            is_set = state.check_shutdown_flag("pool1")
-
-            mock_get.assert_called_once_with("agentexec:shutdown:pool1")
-            assert is_set is True
-
-    def test_check_shutdown_flag_not_set(self):
-        """Test checking shutdown flag when not set."""
-        with patch.object(state.backend, "get", return_value=None) as mock_get:
-            is_set = state.check_shutdown_flag("pool2")
-
-            mock_get.assert_called_once_with("agentexec:shutdown:pool2")
-            assert is_set is False
-
-    async def test_acheck_shutdown_flag_set(self):
-        """Test async checking shutdown flag when set."""
-        async def mock_aget(key):
-            return b"1"
-
-        with patch.object(state.backend, "aget", side_effect=mock_aget):
-            is_set = await state.acheck_shutdown_flag("pool1")
-
-            assert is_set is True
-
-    async def test_acheck_shutdown_flag_not_set(self):
-        """Test async checking shutdown flag when not set."""
-        async def mock_aget(key):
-            return None
-
-        with patch.object(state.backend, "aget", side_effect=mock_aget):
-            is_set = await state.acheck_shutdown_flag("pool2")
-
-            assert is_set is False
-
-    def test_clear_shutdown_flag(self):
-        """Test clearing shutdown flag."""
-        with patch.object(state.backend, "delete", return_value=1) as mock_delete:
-            count = state.clear_shutdown_flag("pool1")
-
-            mock_delete.assert_called_once_with("agentexec:shutdown:pool1")
-            assert count == 1
-
-
 class TestLogOperations:
     """Tests for log pub/sub operations."""
 
@@ -209,13 +153,6 @@ class TestKeyGeneration:
             state.get_result("test-id")
 
             mock_get.assert_called_once_with("agentexec:result:test-id")
-
-    def test_shutdown_key_format(self):
-        """Test that shutdown keys are formatted correctly."""
-        with patch.object(state.backend, "get", return_value=None) as mock_get:
-            state.check_shutdown_flag("test-pool")
-
-            mock_get.assert_called_once_with("agentexec:shutdown:test-pool")
 
     def test_logs_channel_format(self):
         """Test that log channel is formatted correctly."""
