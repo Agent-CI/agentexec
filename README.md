@@ -220,7 +220,7 @@ class MyPipeline(pipeline.Base):
     async def analyze(self, brand_result, market_result):
         """Combine results from previous step."""
         task = await ax.enqueue("analyze", AnalysisContext(...))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
 
 
 # Run the pipeline

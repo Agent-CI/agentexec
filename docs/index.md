@@ -36,37 +36,46 @@ from pydantic import BaseModel
 from agents import Agent
 import agentexec as ax
 
-# Define your task context
+# Define input and output schemas
 class ResearchContext(BaseModel):
     company: str
     focus_areas: list[str]
 
+class ResearchResult(BaseModel):
+    summary: str
+    insights: list[str]
+
 # Create a worker pool
-pool = ax.WorkerPool(engine=engine, database_url=DATABASE_URL)
+pool = ax.WorkerPool(engine=engine)
 
 # Register a task
 @pool.task("research_company")
-async def research_company(agent_id: UUID, context: ResearchContext) -> str:
-    runner = ax.OpenAIRunner(agent_id=agent_id, max_turns_recovery=True)
+async def research_company(agent_id: UUID, context: ResearchContext) -> ResearchResult:
+    runner = ax.OpenAIRunner(agent_id=agent_id)
 
     agent = Agent(
         name="Research Agent",
-        instructions=f"Research {context.company} focusing on {context.focus_areas}",
+        instructions=(
+            f"Research {context.company} focusing on {context.focus_areas}"
+            f"{runner.prompts.report_status}"
+        ),
         tools=[runner.tools.report_status],
-        model="gpt-4o",
+        model="gpt-5",
+        output_type=ResearchResult,
     )
 
     result = await runner.run(agent, input="Begin research", max_turns=15)
-    return result.final_output
+    return result.final_output_as(ResearchResult)
 
-# Queue a task (from your API handler)
+# Start workers
+pool.run()
+
+# Queue a task (from anywhere in your app)
 task = await ax.enqueue("research_company", ResearchContext(
     company="Anthropic",
     focus_areas=["AI safety", "product offerings"]
 ))
-
-# Start workers
-pool.run()
+result = await ax.get_result(task)
 ```
 
 ## Documentation

@@ -33,42 +33,54 @@ def fake_redis(monkeypatch):
 
 async def test_get_result_returns_pickled_data(fake_redis) -> None:
     """Test that get_result retrieves and unpickles data from Redis."""
-    agent_id = uuid.uuid4()
+    task = ax.Task(
+        task_name="test_task",
+        context=SampleContext(message="test"),
+        agent_id=uuid.uuid4(),
+    )
     expected_result = {"status": "success", "data": [1, 2, 3]}
 
     # Store pickled result in Redis
-    await fake_redis.set(f"result:{agent_id}", pickle.dumps(expected_result))
+    await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(expected_result))
 
     # Retrieve the result
-    result = await get_result(agent_id, timeout=1)
+    result = await get_result(task, timeout=1)
 
     assert result == expected_result
 
 
 async def test_get_result_polls_until_available(fake_redis) -> None:
     """Test that get_result polls Redis until result is available."""
-    agent_id = uuid.uuid4()
+    task = ax.Task(
+        task_name="test_task",
+        context=SampleContext(message="test"),
+        agent_id=uuid.uuid4(),
+    )
     expected_result = "delayed_result"
 
     async def set_result_after_delay():
         await asyncio.sleep(0.6)  # Wait a bit more than one poll interval
-        await fake_redis.set(f"result:{agent_id}", pickle.dumps(expected_result))
+        await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(expected_result))
 
     # Start the delayed setter
     asyncio.create_task(set_result_after_delay())
 
     # get_result should wait and eventually get the result
-    result = await get_result(agent_id, timeout=2)
+    result = await get_result(task, timeout=2)
 
     assert result == expected_result
 
 
 async def test_get_result_timeout(fake_redis) -> None:
     """Test that get_result raises TimeoutError if result not available."""
-    agent_id = uuid.uuid4()
+    task = ax.Task(
+        task_name="test_task",
+        context=SampleContext(message="test"),
+        agent_id=uuid.uuid4(),
+    )
 
-    with pytest.raises(TimeoutError, match=f"Result for {agent_id} not available"):
-        await get_result(agent_id, timeout=0.5)
+    with pytest.raises(TimeoutError, match=f"Result for {task.agent_id} not available"):
+        await get_result(task, timeout=0.5)
 
 
 async def test_gather_multiple_tasks(fake_redis) -> None:
@@ -138,7 +150,11 @@ async def test_gather_preserves_order(fake_redis) -> None:
 
 async def test_get_result_with_complex_object(fake_redis) -> None:
     """Test that get_result handles complex pickled objects."""
-    agent_id = uuid.uuid4()
+    task = ax.Task(
+        task_name="test_task",
+        context=SampleContext(message="test"),
+        agent_id=uuid.uuid4(),
+    )
 
     # Use a dict with complex structure instead of a custom class
     # (local classes can't be pickled)
@@ -147,9 +163,9 @@ async def test_get_result_with_complex_object(fake_redis) -> None:
         "nested": {"key": [1, 2, 3]},
         "items": [{"a": 1}, {"b": 2}],
     }
-    await fake_redis.set(f"result:{agent_id}", pickle.dumps(expected))
+    await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(expected))
 
-    result = await get_result(agent_id, timeout=1)
+    result = await get_result(task, timeout=1)
 
     assert result["value"] == 42
     assert result["nested"] == {"key": [1, 2, 3]}

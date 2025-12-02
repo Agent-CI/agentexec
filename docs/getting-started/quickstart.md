@@ -1,4 +1,4 @@
-# Quick Start
+# Quick Start with OpenAI Agents SDK
 
 Get up and running with agentexec in 5 minutes. This guide walks you through creating a simple AI agent task that runs in the background.
 
@@ -42,7 +42,6 @@ from uuid import UUID
 from pydantic import BaseModel
 from sqlalchemy import create_engine
 from agents import Agent
-
 import agentexec as ax
 
 # Load environment variables
@@ -50,7 +49,7 @@ DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agents.db")
 
 # Create database engine and tables
 engine = create_engine(DATABASE_URL)
-ax.Base.metadata.create_all(engine)  # Quick start; use Alembic for production
+ax.Base.metadata.create_all(engine)  # use Alembic for production
 
 
 # Define your task context - what data your task needs
@@ -58,14 +57,16 @@ class SummarizeContext(BaseModel):
     text: str
     max_length: int = 100
 
+class SummarizeResult(BaseModel):
+    summary: str
 
 # Create the worker pool
-pool = ax.WorkerPool(engine=engine, database_url=DATABASE_URL)
+pool = ax.WorkerPool(engine=engine)
 
 
 # Register a task
 @pool.task("summarize_text")
-async def summarize_text(agent_id: UUID, context: SummarizeContext) -> str:
+async def summarize_text(agent_id: UUID, context: SummarizeContext) -> SummarizeResult:
     """Summarize text using an AI agent."""
 
     # Create a runner for this task
@@ -74,10 +75,15 @@ async def summarize_text(agent_id: UUID, context: SummarizeContext) -> str:
     # Create the agent
     agent = Agent(
         name="Summarizer",
-        instructions=f"""You are a text summarizer.
-        Summarize the given text in {context.max_length} words or less.
-        Be concise and capture the key points.""",
-        model="gpt-4o-mini",
+        instructions=(
+            "You are a text summarizer.\n"
+            f"Summarize the given text in {context.max_length} words or less.\n"
+            f"Be concise and capture the key points.\n"
+            f"{runner.prompts.report_status}"
+        ),
+        tools=[runner.tools.report_status],
+        model="gpt-5",
+        output_type=SummarizeResult,
     )
 
     # Run the agent
@@ -87,7 +93,7 @@ async def summarize_text(agent_id: UUID, context: SummarizeContext) -> str:
         max_turns=5,
     )
 
-    return result.final_output
+    return result.final_output_as(SummarizeResult)
 
 
 # Entry point for running workers
@@ -105,9 +111,7 @@ Create a file called `queue_task.py` to queue tasks:
 import asyncio
 import os
 
-from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
-
 import agentexec as ax
 
 # Import your context from worker
@@ -240,42 +244,6 @@ uv run python check_status.py
 # Check specific activity
 uv run python check_status.py 550e8400-e29b-41d4-a716-446655440000
 ```
-
-## Step 6: Add Progress Reporting
-
-Enhance your agent to report progress. Update `worker.py`:
-
-```python
-@pool.task("summarize_text")
-async def summarize_text(agent_id: UUID, context: SummarizeContext) -> str:
-    """Summarize text using an AI agent with progress reporting."""
-
-    runner = ax.OpenAIRunner(
-        agent_id=agent_id,
-        max_turns_recovery=True,  # Continue if max turns exceeded
-    )
-
-    agent = Agent(
-        name="Summarizer",
-        instructions=f"""You are a text summarizer.
-        Summarize the given text in {context.max_length} words or less.
-        Be concise and capture the key points.
-
-        {runner.prompts.report_status}""",  # Add reporting instructions
-        tools=[runner.tools.report_status],  # Add reporting tool
-        model="gpt-4o-mini",
-    )
-
-    result = await runner.run(
-        agent,
-        input=f"Please summarize this text:\n\n{context.text}",
-        max_turns=10,
-    )
-
-    return result.final_output
-```
-
-Now your agent can report its progress, which you can see in the activity logs!
 
 ## What's Next?
 

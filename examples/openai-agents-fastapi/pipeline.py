@@ -193,7 +193,7 @@ class CompanyResearchPipeline(pipeline.Base):
                 product_summary=report.products.product_summary,
             ),
         )
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
 
 
 async def run_company_research(company_name: str) -> FinalAnalysis:

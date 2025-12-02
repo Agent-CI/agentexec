@@ -17,8 +17,6 @@ my-agent-project/
 │       ├── contexts.py     # Pydantic context models
 │       ├── agents.py       # Agent definitions
 │       └── db.py           # Database setup
-├── tests/
-│   └── test_tasks.py
 └── README.md
 ```
 
@@ -204,13 +202,11 @@ async def start_research(company: str) -> str:
 ### With Priority
 
 ```python
-from agentexec import Priority
-
 # High priority - processed first
 urgent_task = await ax.enqueue(
     "process_order",
     OrderContext(order_id="123"),
-    priority=Priority.HIGH
+    priority=ax.Priority.HIGH
 )
 
 # Low priority (default) - processed after high priority
@@ -277,14 +273,6 @@ async def wait_for_completion(agent_id: str, timeout: int = 300) -> dict:
         await asyncio.sleep(2)
 ```
 
-### Getting Results
-
-```python
-# Get result for pipeline coordination
-result = await ax.get_result(agent_id, timeout=300)
-print(result)  # {"company": "Acme", "findings": "..."}
-```
-
 ## Running Workers
 
 ### Standalone Worker Process
@@ -298,19 +286,6 @@ if __name__ == "__main__":
 Run with:
 ```bash
 uv run python -m myapp.worker
-```
-
-### With Custom Configuration
-
-```python
-import os
-
-if __name__ == "__main__":
-    # Override configuration
-    os.environ["AGENTEXEC_NUM_WORKERS"] = "8"
-
-    print(f"Starting {ax.CONF.num_workers} workers")
-    pool.run()
 ```
 
 ### Multiple Worker Types
@@ -454,179 +429,6 @@ ax.Base.metadata.create_all(engine)
 
 > **Note**: `create_all()` only creates tables that don't exist. It won't update existing tables when agentexec is upgraded. For production, use Alembic migrations.
 
-## Error Handling Patterns
-
-### Retry with Backoff
-
-```python
-from tenacity import retry, stop_after_attempt, wait_exponential
-
-@pool.task("retry_task")
-async def retry_task(agent_id: UUID, context: MyContext):
-    @retry(
-        stop=stop_after_attempt(3),
-        wait=wait_exponential(multiplier=1, min=2, max=30)
-    )
-    async def do_work():
-        ax.activity.update(agent_id, "Attempting operation...")
-        return await unreliable_operation()
-
-    try:
-        return await do_work()
-    except Exception as e:
-        ax.activity.error(agent_id, f"Failed after 3 retries: {e}")
-        raise
-```
-
-### Partial Failure Handling
-
-```python
-@pool.task("batch_process")
-async def batch_process(agent_id: UUID, context: BatchContext):
-    results = []
-    errors = []
-
-    for i, item in enumerate(context.items):
-        try:
-            result = await process_item(item)
-            results.append(result)
-        except Exception as e:
-            errors.append({"item": item, "error": str(e)})
-
-        progress = int((i + 1) / len(context.items) * 100)
-        ax.activity.update(agent_id, f"Processed {i+1}/{len(context.items)}", progress)
-
-    return {
-        "successful": len(results),
-        "failed": len(errors),
-        "errors": errors
-    }
-```
-
-### Graceful Degradation
-
-```python
-@pool.task("enhanced_research")
-async def enhanced_research(agent_id: UUID, context: ResearchContext):
-    # Try primary source
-    try:
-        ax.activity.update(agent_id, "Querying primary data source...")
-        data = await primary_api.fetch(context.company)
-    except APIError:
-        ax.activity.update(agent_id, "Primary source unavailable, using fallback...")
-        data = await fallback_api.fetch(context.company)
-
-    return await analyze(data)
-```
-
-## Testing Tasks
-
-### Unit Testing
-
-```python
-# test_tasks.py
-import pytest
-from uuid import uuid4
-from unittest.mock import patch, AsyncMock
-
-from myapp.worker import research_company
-from myapp.contexts import ResearchContext
-
-@pytest.mark.asyncio
-async def test_research_company():
-    agent_id = uuid4()
-    context = ResearchContext(company="Test Corp")
-
-    with patch("myapp.worker.ax.OpenAIRunner") as mock_runner:
-        mock_runner.return_value.run = AsyncMock(
-            return_value=AsyncMock(final_output="Test findings")
-        )
-
-        result = await research_company(agent_id, context)
-
-        assert result["company"] == "Test Corp"
-        assert "findings" in result
-```
-
-### Integration Testing
-
-```python
-import pytest
-import asyncio
-from sqlalchemy import create_engine
-from sqlalchemy.orm import Session
-import agentexec as ax
-
-@pytest.fixture
-def test_engine():
-    engine = create_engine("sqlite:///:memory:")
-    ax.Base.metadata.create_all(engine)
-    return engine
-
-@pytest.mark.asyncio
-async def test_task_lifecycle(test_engine):
-    # Queue task
-    task = await ax.enqueue("test_task", TestContext(data="test"))
-
-    # Check initial status
-    with Session(test_engine) as session:
-        activity = ax.activity.detail(session, task.agent_id)
-        assert activity.status == "QUEUED"
-```
-
-## Common Patterns
-
-### Request-Response with Webhooks
-
-```python
-@pool.task("process_with_callback")
-async def process_with_callback(agent_id: UUID, context: CallbackContext):
-    result = await do_processing()
-
-    # Send result to callback URL
-    if context.callback_url:
-        await httpx.post(context.callback_url, json={
-            "agent_id": str(agent_id),
-            "result": result
-        })
-
-    return result
-```
-
-### Scheduled Tasks
-
-```python
-# Use with a scheduler like APScheduler
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-
-scheduler = AsyncIOScheduler()
-
-@scheduler.scheduled_job('cron', hour=0)  # Run at midnight
-async def daily_report():
-    await ax.enqueue("generate_daily_report", ReportContext())
-
-scheduler.start()
-```
-
-### Task Chaining
-
-```python
-@pool.task("step_1")
-async def step_1(agent_id: UUID, context: Step1Context) -> str:
-    result = await do_step_1()
-
-    # Queue next step
-    await ax.enqueue("step_2", Step2Context(
-        previous_result=result,
-        original_request_id=context.request_id
-    ))
-
-    return result
-
-@pool.task("step_2")
-async def step_2(agent_id: UUID, context: Step2Context) -> str:
-    return await do_step_2(context.previous_result)
-```
 
 ## Next Steps
 

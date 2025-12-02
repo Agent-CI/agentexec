@@ -143,8 +143,8 @@ Wait for a single task result.
 
 ```python
 async def get_result(
-    agent_id: str | UUID,
-    timeout: int = 300
+    task: Task,
+    timeout: float = 300
 ) -> Any
 ```
 
@@ -152,8 +152,8 @@ async def get_result(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `agent_id` | `str \| UUID` | required | Task identifier |
-| `timeout` | `int` | `300` | Maximum seconds to wait |
+| `task` | `Task` | required | The Task instance to wait for |
+| `timeout` | `float` | `300` | Maximum seconds to wait |
 
 ### Returns
 
@@ -162,7 +162,6 @@ async def get_result(
 ### Raises
 
 - `TimeoutError` - If task doesn't complete within timeout
-- `KeyError` - If result not found (task may not have returned a value)
 
 ### Example
 
@@ -170,7 +169,7 @@ async def get_result(
 task = await ax.enqueue("my_task", MyContext(...))
 
 # Wait up to 5 minutes for result
-result = await ax.get_result(task.agent_id, timeout=300)
+result = await ax.get_result(task, timeout=300)
 ```
 
 ---

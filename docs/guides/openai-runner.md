@@ -406,23 +406,6 @@ async def handoff_task(agent_id: UUID, context: MyContext):
     return result.final_output
 ```
 
-## Streaming (Experimental)
-
-The runner supports streaming output:
-
-```python
-async def stream_task(agent_id: UUID, context: MyContext):
-    runner = ax.OpenAIRunner(agent_id=agent_id)
-
-    async for event in runner.run_streamed(agent, input="...", max_turns=10):
-        if event.type == "text":
-            print(event.text, end="", flush=True)
-        elif event.type == "tool_call":
-            print(f"\nCalling tool: {event.tool_name}")
-```
-
-> **Note**: Streaming support is experimental and may change in future versions.
-
 ## Best Practices
 
 ### 1. Always Use agent_id
@@ -477,50 +460,6 @@ runner = ax.OpenAIRunner(
     recovery_turns=5
 )
 ```
-
-### 5. Handle Results Appropriately
-
-```python
-result = await runner.run(agent, input="...", max_turns=10)
-
-# Access the final output
-output = result.final_output
-
-# Check if complete
-if result.is_complete:
-    return {"status": "complete", "output": output}
-else:
-    return {"status": "incomplete", "partial": output}
-```
-
-## Troubleshooting
-
-### Agent Not Reporting Progress
-
-1. Verify the tool is included:
-   ```python
-   tools=[runner.tools.report_status]
-   ```
-
-2. Verify instructions include the prompt:
-   ```python
-   instructions=f"...{runner.prompts.report_status}"
-   ```
-
-3. Make instructions explicit about when to report
-
-### Max Turns Exceeded Frequently
-
-1. Increase `max_turns`
-2. Simplify agent instructions
-3. Enable `max_turns_recovery`
-4. Break task into smaller steps
-
-### Activity Not Updating
-
-1. Verify `agent_id` matches the task
-2. Check database connection
-3. Ensure `ax.Base.metadata.create_all()` was called
 
 ## Next Steps
 

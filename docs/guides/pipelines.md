@@ -24,49 +24,84 @@ Step 0          Step 1          Step 2
 ### Basic Pipeline
 
 ```python
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import agentexec as ax
 from myapp.worker import pool
 
-# Define input context
+
+# Define typed models for inputs and outputs
 class CompanyResearchInput(BaseModel):
-    company: str
+    """Initial input to the pipeline."""
+
+    company: str = Field(..., description="Company name to research")
     depth: str = "comprehensive"
+
+
+class ResearchResult(BaseModel):
+    """Output from research step."""
+
+    company: str
+    findings: list[str]
+    sources: list[str] = Field(default_factory=list)
+
+
+class AnalysisResult(BaseModel):
+    """Output from analysis step."""
+
+    company: str
+    insights: list[str]
+    sentiment: str
+
+
+class FinalReport(BaseModel):
+    """Final pipeline output."""
+
+    company: str
+    executive_summary: str
+    key_findings: list[str]
+    recommendation: str
+
 
 # Create pipeline
 pipeline = ax.Pipeline(pool=pool)
+
 
 class CompanyResearchPipeline(pipeline.Base):
     """Multi-step company research pipeline."""
 
     @pipeline.step(0)
-    async def research(self, ctx: CompanyResearchInput):
+    async def research(self, ctx: CompanyResearchInput) -> ResearchResult:
         """Step 0: Initial research."""
         task = await ax.enqueue("research_company", ResearchContext(
             company=ctx.company,
-            focus_areas=["overview", "products"]
+            focus_areas=["overview", "products"],
         ))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
 
     @pipeline.step(1)
-    async def analyze(self, research_result: dict):
+    async def analyze(self, research: ResearchResult) -> AnalysisResult:
         """Step 1: Analyze research findings."""
         task = await ax.enqueue("analyze_data", AnalysisContext(
-            data=research_result["findings"]
+            company=research.company,
+            data=research.findings,
         ))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
 
     @pipeline.step(2)
-    async def generate_report(self, analysis_result: dict):
+    async def generate_report(self, analysis: AnalysisResult) -> FinalReport:
         """Step 2: Generate final report."""
         task = await ax.enqueue("generate_report", ReportContext(
-            analysis=analysis_result
+            company=analysis.company,
+            insights=analysis.insights,
         ))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
+
 
 # Run the pipeline
-result = await pipeline.run(context=CompanyResearchInput(company="Acme Corp"))
-print(result)  # Final report
+result: FinalReport = await pipeline.run(
+    context=CompanyResearchInput(company="Acme Corp"),
+)
+print(result.executive_summary)
 ```
 
 ### Parallel Tasks in a Step
@@ -74,40 +109,92 @@ print(result)  # Final report
 Use `gather()` to run multiple tasks in parallel within a step:
 
 ```python
+from pydantic import BaseModel, Field
+
+
+class CompanyInput(BaseModel):
+    """Pipeline input."""
+
+    company_name: str
+
+
+class BrandResearchResult(BaseModel):
+    """Result from brand research."""
+
+    company_name: str
+    website_url: str | None = None
+    founding_year: int | None = None
+    brand_summary: str
+
+
+class MarketResearchResult(BaseModel):
+    """Result from market research."""
+
+    company_name: str
+    market_size: str | None = None
+    competitors: list[str] = Field(default_factory=list)
+    market_summary: str
+
+
+class ProductResearchResult(BaseModel):
+    """Result from product research."""
+
+    company_name: str
+    products: list[str] = Field(default_factory=list)
+    product_summary: str
+
+
+class CompanyReport(BaseModel):
+    """Aggregated company research."""
+
+    company_name: str
+    brand: BrandResearchResult
+    market: MarketResearchResult
+    products: ProductResearchResult
+
+
 class ParallelResearchPipeline(pipeline.Base):
+    """Pipeline with parallel research tasks."""
 
     @pipeline.step(0)
-    async def parallel_research(self, ctx: CompanyResearchInput):
+    async def parallel_research(
+        self,
+        ctx: CompanyInput,
+    ) -> tuple[BrandResearchResult, MarketResearchResult, ProductResearchResult]:
         """Run multiple research tasks in parallel."""
-        # Queue multiple tasks
-        overview_task = await ax.enqueue("research_overview", OverviewContext(
-            company=ctx.company
-        ))
-        financials_task = await ax.enqueue("research_financials", FinancialsContext(
-            company=ctx.company
-        ))
-        competitors_task = await ax.enqueue("research_competitors", CompetitorsContext(
-            company=ctx.company
-        ))
-
-        # Wait for all to complete
-        overview, financials, competitors = await ax.gather(
-            overview_task,
-            financials_task,
-            competitors_task
+        brand_task = await ax.enqueue(
+            "brand_research",
+            CompanyInput(company_name=ctx.company_name),
+        )
+        market_task = await ax.enqueue(
+            "market_research",
+            CompanyInput(company_name=ctx.company_name),
+        )
+        product_task = await ax.enqueue(
+            "product_research",
+            CompanyInput(company_name=ctx.company_name),
         )
 
-        return {"overview": overview, "financials": financials, "competitors": competitors}
+        # Wait for all to complete - returns tuple
+        return await ax.gather(brand_task, market_task, product_task)
 
     @pipeline.step(1)
-    async def synthesize(self, research_results: dict):
-        """Combine all research into a single report."""
-        task = await ax.enqueue("synthesize", SynthesizeContext(
-            overview=research_results["overview"],
-            financials=research_results["financials"],
-            competitors=research_results["competitors"]
-        ))
-        return await ax.get_result(task.agent_id)
+    async def aggregate_results(
+        self,
+        brand: BrandResearchResult,
+        market: MarketResearchResult,
+        products: ProductResearchResult,
+    ) -> CompanyReport:
+        """Aggregate research results into a report.
+
+        This runs locally (no task queue) since it's just data transformation.
+        """
+        return CompanyReport(
+            company_name=brand.company_name,
+            brand=brand,
+            market=market,
+            products=products,
+        )
 ```
 
 ### Unpacking Results
@@ -115,26 +202,54 @@ class ParallelResearchPipeline(pipeline.Base):
 When a step returns a tuple, the next step receives unpacked arguments:
 
 ```python
+class UserData(BaseModel):
+    """User data result."""
+
+    users: list[str]
+    total: int
+
+
+class OrderData(BaseModel):
+    """Order data result."""
+
+    orders: list[str]
+    total: int
+
+
+class ProcessedData(BaseModel):
+    """Processed result."""
+
+    user_count: int
+    order_count: int
+    summary: str
+
+
 class UnpackingPipeline(pipeline.Base):
 
     @pipeline.step(0)
-    async def fetch_data(self, ctx: InputContext):
-        """Return multiple values."""
+    async def fetch_data(
+        self,
+        ctx: InputContext,
+    ) -> tuple[UserData, OrderData]:
+        """Return multiple values as a tuple."""
         task1 = await ax.enqueue("fetch_users", ctx)
         task2 = await ax.enqueue("fetch_orders", ctx)
 
-        users, orders = await ax.gather(task1, task2)
-        return users, orders  # Tuple return
+        # Returns tuple of (UserData, OrderData)
+        return await ax.gather(task1, task2)
 
     @pipeline.step(1)
-    async def process(self, users: list, orders: list):
+    async def process(
+        self,
+        users: UserData,
+        orders: OrderData,
+    ) -> ProcessedData:
         """Receive unpacked values as separate arguments."""
-        # users and orders are unpacked from the tuple
         task = await ax.enqueue("process_data", ProcessContext(
-            user_count=len(users),
-            order_count=len(orders)
+            user_count=users.total,
+            order_count=orders.total,
         ))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
 ```
 
 ## Step Configuration
@@ -147,15 +262,15 @@ Steps are sorted and executed using Python's built-in `sorted()` function on the
 
 ```python
 @pipeline.step(0)  # Runs first
-async def first_step(self, ctx):
+async def first_step(self, ctx: InputContext) -> FirstResult:
     ...
 
 @pipeline.step(1)  # Runs second
-async def second_step(self, result):
+async def second_step(self, result: FirstResult) -> SecondResult:
     ...
 
 @pipeline.step(2)  # Runs third
-async def third_step(self, result):
+async def third_step(self, result: SecondResult) -> FinalResult:
     ...
 ```
 
@@ -163,15 +278,15 @@ async def third_step(self, result):
 
 ```python
 @pipeline.step("a_fetch")      # Runs first (alphabetically first)
-async def fetch(self, ctx):
+async def fetch(self, ctx: InputContext) -> RawData:
     ...
 
 @pipeline.step("b_process")    # Runs second
-async def process(self, data):
+async def process(self, data: RawData) -> ProcessedData:
     ...
 
 @pipeline.step("c_finalize")   # Runs third
-async def finalize(self, result):
+async def finalize(self, result: ProcessedData) -> FinalResult:
     ...
 ```
 
@@ -193,21 +308,45 @@ sorted(["process", "fetch", "save"])  # → ["fetch", "process", "save"]
 
 ### Type Annotations
 
-Use type annotations for better IDE support and documentation:
+Use Pydantic models for inputs and outputs to get:
+
+- **Type safety**: Validation at runtime
+- **IDE support**: Autocomplete and type hints
+- **Documentation**: Self-documenting pipelines
 
 ```python
+class ResearchInput(BaseModel):
+    topic: str
+    max_sources: int = 10
+
+
+class ResearchOutput(BaseModel):
+    findings: list[str]
+    sources: list[str]
+
+
+class AnalysisOutput(BaseModel):
+    insights: list[str]
+    confidence: float
+
+
+class FinalReport(BaseModel):
+    summary: str
+    recommendations: list[str]
+
+
 @pipeline.step(0)
-async def research(self, ctx: CompanyResearchInput) -> dict:
+async def research(self, ctx: ResearchInput) -> ResearchOutput:
     """Input is the pipeline context."""
     ...
 
 @pipeline.step(1)
-async def analyze(self, research_data: dict) -> AnalysisResult:
+async def analyze(self, research: ResearchOutput) -> AnalysisOutput:
     """Input is the output of the previous step."""
     ...
 
 @pipeline.step(2)
-async def report(self, analysis: AnalysisResult) -> str:
+async def report(self, analysis: AnalysisOutput) -> FinalReport:
     """Input is the output of the previous step."""
     ...
 ```
@@ -236,315 +375,120 @@ Wait for a single task result:
 task = await ax.enqueue("my_task", MyContext(...))
 
 # Wait up to 300 seconds (default)
-result = await ax.get_result(task.agent_id)
+result = await ax.get_result(task)
 
 # Custom timeout
-result = await ax.get_result(task.agent_id, timeout=60)
-```
-
-## Error Handling
-
-### Step-Level Errors
-
-If a step fails, the pipeline stops:
-
-```python
-class ErrorHandlingPipeline(pipeline.Base):
-
-    @pipeline.step(0)
-    async def risky_step(self, ctx: InputContext):
-        try:
-            task = await ax.enqueue("risky_task", ctx)
-            return await ax.get_result(task.agent_id)
-        except Exception as e:
-            # Log error, return fallback, or re-raise
-            return {"error": str(e), "fallback": True}
-
-    @pipeline.step(1)
-    async def handle_result(self, result: dict):
-        if result.get("fallback"):
-            # Handle fallback case
-            return await self.fallback_processing(result)
-        return await self.normal_processing(result)
-```
-
-### Task-Level Errors
-
-Check task status before using results:
-
-```python
-@pipeline.step(0)
-async def check_status(self, ctx: InputContext):
-    task = await ax.enqueue("my_task", ctx)
-
-    # Wait for result
-    try:
-        result = await ax.get_result(task.agent_id, timeout=120)
-        return {"success": True, "data": result}
-    except TimeoutError:
-        return {"success": False, "error": "Task timed out"}
-```
-
-### Partial Failure Handling
-
-Handle partial failures in parallel tasks:
-
-```python
-@pipeline.step(0)
-async def parallel_with_fallback(self, ctx: InputContext):
-    tasks = [
-        await ax.enqueue("task_a", ctx),
-        await ax.enqueue("task_b", ctx),
-        await ax.enqueue("task_c", ctx),
-    ]
-
-    results = []
-    for task in tasks:
-        try:
-            result = await ax.get_result(task.agent_id, timeout=60)
-            results.append({"success": True, "data": result})
-        except Exception as e:
-            results.append({"success": False, "error": str(e)})
-
-    return results
-```
-
-## Real-World Examples
-
-### Research and Report Pipeline
-
-```python
-from pydantic import BaseModel
-from typing import Optional
-import agentexec as ax
-
-class ResearchInput(BaseModel):
-    topic: str
-    depth: str = "standard"
-    include_sources: bool = True
-
-pipeline = ax.Pipeline(pool=pool)
-
-class ResearchReportPipeline(pipeline.Base):
-    """Complete research and report generation pipeline."""
-
-    @pipeline.step(0)
-    async def gather_sources(self, ctx: ResearchInput):
-        """Step 0: Find relevant sources."""
-        task = await ax.enqueue("find_sources", FindSourcesContext(
-            topic=ctx.topic,
-            max_sources=10 if ctx.depth == "standard" else 25
-        ))
-        return await ax.get_result(task.agent_id)
-
-    @pipeline.step(1)
-    async def analyze_sources(self, sources: list):
-        """Step 1: Analyze each source in parallel."""
-        tasks = []
-        for source in sources:
-            task = await ax.enqueue("analyze_source", AnalyzeSourceContext(
-                url=source["url"],
-                content=source["content"]
-            ))
-            tasks.append(task)
-
-        return await ax.gather(*tasks)
-
-    @pipeline.step(2)
-    async def synthesize(self, analyses: tuple):
-        """Step 2: Synthesize all analyses."""
-        task = await ax.enqueue("synthesize", SynthesizeContext(
-            analyses=list(analyses)
-        ))
-        return await ax.get_result(task.agent_id)
-
-    @pipeline.step(3)
-    async def generate_report(self, synthesis: dict):
-        """Step 3: Generate final report."""
-        task = await ax.enqueue("generate_report", GenerateReportContext(
-            synthesis=synthesis,
-            format="markdown"
-        ))
-        return await ax.get_result(task.agent_id)
-
-# Usage
-report = await pipeline.run(context=ResearchInput(
-    topic="AI Safety Research",
-    depth="comprehensive"
-))
-```
-
-### Data Processing Pipeline
-
-```python
-class DataInput(BaseModel):
-    source_id: str
-    transformations: list[str]
-    output_format: str = "json"
-
-class DataProcessingPipeline(pipeline.Base):
-    """ETL-style data processing pipeline."""
-
-    @pipeline.step("extract")
-    async def extract(self, ctx: DataInput):
-        """Extract data from source."""
-        task = await ax.enqueue("extract_data", ExtractContext(
-            source_id=ctx.source_id
-        ))
-        raw_data = await ax.get_result(task.agent_id)
-        return raw_data, ctx.transformations
-
-    @pipeline.step("transform")
-    async def transform(self, raw_data: dict, transformations: list):
-        """Apply transformations sequentially."""
-        data = raw_data
-
-        for transform in transformations:
-            task = await ax.enqueue("apply_transform", TransformContext(
-                data=data,
-                transform_type=transform
-            ))
-            data = await ax.get_result(task.agent_id)
-
-        return data
-
-    @pipeline.step("load")
-    async def load(self, transformed_data: dict):
-        """Load data to destination."""
-        task = await ax.enqueue("load_data", LoadContext(
-            data=transformed_data
-        ))
-        return await ax.get_result(task.agent_id)
-```
-
-### Agent Collaboration Pipeline
-
-```python
-class CollaborationInput(BaseModel):
-    project_brief: str
-    team_size: int = 3
-
-class AgentCollaborationPipeline(pipeline.Base):
-    """Multiple agents collaborate on a project."""
-
-    @pipeline.step(0)
-    async def brainstorm(self, ctx: CollaborationInput):
-        """Multiple agents brainstorm ideas."""
-        tasks = []
-        for i in range(ctx.team_size):
-            task = await ax.enqueue("brainstorm_agent", BrainstormContext(
-                brief=ctx.project_brief,
-                agent_persona=f"Creative Agent {i+1}"
-            ))
-            tasks.append(task)
-
-        ideas = await ax.gather(*tasks)
-        return list(ideas)
-
-    @pipeline.step(1)
-    async def evaluate(self, ideas: list):
-        """Critic agent evaluates all ideas."""
-        task = await ax.enqueue("critic_agent", CriticContext(
-            ideas=ideas
-        ))
-        return await ax.get_result(task.agent_id)
-
-    @pipeline.step(2)
-    async def refine(self, evaluation: dict):
-        """Refine the best ideas."""
-        best_ideas = evaluation["top_ideas"]
-
-        tasks = []
-        for idea in best_ideas:
-            task = await ax.enqueue("refine_agent", RefineContext(
-                idea=idea,
-                feedback=evaluation["feedback"].get(idea["id"])
-            ))
-            tasks.append(task)
-
-        return await ax.gather(*tasks)
-
-    @pipeline.step(3)
-    async def finalize(self, refined_ideas: tuple):
-        """Create final proposal."""
-        task = await ax.enqueue("proposal_agent", ProposalContext(
-            refined_ideas=list(refined_ideas)
-        ))
-        return await ax.get_result(task.agent_id)
+result = await ax.get_result(task, timeout=60)
 ```
 
 ## Best Practices
 
-### 1. Keep Steps Focused
+### 1. Define Typed Models
+
+Always use Pydantic models for inputs and outputs:
+
+```python
+# Good - typed models
+class ResearchInput(BaseModel):
+    topic: str
+    max_sources: int = 10
+
+
+class ResearchOutput(BaseModel):
+    findings: list[str]
+    sources: list[str]
+
+
+@pipeline.step(0)
+async def research(self, ctx: ResearchInput) -> ResearchOutput:
+    ...
+
+
+# Bad - untyped dicts
+@pipeline.step(0)
+async def research(self, ctx: dict) -> dict:
+    ...
+```
+
+### 2. Keep Steps Focused
 
 Each step should have a single responsibility:
 
 ```python
 # Good - focused steps
 @pipeline.step(0)
-async def fetch_data(self, ctx):
+async def fetch_data(self, ctx: FetchInput) -> RawData:
     ...
 
 @pipeline.step(1)
-async def validate_data(self, data):
+async def validate_data(self, data: RawData) -> ValidatedData:
     ...
 
 @pipeline.step(2)
-async def transform_data(self, validated_data):
+async def transform_data(self, data: ValidatedData) -> TransformedData:
     ...
+
 
 # Bad - step does too much
 @pipeline.step(0)
-async def do_everything(self, ctx):
-    data = fetch()
+async def do_everything(self, ctx: InputContext) -> FinalResult:
+    data = await fetch()
     validated = validate(data)
     return transform(validated)
 ```
 
-### 2. Use Meaningful Step Names
+### 3. Use Descriptive Step Names
 
 ```python
-# Good
+# Good - descriptive string names
 @pipeline.step("gather_sources")
-@pipeline.step("analyze_content")
-@pipeline.step("generate_summary")
+async def gather_sources(self, ctx: Input) -> Sources:
+    ...
 
-# Bad
-@pipeline.step(0)
-@pipeline.step(1)
-@pipeline.step(2)
+@pipeline.step("analyze_content")
+async def analyze_content(self, sources: Sources) -> Analysis:
+    ...
+
+@pipeline.step("generate_summary")
+async def generate_summary(self, analysis: Analysis) -> Summary:
+    ...
 ```
 
-### 3. Handle Timeouts Appropriately
+### 4. Handle Timeouts Appropriately
 
 ```python
+class TimeoutResult(BaseModel):
+    success: bool
+    data: dict | None = None
+    error: str | None = None
+
+
 @pipeline.step(0)
-async def long_running_step(self, ctx):
+async def long_running_step(self, ctx: InputContext) -> TimeoutResult:
     task = await ax.enqueue("slow_task", ctx)
 
-    # Use appropriate timeout
     try:
-        return await ax.get_result(task.agent_id, timeout=600)  # 10 minutes
+        data = await ax.get_result(task, timeout=600)  # 10 minutes
+        return TimeoutResult(success=True, data=data)
     except TimeoutError:
-        # Handle timeout gracefully
-        return {"error": "Task timed out", "partial_result": None}
+        return TimeoutResult(success=False, error="Task timed out")
 ```
 
-### 4. Document Step Dependencies
+### 5. Document Step Dependencies
 
 ```python
 class MyPipeline(pipeline.Base):
     """
     Pipeline Flow:
-    1. fetch_data -> returns raw data
-    2. validate -> receives raw data, returns validated data
-    3. transform -> receives validated data, returns transformed data
-    4. save -> receives transformed data, returns save confirmation
+    1. fetch_data(InputContext) -> RawData
+    2. validate(RawData) -> ValidatedData
+    3. transform(ValidatedData) -> TransformedData
+    4. save(TransformedData) -> SaveResult
     """
 
     @pipeline.step(0)
-    async def fetch_data(self, ctx: InputContext) -> dict:
-        """Fetches data from source. Output: raw data dict."""
+    async def fetch_data(self, ctx: InputContext) -> RawData:
+        """Fetches data from source."""
         ...
 ```
 
@@ -559,10 +503,11 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+
 class DebugPipeline(pipeline.Base):
 
     @pipeline.step(0)
-    async def step_one(self, ctx):
+    async def step_one(self, ctx: InputContext) -> StepOneResult:
         logger.info(f"Starting step_one with context: {ctx}")
         result = await self._do_step_one(ctx)
         logger.info(f"Completed step_one with result: {result}")
@@ -571,7 +516,7 @@ class DebugPipeline(pipeline.Base):
 
 ### Progress Tracking
 
-Track overall pipeline progress:
+Track overall pipeline progress via activity updates:
 
 ```python
 class TrackedPipeline(pipeline.Base):
@@ -580,21 +525,21 @@ class TrackedPipeline(pipeline.Base):
         self.tracking_id = tracking_id
 
     @pipeline.step(0)
-    async def step_one(self, ctx):
+    async def step_one(self, ctx: InputContext) -> StepOneResult:
         ax.activity.update(self.tracking_id, "Pipeline: Starting step 1", 0)
         result = await self._do_step_one(ctx)
         ax.activity.update(self.tracking_id, "Pipeline: Step 1 complete", 33)
         return result
 
     @pipeline.step(1)
-    async def step_two(self, data):
+    async def step_two(self, data: StepOneResult) -> StepTwoResult:
         ax.activity.update(self.tracking_id, "Pipeline: Starting step 2", 33)
         result = await self._do_step_two(data)
         ax.activity.update(self.tracking_id, "Pipeline: Step 2 complete", 66)
         return result
 
     @pipeline.step(2)
-    async def step_three(self, data):
+    async def step_three(self, data: StepTwoResult) -> FinalResult:
         ax.activity.update(self.tracking_id, "Pipeline: Starting step 3", 66)
         result = await self._do_step_three(data)
         ax.activity.update(self.tracking_id, "Pipeline: Complete", 100)

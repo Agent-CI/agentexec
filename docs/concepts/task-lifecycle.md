@@ -304,7 +304,7 @@ Use `get_result()` to retrieve stored results:
 
 ```python
 # Wait for result (blocks up to timeout)
-result = await ax.get_result(task.agent_id, timeout=300)
+result = await ax.get_result(task, timeout=300)
 print(result["score"])  # 0.85
 ```
 
@@ -323,7 +323,7 @@ async def step1(self, ctx: InputContext):
 async def step2(self, result_a, result_b):
     # Use results from previous step
     combined = await ax.enqueue("combine", CombineContext(a=result_a, b=result_b))
-    return await ax.get_result(combined.agent_id)
+    return await ax.get_result(combined)
 ```
 
 ## Monitoring Tasks

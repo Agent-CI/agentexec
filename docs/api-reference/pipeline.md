@@ -275,7 +275,7 @@ async def get_result(
 async def start_task(self, ctx: InputContext):
     task = await ax.enqueue("long_task", ctx)
     # Wait up to 10 minutes
-    return await ax.get_result(task.agent_id, timeout=600)
+    return await ax.get_result(task, timeout=600)
 ```
 
 ---
@@ -341,7 +341,7 @@ class ResearchPipeline(pipeline.Base):
     async def analyze(self, data: dict):
         """Step 1: Analyze gathered data."""
         task = await ax.enqueue("analyze_data", AnalyzeContext(data=data))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
 
     @pipeline.step(2)
     async def generate_report(self, analysis: dict):
@@ -350,7 +350,7 @@ class ResearchPipeline(pipeline.Base):
             analysis=analysis,
             format="markdown"
         ))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
 
 # Usage
 async def main():
@@ -374,7 +374,7 @@ If a step raises an exception, the pipeline stops:
 async def risky_step(self, ctx: InputContext):
     task = await ax.enqueue("risky_task", ctx)
     try:
-        return await ax.get_result(task.agent_id, timeout=60)
+        return await ax.get_result(task, timeout=60)
     except TimeoutError:
         # Return fallback or raise
         return {"error": "timeout", "fallback": True}
@@ -402,7 +402,7 @@ async def parallel_with_errors(self, ctx: InputContext):
     results = []
     for task in tasks:
         try:
-            result = await ax.get_result(task.agent_id, timeout=60)
+            result = await ax.get_result(task, timeout=60)
             results.append({"success": True, "data": result})
         except Exception as e:
             results.append({"success": False, "error": str(e)})
@@ -421,7 +421,7 @@ async def parallel_with_errors(self, ctx: InputContext):
 async def conditional(self, data: dict):
     if data.get("needs_review"):
         task = await ax.enqueue("review_task", ReviewContext(data=data))
-        return await ax.get_result(task.agent_id)
+        return await ax.get_result(task)
     return data  # Skip review
 ```
 
@@ -442,7 +442,7 @@ async def fan_out(self, ctx: InputContext):
 async def fan_in(self, *results):
     """Combine all results."""
     task = await ax.enqueue("combine", CombineContext(results=list(results)))
-    return await ax.get_result(task.agent_id)
+    return await ax.get_result(task)
 ```
 
 ### Progress Tracking

@@ -156,7 +156,6 @@ router = APIRouter()
 class TaskRequest(BaseModel):
     company: str
     focus_areas: list[str] = []
-    priority: str = "low"
 
 class TaskResponse(BaseModel):
     agent_id: str
@@ -172,12 +171,9 @@ class StatusResponse(BaseModel):
 @router.post("/tasks/research", response_model=TaskResponse)
 async def create_research_task(request: TaskRequest):
     """Queue a new research task."""
-    priority = ax.Priority.HIGH if request.priority == "high" else ax.Priority.LOW
-
     task = await ax.enqueue(
         "research_company",
         ResearchContext(company=request.company, focus_areas=request.focus_areas),
-        priority=priority
     )
 
     return TaskResponse(
@@ -228,21 +224,7 @@ async def list_activities(
     db: Session = Depends(get_db)
 ):
     """List all activities with pagination."""
-    result = ax.activity.list(db, page=page, page_size=page_size)
-
-    return ActivityListResponse(
-        items=[{
-            "agent_id": str(item.agent_id),
-            "task_type": item.agent_type,
-            "status": item.status.value,
-            "progress": item.latest_completion_percentage,
-            "message": item.latest_log,
-            "updated_at": item.updated_at.isoformat()
-        } for item in result.items],
-        total=result.total,
-        page=result.page,
-        pages=result.pages
-    )
+    return ax.activity.list(db, page=page, page_size=page_size)
 
 @router.get("/activities/{agent_id}", response_model=ActivityDetailResponse)
 async def get_activity_detail(agent_id: str, db: Session = Depends(get_db)):
@@ -252,43 +234,7 @@ async def get_activity_detail(agent_id: str, db: Session = Depends(get_db)):
     if not activity:
         raise HTTPException(status_code=404, detail="Activity not found")
 
-    return ActivityDetailResponse(
-        agent_id=str(activity.agent_id),
-        task_type=activity.agent_type,
-        status=activity.status.value,
-        progress=activity.latest_completion_percentage,
-        created_at=activity.created_at.isoformat(),
-        updated_at=activity.updated_at.isoformat(),
-        logs=[{
-            "message": log.message,
-            "status": log.status.value,
-            "progress": log.completion_percentage,
-            "created_at": log.created_at.isoformat()
-        } for log in activity.logs]
-    )
-```
-
-### Result Endpoints
-
-```python
-# views.py (continued)
-
-@router.get("/tasks/{agent_id}/result")
-async def get_task_result(agent_id: str, timeout: int = 30):
-    """
-    Get the result of a completed task.
-    Waits up to `timeout` seconds for the task to complete.
-    """
-    try:
-        result = await ax.get_result(agent_id, timeout=timeout)
-        return {"agent_id": agent_id, "result": result}
-    except TimeoutError:
-        raise HTTPException(
-            status_code=408,
-            detail=f"Task not completed within {timeout} seconds"
-        )
-    except KeyError:
-        raise HTTPException(status_code=404, detail="Result not found")
+    return activity
 ```
 
 ## Running the Application
@@ -346,245 +292,6 @@ services:
 
   redis:
     image: redis:7-alpine
-```
-
-## Advanced Patterns
-
-### WebSocket Progress Updates
-
-```python
-# views.py
-from fastapi import WebSocket, WebSocketDisconnect
-import asyncio
-
-@router.websocket("/ws/tasks/{agent_id}")
-async def task_progress_websocket(websocket: WebSocket, agent_id: str):
-    """WebSocket endpoint for real-time task progress."""
-    await websocket.accept()
-
-    try:
-        while True:
-            with Session(engine) as db:
-                activity = ax.activity.detail(db, agent_id)
-
-                if not activity:
-                    await websocket.send_json({"error": "Task not found"})
-                    break
-
-                await websocket.send_json({
-                    "status": activity.status.value,
-                    "progress": activity.latest_completion_percentage,
-                    "message": activity.logs[-1].message if activity.logs else None
-                })
-
-                if activity.status.value in ("COMPLETE", "ERROR", "CANCELED"):
-                    break
-
-            await asyncio.sleep(1)
-
-    except WebSocketDisconnect:
-        pass
-```
-
-### Background Task Integration
-
-Start tasks from FastAPI's background tasks:
-
-```python
-from fastapi import BackgroundTasks
-
-async def cleanup_old_activities():
-    """Background task to clean up old activities."""
-    with Session(engine) as db:
-        # Delete activities older than 30 days
-        from datetime import datetime, timedelta
-        cutoff = datetime.utcnow() - timedelta(days=30)
-
-        db.execute(
-            "DELETE FROM agentexec_activity WHERE updated_at < :cutoff",
-            {"cutoff": cutoff}
-        )
-        db.commit()
-
-@router.post("/admin/cleanup")
-async def trigger_cleanup(background_tasks: BackgroundTasks):
-    """Trigger cleanup of old activities."""
-    background_tasks.add_task(cleanup_old_activities)
-    return {"message": "Cleanup scheduled"}
-```
-
-### Rate Limiting
-
-```python
-from slowapi import Limiter
-from slowapi.util import get_remote_address
-
-limiter = Limiter(key_func=get_remote_address)
-app.state.limiter = limiter
-
-@router.post("/tasks/research")
-@limiter.limit("10/minute")
-async def create_research_task(request: Request, task: TaskRequest):
-    ...
-```
-
-### Authentication
-
-```python
-from fastapi import Security
-from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-
-security = HTTPBearer()
-
-async def verify_token(credentials: HTTPAuthorizationCredentials = Security(security)):
-    token = credentials.credentials
-    # Verify token (JWT, API key, etc.)
-    if not is_valid_token(token):
-        raise HTTPException(status_code=401, detail="Invalid token")
-    return token
-
-@router.post("/tasks/research")
-async def create_research_task(
-    request: TaskRequest,
-    token: str = Depends(verify_token)
-):
-    ...
-```
-
-## Error Handling
-
-### Global Exception Handler
-
-```python
-# main.py
-from fastapi import Request
-from fastapi.responses import JSONResponse
-
-@app.exception_handler(Exception)
-async def global_exception_handler(request: Request, exc: Exception):
-    return JSONResponse(
-        status_code=500,
-        content={
-            "error": "Internal server error",
-            "detail": str(exc) if app.debug else "An error occurred"
-        }
-    )
-```
-
-### Custom Exception Classes
-
-```python
-# exceptions.py
-class TaskNotFoundError(Exception):
-    def __init__(self, agent_id: str):
-        self.agent_id = agent_id
-        super().__init__(f"Task {agent_id} not found")
-
-class TaskTimeoutError(Exception):
-    def __init__(self, agent_id: str, timeout: int):
-        self.agent_id = agent_id
-        self.timeout = timeout
-        super().__init__(f"Task {agent_id} did not complete within {timeout}s")
-
-# main.py
-@app.exception_handler(TaskNotFoundError)
-async def task_not_found_handler(request: Request, exc: TaskNotFoundError):
-    return JSONResponse(
-        status_code=404,
-        content={"error": "Task not found", "agent_id": exc.agent_id}
-    )
-```
-
-## Testing
-
-### Test Client Setup
-
-```python
-# tests/conftest.py
-import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-import agentexec as ax
-
-from myapp.main import app
-from myapp.deps import get_db
-
-# Test database
-TEST_DATABASE_URL = "sqlite:///./test.db"
-engine = create_engine(TEST_DATABASE_URL)
-TestingSessionLocal = sessionmaker(bind=engine)
-
-ax.Base.metadata.create_all(bind=engine)
-
-def override_get_db():
-    db = TestingSessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
-
-app.dependency_overrides[get_db] = override_get_db
-
-@pytest.fixture
-def client():
-    return TestClient(app)
-```
-
-### Testing Endpoints
-
-```python
-# tests/test_views.py
-from unittest.mock import patch, AsyncMock
-
-def test_create_task(client):
-    with patch("myapp.views.ax.enqueue") as mock_enqueue:
-        mock_enqueue.return_value = AsyncMock(
-            agent_id="test-uuid"
-        )
-
-        response = client.post("/api/tasks/research", json={
-            "company": "Test Corp",
-            "focus_areas": ["products"]
-        })
-
-        assert response.status_code == 200
-        assert "agent_id" in response.json()
-
-def test_get_status_not_found(client):
-    response = client.get("/api/tasks/nonexistent/status")
-    assert response.status_code == 404
-```
-
-## API Documentation
-
-FastAPI automatically generates OpenAPI documentation. Access it at:
-
-- Swagger UI: `http://localhost:8000/docs`
-- ReDoc: `http://localhost:8000/redoc`
-
-### Adding Descriptions
-
-```python
-@router.post(
-    "/tasks/research",
-    response_model=TaskResponse,
-    summary="Create Research Task",
-    description="Queue a new company research task for AI agent processing.",
-    responses={
-        200: {"description": "Task queued successfully"},
-        429: {"description": "Rate limit exceeded"},
-    }
-)
-async def create_research_task(request: TaskRequest):
-    """
-    Create a new research task for an AI agent.
-
-    - **company**: Name of the company to research
-    - **focus_areas**: Specific areas to focus on (optional)
-    - **priority**: Task priority (low or high)
-    """
-    ...
 ```
 
 ## Next Steps
