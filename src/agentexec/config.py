@@ -73,5 +73,17 @@ class Config(BaseSettings):
         validation_alias="AGENTEXEC_RESULT_TTL",
     )
 
+    state_backend: str = Field(
+        default="redis",
+        description="State backend to use (redis, memory, etc.)",
+        validation_alias="AGENTEXEC_STATE_BACKEND",
+    )
+
+    key_prefix: str = Field(
+        default="agentexec",
+        description="Prefix for state backend keys",
+        validation_alias="AGENTEXEC_KEY_PREFIX",
+    )
+
 
 CONF = Config()
