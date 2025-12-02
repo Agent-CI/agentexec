@@ -1,9 +1,12 @@
 # cspell:ignore acheck
 
-from typing import AsyncGenerator, Coroutine
+from typing import AsyncGenerator, Coroutine, cast
 from uuid import UUID
 
+from pydantic import BaseModel
+
 from agentexec.config import CONF
+from agentexec.state.backend import StateBackend
 
 KEY_RESULT = (CONF.key_prefix, "result")
 KEY_EVENT = (CONF.key_prefix, "event")
@@ -12,10 +15,11 @@ CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
 match CONF.state_backend:
     case "redis":
-        from agentexec.state import redis_backend as backend
+        from agentexec.state import redis_backend as _backend
     case _:
         raise RuntimeError(f"Unsupported state backend: {CONF.state_backend}.")
 
+backend: StateBackend = cast(StateBackend, _backend)
 
 __all__ = [
     "backend",
@@ -34,42 +38,50 @@ __all__ = [
 ]
 
 
-def get_result(agent_id: UUID | str) -> object | None:
+def get_result(agent_id: UUID | str) -> BaseModel | None:
     """Get result for an agent (sync).
+
+    Returns deserialized BaseModel instance with automatic type reconstruction.
 
     Args:
         agent_id: Unique agent identifier (UUID or string)
 
     Returns:
-        Deserialized result object or None if not found
+        Deserialized BaseModel or None if not found
     """
     data = backend.get(backend.format_key(*KEY_RESULT, str(agent_id)))
     return backend.deserialize(data) if data else None
 
 
-def aget_result(agent_id: UUID | str) -> Coroutine[None, None, object | None]:
+def aget_result(agent_id: UUID | str) -> Coroutine[None, None, BaseModel | None]:
     """Get result for an agent (async).
+
+    Returns deserialized BaseModel instance with automatic type reconstruction.
 
     Args:
         agent_id: Unique agent identifier (UUID or string)
 
     Returns:
-        Coroutine that resolves to deserialized result object or None if not found
+        Coroutine that resolves to deserialized BaseModel or None if not found
     """
 
-    async def _get() -> object | None:
+    async def _get() -> BaseModel | None:
         data = await backend.aget(backend.format_key(*KEY_RESULT, str(agent_id)))
         return backend.deserialize(data) if data else None
 
     return _get()
 
 
-def set_result(agent_id: UUID | str, data: object, ttl_seconds: int | None = None) -> bool:
+def set_result(
+    agent_id: UUID | str,
+    data: BaseModel,
+    ttl_seconds: int | None = None,
+) -> bool:
     """Set result for an agent (sync).
 
     Args:
         agent_id: Unique agent identifier (UUID or string)
-        data: Result data to store
+        data: Result data (must be Pydantic BaseModel)
         ttl_seconds: Optional time-to-live in seconds
 
     Returns:
@@ -84,14 +96,14 @@ def set_result(agent_id: UUID | str, data: object, ttl_seconds: int | None = Non
 
 def aset_result(
     agent_id: UUID | str,
-    data: object,
+    data: BaseModel,
     ttl_seconds: int | None = None,
 ) -> Coroutine[None, None, bool]:
     """Set result for an agent (async).
 
     Args:
         agent_id: Unique agent identifier (UUID or string)
-        data: Result data to store
+        data: Result data (must be Pydantic BaseModel)
         ttl_seconds: Optional time-to-live in seconds
 
     Returns:

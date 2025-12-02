@@ -1,10 +1,11 @@
 # cspell:ignore rpush lpush brpop RPUSH LPUSH BRPOP
-
-from typing import AsyncGenerator, Coroutine, Optional
-import pickle
+from typing import TypedDict, AsyncGenerator, Coroutine, Optional
+import importlib
+import json
 
 import redis
 import redis.asyncio
+from pydantic import BaseModel
 
 from agentexec.config import CONF
 
@@ -43,34 +44,66 @@ def format_key(*args: str) -> str:
     return ":".join(args)
 
 
-def serialize(obj: object) -> bytes:
-    """Serialize a Python object to bytes using pickle.
+class SerializeWrapper(TypedDict):
+    __class__: str
+    __data__: str
+
+
+def serialize(obj: BaseModel) -> bytes:
+    """Serialize a Pydantic BaseModel to JSON bytes with type information.
+
+    Stores the fully qualified class name alongside the data, similar to pickle.
+    This allows deserialization without needing an external type registry.
 
     Args:
-        obj: Python object to serialize
+        obj: Pydantic BaseModel instance to serialize
 
     Returns:
-        Pickled bytes
+        JSON-encoded bytes containing class info and data
 
     Raises:
-        pickle.PicklingError: If object cannot be pickled
+        TypeError: If obj is not a BaseModel instance
     """
-    return pickle.dumps(obj)
+    if not isinstance(obj, BaseModel):
+        raise TypeError(f"Expected BaseModel, got {type(obj)}")
+
+    cls = type(obj)
+    wrapper: SerializeWrapper = {
+        "__class__": f"{cls.__module__}.{cls.__qualname__}",
+        "__data__": obj.model_dump_json(),
+    }
+
+    return json.dumps(wrapper).encode("utf-8")
 
 
-def deserialize(data: bytes) -> object:
-    """Deserialize pickled bytes back to a Python object.
+def deserialize(data: bytes) -> BaseModel:
+    """Deserialize JSON bytes back to a Pydantic BaseModel instance.
+
+    Uses the stored class information to dynamically import and reconstruct
+    the original type, similar to pickle.
 
     Args:
-        data: Pickled bytes
+        data: JSON-encoded bytes containing class info and data
 
     Returns:
-        Deserialized Python object
+        Deserialized BaseModel instance
 
     Raises:
-        pickle.UnpicklingError: If data cannot be unpickled
+        ImportError: If the class module cannot be imported
+        AttributeError: If the class does not exist in the module
+        ValueError: If the data is invalid JSON or missing required fields
     """
-    return pickle.loads(data)
+    wrapper: SerializeWrapper = json.loads(data.decode("utf-8"))
+    class_path = wrapper["__class__"]
+    json_data = wrapper["__data__"]
+
+    # Import the class dynamically (e.g., "myapp.models.Result" → myapp.models module)
+    module_path, class_name = class_path.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
+
+    result: BaseModel = cls.model_validate_json(json_data)
+    return result
 
 
 def _get_async_client() -> redis.asyncio.Redis:

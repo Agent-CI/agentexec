@@ -2,6 +2,8 @@
 
 from typing import AsyncGenerator, Coroutine, Optional, Protocol
 
+from pydantic import BaseModel
+
 
 class StateBackend(Protocol):
     """Protocol defining the state backend interface.
@@ -147,7 +149,7 @@ class StateBackend(Protocol):
         """
         ...
 
-    async def subscribe(self, channel: str) -> AsyncGenerator[str, None]:
+    def subscribe(self, channel: str) -> AsyncGenerator[str, None]:
         """Subscribe to a channel and yield messages.
 
         Args:
@@ -171,35 +173,38 @@ class StateBackend(Protocol):
         ...
 
     # Serialization
-    def serialize(self, obj: object) -> bytes:
-        """Serialize a Python object to bytes.
+    def serialize(self, obj: BaseModel) -> bytes:
+        """Serialize a Pydantic BaseModel to bytes.
 
-        The serialization method is backend-specific. For example, Redis might
-        use pickle, while other backends might use JSON or msgpack.
+        Stores the fully qualified class name alongside the data to enable
+        automatic type reconstruction during deserialization.
 
         Args:
-            obj: Python object to serialize
+            obj: Pydantic BaseModel instance to serialize
 
         Returns:
             Serialized bytes
 
         Raises:
-            Exception: If serialization fails
+            TypeError: If obj is not a BaseModel instance
         """
         ...
 
-    def deserialize(self, data: bytes) -> object:
-        """Deserialize bytes back to a Python object.
+    def deserialize(self, data: bytes) -> BaseModel:
+        """Deserialize bytes back to a Pydantic BaseModel instance.
 
-        Must be compatible with the serialize() method for this backend.
+        Uses the stored class information to dynamically import and reconstruct
+        the original type.
 
         Args:
             data: Serialized bytes
 
         Returns:
-            Deserialized Python object
+            Deserialized BaseModel instance
 
         Raises:
-            Exception: If deserialization fails
+            ImportError: If the class module cannot be imported
+            AttributeError: If the class does not exist in the module
+            ValueError: If the data is invalid
         """
         ...

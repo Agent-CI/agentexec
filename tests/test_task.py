@@ -23,6 +23,12 @@ class NestedContext(BaseModel):
     nested: dict
 
 
+class TaskResult(BaseModel):
+    """Sample result model for task tests."""
+
+    status: str
+
+
 @pytest.fixture
 def pool():
     """Create a WorkerPool for testing."""
@@ -55,8 +61,8 @@ def test_task_deserialization(pool) -> None:
     """Test that tasks can be deserialized using context_class."""
     # Register a task to get a TaskDefinition
     @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> None:
-        pass
+    async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult(status="success")
 
     task_def = pool._context.tasks["test_task"]
 
@@ -84,8 +90,8 @@ def test_task_round_trip(pool) -> None:
     """Test that tasks can be serialized and deserialized."""
     # Register task for deserialization
     @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: NestedContext) -> None:
-        pass
+    async def handler(agent_id: uuid.UUID, context: NestedContext) -> TaskResult:
+        return TaskResult(status="success")
 
     task_def = pool._context.tasks["test_task"]
 
@@ -150,8 +156,8 @@ def test_task_from_serialized(pool) -> None:
     from agentexec.core.task import TaskDefinition
 
     @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> str:
-        return f"Result: {context.message}"
+    async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult(status=f"Result: {context.message}")
 
     task_def = pool._context.tasks["test_task"]
     agent_id = uuid.uuid4()
@@ -191,10 +197,10 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
     monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
 
-    execution_result = {"status": "success"}
+    execution_result = TaskResult(status="success")
 
     @pool.task("async_task")
-    async def async_handler(agent_id: uuid.UUID, context: SampleContext) -> dict:
+    async def async_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
         return execution_result
 
     task_def = pool._context.tasks["async_task"]
@@ -239,8 +245,8 @@ async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
     monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
 
     @pool.task("sync_task")
-    def sync_handler(agent_id: uuid.UUID, context: SampleContext) -> str:
-        return f"Sync result: {context.message}"
+    def sync_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult(status=f"Sync result: {context.message}")
 
     task_def = pool._context.tasks["sync_task"]
     agent_id = uuid.uuid4()
@@ -256,7 +262,7 @@ async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
 
     result = await task.execute()
 
-    assert result == "Sync result: test"
+    assert result.status == "Sync result: test"
     assert len(activity_updates) == 2
 
 
@@ -288,7 +294,7 @@ async def test_task_execute_error_marks_activity_errored(pool, monkeypatch) -> N
     monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
 
     @pool.task("failing_task")
-    async def failing_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+    async def failing_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
         raise ValueError("Task failed!")
 
     task_def = pool._context.tasks["failing_task"]

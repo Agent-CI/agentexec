@@ -70,6 +70,7 @@ async def enqueue(
 
 
 async def dequeue(
+    *,
     queue_name: str | None = None,
     timeout: int = 1,
 ) -> dict[str, Any] | None:

@@ -17,6 +17,12 @@ class SampleContext(BaseModel):
     value: int = 0
 
 
+class TaskResult(BaseModel):
+    """Sample result for worker pool tests."""
+
+    status: str = "success"
+
+
 @pytest.fixture
 def fake_redis(monkeypatch):
     """Setup fake async redis."""
@@ -49,8 +55,8 @@ async def test_enqueue_task(fake_redis, pool, monkeypatch) -> None:
 
     # Register the task with pool
     @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> None:
-        pass
+    async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult()
 
     # Enqueue a task with BaseModel context
     ctx = SampleContext(message="Hello World")
@@ -151,12 +157,12 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     from agentexec.worker.event import StateEvent
 
     @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> None:
-        pass
+    async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult()
 
     context = WorkerContext(
         database_url="sqlite:///:memory:",
-        shutdown_event=StateEvent("test:key"),
+        shutdown_event=StateEvent("shutdown", "test-worker"),
         tasks=pool._context.tasks,
         queue_name="test_queue",
     )
@@ -192,7 +198,7 @@ async def test_worker_dequeue_task_returns_none_on_empty_queue(pool, monkeypatch
 
     context = WorkerContext(
         database_url="sqlite:///:memory:",
-        shutdown_event=StateEvent("test:key"),
+        shutdown_event=StateEvent("shutdown", "test-worker"),
         tasks=pool._context.tasks,
         queue_name="test_queue",
     )

@@ -1,26 +1,44 @@
 """Tests for state module public API."""
 
-import pickle
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 
 from agentexec import state
+
+
+# Test models for result serialization
+class ResultModel(BaseModel):
+    """Test result model."""
+
+    status: str
+    value: int
+
+
+class OutputModel(BaseModel):
+    """Test output model."""
+
+    status: str
+    output: str
 
 
 class TestResultOperations:
     """Tests for result get/set/delete operations."""
 
     def test_get_result_found(self):
-        """Test getting an existing result deserializes correctly."""
-        result_data = {"status": "success", "value": 42}
-        pickled = pickle.dumps(result_data)
+        """Test getting an existing result returns deserialized BaseModel."""
+        result_model = ResultModel(status="success", value=42)
+        # Serialize with type information (mimicking backend.serialize)
+        serialized = state.backend.serialize(result_model)
 
-        with patch.object(state.backend, "get", return_value=pickled) as mock_get:
+        with patch.object(state.backend, "get", return_value=serialized) as mock_get:
             result = state.get_result("agent123")
 
             mock_get.assert_called_once_with("agentexec:result:agent123")
-            assert result == result_data
+            # Result should be deserialized BaseModel
+            assert isinstance(result, ResultModel)
+            assert result == result_model
 
     def test_get_result_not_found(self):
         """Test getting a non-existent result returns None."""
@@ -31,17 +49,19 @@ class TestResultOperations:
             assert result is None
 
     async def test_aget_result_found(self):
-        """Test async getting an existing result."""
-        result_data = {"status": "complete", "output": "test"}
-        pickled = pickle.dumps(result_data)
+        """Test async getting an existing result returns deserialized BaseModel."""
+        result_model = OutputModel(status="complete", output="test")
+        serialized = state.backend.serialize(result_model)
 
         async def mock_aget(key):
-            return pickled
+            return serialized
 
         with patch.object(state.backend, "aget", side_effect=mock_aget):
             result = await state.aget_result("agent789")
 
-            assert result == result_data
+            # Result should be deserialized BaseModel
+            assert isinstance(result, OutputModel)
+            assert result == result_model
 
     async def test_aget_result_not_found(self):
         """Test async getting a non-existent result."""
@@ -55,26 +75,30 @@ class TestResultOperations:
 
     def test_set_result_without_ttl(self):
         """Test setting a result without TTL."""
-        result_data = {"key": "value"}
+        result_model = ResultModel(status="success", value=42)
 
-        with patch.object(state.backend, "set", return_value=True) as mock_set, \
-             patch.object(state.backend, "serialize", wraps=pickle.dumps) as mock_serialize:
-            success = state.set_result("agent123", result_data)
+        with patch.object(state.backend, "set", return_value=True) as mock_set:
+            success = state.set_result("agent123", result_model)
 
-            mock_serialize.assert_called_once_with(result_data)
             mock_set.assert_called_once()
             call_args = mock_set.call_args
             assert call_args[0][0] == "agentexec:result:agent123"
+            # Should be JSON bytes with type information
+            stored_value = call_args[0][1]
+            assert isinstance(stored_value, bytes)
+            # Verify it can be deserialized back
+            deserialized = state.backend.deserialize(stored_value)
+            assert isinstance(deserialized, ResultModel)
+            assert deserialized == result_model
             assert call_args[1]["ttl_seconds"] is None
             assert success is True
 
     def test_set_result_with_ttl(self):
         """Test setting a result with TTL."""
-        result_data = {"temporary": "data"}
+        result_model = ResultModel(status="success", value=100)
 
-        with patch.object(state.backend, "set", return_value=True) as mock_set, \
-             patch.object(state.backend, "serialize", wraps=pickle.dumps):
-            success = state.set_result("agent456", result_data, ttl_seconds=3600)
+        with patch.object(state.backend, "set", return_value=True) as mock_set:
+            success = state.set_result("agent456", result_model, ttl_seconds=3600)
 
             call_args = mock_set.call_args
             assert call_args[0][0] == "agentexec:result:agent456"
@@ -83,14 +107,13 @@ class TestResultOperations:
 
     async def test_aset_result(self):
         """Test async setting a result."""
-        result_data = {"async": "result"}
+        result_model = OutputModel(status="complete", output="test")
 
         async def mock_aset(key, value, ttl_seconds=None):
             return True
 
-        with patch.object(state.backend, "aset", side_effect=mock_aset) as mock_aset_patch, \
-             patch.object(state.backend, "serialize", wraps=pickle.dumps):
-            success = await state.aset_result("agent789", result_data, ttl_seconds=7200)
+        with patch.object(state.backend, "aset", side_effect=mock_aset):
+            success = await state.aset_result("agent789", result_model, ttl_seconds=7200)
 
             assert success is True
 
