@@ -4,7 +4,6 @@ import json
 import uuid
 
 import pytest
-from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
 
 import agentexec as ax
@@ -24,16 +23,25 @@ class TaskResult(BaseModel):
 
 
 @pytest.fixture
-def fake_redis(monkeypatch):
-    """Setup fake async redis."""
-    fake_redis = fake_aioredis.FakeRedis(decode_responses=True)
+def mock_state_backend(monkeypatch):
+    """Mock the state backend for queue operations."""
+    queue_data = []
 
-    def get_fake_redis():
-        return fake_redis
+    def mock_lpush(key, value):
+        queue_data.insert(0, value)
+        return len(queue_data)
 
-    monkeypatch.setattr("agentexec.core.queue.get_redis", get_fake_redis)
+    def mock_rpush(key, value):
+        queue_data.append(value)
+        return len(queue_data)
 
-    yield fake_redis
+    def pop_right():
+        return queue_data.pop() if queue_data else None
+
+    monkeypatch.setattr("agentexec.state.backend.lpush", mock_lpush)
+    monkeypatch.setattr("agentexec.state.backend.rpush", mock_rpush)
+
+    return {"queue": queue_data, "pop": pop_right}
 
 
 @pytest.fixture
@@ -45,8 +53,8 @@ def pool():
     return ax.WorkerPool(engine=engine)
 
 
-async def test_enqueue_task(fake_redis, pool, monkeypatch) -> None:
-    """Test that tasks can be enqueued to Redis."""
+async def test_enqueue_task(mock_state_backend, pool, monkeypatch) -> None:
+    """Test that tasks can be enqueued."""
     # Mock activity.create to avoid database dependency
     def mock_create(*args, **kwargs):
         return uuid.uuid4()
@@ -69,8 +77,8 @@ async def test_enqueue_task(fake_redis, pool, monkeypatch) -> None:
     assert isinstance(task.context, SampleContext)
     assert task.context.message == "Hello World"
 
-    # Verify task was pushed to Redis
-    task_json = await fake_redis.rpop(ax.CONF.queue_name)
+    # Verify task was pushed to queue
+    task_json = mock_state_backend["pop"]()
     assert task_json is not None
 
     task_data = json.loads(task_json)
@@ -79,7 +87,7 @@ async def test_enqueue_task(fake_redis, pool, monkeypatch) -> None:
     assert task_data["agent_id"] == str(task.agent_id)
 
 
-async def test_enqueue_high_priority_task(fake_redis, pool, monkeypatch) -> None:
+async def test_enqueue_high_priority_task(mock_state_backend, pool, monkeypatch) -> None:
     """Test that high priority tasks are enqueued to the front."""
     def mock_create(*args, **kwargs):
         return uuid.uuid4()
@@ -88,12 +96,12 @@ async def test_enqueue_high_priority_task(fake_redis, pool, monkeypatch) -> None
 
     # Register tasks with pool
     @pool.task("low_task")
-    async def low_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
-        pass
+    async def low_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult()
 
     @pool.task("high_task")
-    async def high_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
-        pass
+    async def high_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult()
 
     # Enqueue low priority task
     ctx1 = SampleContext(message="low", value=1)
@@ -104,7 +112,7 @@ async def test_enqueue_high_priority_task(fake_redis, pool, monkeypatch) -> None
     task2 = await ax.enqueue("high_task", ctx2, priority=ax.Priority.HIGH)
 
     # High priority task should be at the end (RPUSH) so it's processed first (BRPOP)
-    task_json = await fake_redis.rpop(ax.CONF.queue_name)
+    task_json = mock_state_backend["pop"]()
     task_data = json.loads(task_json)
     assert task_data["agent_id"] == str(task2.agent_id)
 

@@ -57,7 +57,6 @@ def create(
         The agent_id (as UUID object) of the created record
     """
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
-
     db = session or get_global_session()
 
     activity_record = Activity(
@@ -71,7 +70,7 @@ def create(
         activity_id=activity_record.id,
         message=message,
         status=Status.QUEUED,
-        completion_percentage=0,
+        percentage=0,
     )
     db.add(log)
     db.commit()
@@ -82,7 +81,7 @@ def create(
 def update(
     agent_id: str | uuid.UUID,
     message: str,
-    completion_percentage: int | None = None,
+    percentage: int | None = None,
     status: Status | None = None,
     session: Session | None = None,
 ) -> bool:
@@ -93,7 +92,7 @@ def update(
     Args:
         agent_id: The agent_id of the agent to update
         message: Log message to append
-        completion_percentage: Optional completion percentage (0-100)
+        percentage: Optional completion percentage (0-100)
         status: Optional status to set (default: RUNNING)
         session: Optional SQLAlchemy session. If not provided, uses global session factory.
 
@@ -110,7 +109,7 @@ def update(
         agent_id=normalize_agent_id(agent_id),
         message=message,
         status=status if status else Status.RUNNING,
-        completion_percentage=completion_percentage,
+        percentage=percentage,
     )
     return True
 
@@ -118,7 +117,7 @@ def update(
 def complete(
     agent_id: str | uuid.UUID,
     message: str = "Agent completed",
-    completion_percentage: int = 100,
+    percentage: int = 100,
     session: Session | None = None,
 ) -> bool:
     """Mark an agent activity as complete.
@@ -126,7 +125,7 @@ def complete(
     Args:
         agent_id: The agent_id of the agent to mark as complete
         message: Log message (default: "Agent completed")
-        completion_percentage: Completion percentage (default: 100)
+        percentage: Completion percentage (default: 100)
         session: Optional SQLAlchemy session. If not provided, uses global session factory.
 
     Returns:
@@ -142,7 +141,7 @@ def complete(
         agent_id=normalize_agent_id(agent_id),
         message=message,
         status=Status.COMPLETE,
-        completion_percentage=completion_percentage,
+        percentage=percentage,
     )
     return True
 
@@ -150,7 +149,7 @@ def complete(
 def error(
     agent_id: str | uuid.UUID,
     message: str = "Agent failed",
-    completion_percentage: int = 100,
+    percentage: int = 100,
     session: Session | None = None,
 ) -> bool:
     """Mark an agent activity as failed.
@@ -158,7 +157,7 @@ def error(
     Args:
         agent_id: The agent_id of the agent to mark as failed
         message: Log message (default: "Agent failed")
-        completion_percentage: Completion percentage (default: 100)
+        percentage: Completion percentage (default: 100)
         session: Optional SQLAlchemy session. If not provided, uses ScopedSession.
 
     Returns:
@@ -174,7 +173,7 @@ def error(
         agent_id=normalize_agent_id(agent_id),
         message=message,
         status=Status.ERROR,
-        completion_percentage=completion_percentage,
+        percentage=percentage,
     )
     return True
 
@@ -198,7 +197,7 @@ def cancel_pending(
             agent_id=agent_id,
             message="Canceled due to shutdown",
             status=Status.CANCELED,
-            completion_percentage=None,
+            percentage=None,
         )
 
     return len(pending_agent_ids)

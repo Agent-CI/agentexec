@@ -1,11 +1,25 @@
 """Tests for state backend module."""
 
-import pickle
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+from pydantic import BaseModel
 
 from agentexec.state import redis_backend
+
+
+class SampleModel(BaseModel):
+    """Sample model for serialization tests."""
+
+    status: str
+    value: int
+
+
+class NestedModel(BaseModel):
+    """Model with nested structure for serialization tests."""
+
+    items: list[int]
+    metadata: dict[str, str]
 
 
 @pytest.fixture(autouse=True)
@@ -58,33 +72,39 @@ class TestFormatKey:
 class TestSerialization:
     """Tests for serialize and deserialize functions."""
 
-    def test_serialize_dict(self):
-        """Test serializing a dictionary."""
-        data = {"status": "success", "value": 42}
+    def test_serialize_basemodel(self):
+        """Test serializing a BaseModel."""
+        data = SampleModel(status="success", value=42)
         result = redis_backend.serialize(data)
         assert isinstance(result, bytes)
-        assert pickle.loads(result) == data
 
-    def test_serialize_list(self):
-        """Test serializing a list."""
-        data = [1, 2, 3, "test"]
-        result = redis_backend.serialize(data)
-        assert isinstance(result, bytes)
-        assert pickle.loads(result) == data
+    def test_serialize_rejects_dict(self):
+        """Test that serialize rejects raw dicts."""
+        with pytest.raises(TypeError, match="Expected BaseModel"):
+            redis_backend.serialize({"key": "value"})  # type: ignore[arg-type]
 
-    def test_deserialize_bytes(self):
-        """Test deserializing pickled bytes."""
-        data = {"key": "value", "number": 123}
-        pickled = pickle.dumps(data)
-        result = redis_backend.deserialize(pickled)
-        assert result == data
+    def test_serialize_rejects_list(self):
+        """Test that serialize rejects raw lists."""
+        with pytest.raises(TypeError, match="Expected BaseModel"):
+            redis_backend.serialize([1, 2, 3])  # type: ignore[arg-type]
 
     def test_serialize_deserialize_roundtrip(self):
-        """Test serialize then deserialize returns original."""
-        data = {"complex": [1, 2, {"nested": True}], "tuple": (1, 2, 3)}
+        """Test serialize then deserialize returns equivalent model."""
+        data = SampleModel(status="success", value=42)
         serialized = redis_backend.serialize(data)
         deserialized = redis_backend.deserialize(serialized)
-        assert deserialized == data
+        assert isinstance(deserialized, SampleModel)
+        assert deserialized.status == data.status
+        assert deserialized.value == data.value
+
+    def test_serialize_deserialize_nested_model(self):
+        """Test roundtrip with nested structures."""
+        data = NestedModel(items=[1, 2, 3], metadata={"key": "value"})
+        serialized = redis_backend.serialize(data)
+        deserialized = redis_backend.deserialize(serialized)
+        assert isinstance(deserialized, NestedModel)
+        assert deserialized.items == data.items
+        assert deserialized.metadata == data.metadata
 
 
 class TestQueueOperations:

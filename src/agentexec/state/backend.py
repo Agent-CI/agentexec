@@ -1,7 +1,4 @@
-"""State backend protocol for agent execution system."""
-
 from typing import AsyncGenerator, Coroutine, Optional, Protocol
-
 from pydantic import BaseModel
 
 

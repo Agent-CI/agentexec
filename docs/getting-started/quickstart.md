@@ -220,8 +220,8 @@ def check_activity(agent_id: str):
         print("\nLogs:")
         for log in activity.logs:
             print(f"  [{log.created_at}] {log.message}")
-            if log.completion_percentage is not None:
-                print(f"    Progress: {log.completion_percentage}%")
+            if log.percentage is not None:
+                print(f"    Progress: {log.percentage}%")
 
 
 if __name__ == "__main__":

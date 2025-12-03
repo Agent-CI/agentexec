@@ -243,7 +243,7 @@ async def get_task_status(agent_id: str) -> dict:
 
         return {
             "status": activity.status.value,
-            "progress": activity.latest_completion_percentage,
+            "progress": activity.latest_percentage,
             "updated_at": activity.updated_at.isoformat(),
         }
 ```

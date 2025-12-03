@@ -199,7 +199,7 @@ class LangChainRunner(BaseAgentRunner):
                 ax.activity.update(
                     agent_id,
                     f"Executing action: {action.tool}",
-                    completion_percentage=min(self.step_count * 10, 90)
+                    percentage=min(self.step_count * 10, 90)
                 )
 
             async def on_tool_end(self, output, **kwargs):
@@ -312,7 +312,7 @@ class ClaudeRunner(BaseAgentRunner):
                     ax.activity.update(
                         self.agent_id,
                         f"Turn {turn + 1}: Processing tool calls",
-                        completion_percentage=min(progress, 90)
+                        percentage=min(progress, 90)
                     )
                 else:
                     # Complete
@@ -393,7 +393,7 @@ class _RunnerTools:
         @function_tool
         def report_activity(message: str, percentage: int) -> str:
             """Report progress on the current task."""
-            ax.activity.update(agent_id, message, completion_percentage=percentage)
+            ax.activity.update(agent_id, message, percentage=percentage)
             return f"Status reported: {message} ({percentage}%)"
 
         return report_activity
@@ -421,7 +421,7 @@ class MyRunner(BaseAgentRunner):
         }
 
     async def _report_status(self, message: str, percentage: int):
-        ax.activity.update(self.agent_id, message, completion_percentage=percentage)
+        ax.activity.update(self.agent_id, message, percentage=percentage)
         return "Status updated"
 ```
 
@@ -553,7 +553,7 @@ async def _execute(self, agent, input, max_turns):
         ax.activity.update(
             self.agent_id,
             f"Turn {turn + 1}/{max_turns}",
-            completion_percentage=min(progress, 90)  # Leave 10% for completion
+            percentage=min(progress, 90)  # Leave 10% for completion
         )
         ...
 ```

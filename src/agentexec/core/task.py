@@ -243,7 +243,7 @@ class Task(BaseModel):
         activity.update(
             agent_id=self.agent_id,
             message=CONF.activity_message_started,
-            completion_percentage=0,
+            percentage=0,
         )
 
         try:
@@ -267,7 +267,7 @@ class Task(BaseModel):
             activity.update(
                 agent_id=self.agent_id,
                 message=CONF.activity_message_complete,
-                completion_percentage=100,
+                percentage=100,
                 status=activity.Status.COMPLETE,
             )
             return result

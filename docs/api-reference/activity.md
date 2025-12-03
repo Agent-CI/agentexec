@@ -72,7 +72,7 @@ Add a log entry to an activity.
 def update(
     agent_id: str | UUID,
     message: str,
-    completion_percentage: int | None = None,
+    percentage: int | None = None,
     status: Status | None = None,
 ) -> None
 ```
@@ -83,7 +83,7 @@ def update(
 |-----------|------|---------|-------------|
 | `agent_id` | `str \| UUID` | required | Activity identifier |
 | `message` | `str` | required | Log message |
-| `completion_percentage` | `int \| None` | `None` | Progress (0-100) |
+| `percentage` | `int \| None` | `None` | Progress (0-100) |
 | `status` | `Status \| None` | `None` | New status (keeps current if None) |
 
 ### Example
@@ -93,7 +93,7 @@ def update(
 ax.activity.update(agent_id, "Processing data...")
 
 # Update with progress
-ax.activity.update(agent_id, "50% complete", completion_percentage=50)
+ax.activity.update(agent_id, "50% complete", percentage=50)
 
 # Update with status change
 from agentexec.activity.models import Status
@@ -110,7 +110,7 @@ Mark an activity as successfully completed.
 def complete(
     agent_id: str | UUID,
     message: str,
-    completion_percentage: int = 100,
+    percentage: int = 100,
 ) -> None
 ```
 
@@ -120,7 +120,7 @@ def complete(
 |-----------|------|---------|-------------|
 | `agent_id` | `str \| UUID` | required | Activity identifier |
 | `message` | `str` | required | Completion message |
-| `completion_percentage` | `int` | `100` | Final progress |
+| `percentage` | `int` | `100` | Final progress |
 
 ### Example
 
@@ -128,7 +128,7 @@ def complete(
 ax.activity.complete(agent_id, "Task finished successfully")
 
 # With custom percentage
-ax.activity.complete(agent_id, "Partial completion", completion_percentage=75)
+ax.activity.complete(agent_id, "Partial completion", percentage=75)
 ```
 
 ---
@@ -266,7 +266,7 @@ with Session(engine) as session:
 
     if activity:
         print(f"Status: {activity.status}")
-        print(f"Progress: {activity.latest_completion_percentage}%")
+        print(f"Progress: {activity.latest_percentage}%")
         for log in activity.logs:
             print(f"  [{log.created_at}] {log.message}")
 ```
@@ -284,7 +284,7 @@ class ActivityDetailSchema(BaseModel):
     created_at: datetime
     updated_at: datetime
     status: Status
-    latest_completion_percentage: int | None
+    latest_percentage: int | None
     logs: list[ActivityLogSchema]
 ```
 
@@ -309,7 +309,7 @@ class ActivityListItemSchema(BaseModel):
     updated_at: datetime
     status: Status
     latest_log: str | None
-    latest_completion_percentage: int | None
+    latest_percentage: int | None
 ```
 
 ### ActivityLogSchema
@@ -319,7 +319,7 @@ class ActivityLogSchema(BaseModel):
     id: int
     message: str
     status: Status
-    completion_percentage: int | None
+    percentage: int | None
     created_at: datetime
 ```
 
@@ -404,7 +404,7 @@ def append_log(
     self,
     message: str,
     status: Status | None = None,
-    completion_percentage: int | None = None,
+    percentage: int | None = None,
 ) -> None
 ```
 
@@ -418,7 +418,7 @@ class ActivityLog(Base):
     activity_id: Mapped[UUID]          # Foreign key
     message: Mapped[str]               # Log message
     status: Mapped[Status]             # Status at time of log
-    completion_percentage: Mapped[int | None]
+    percentage: Mapped[int | None]
     created_at: Mapped[datetime]
 ```
 

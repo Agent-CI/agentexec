@@ -21,8 +21,8 @@ function LogEntry({ log, isLatest }: { log: ActivityLog; isLatest: boolean }) {
       <div className="ax-task-detail__log-header">
         <StatusBadge status={log.status} />
         <span className="ax-task-detail__log-time">{formatTimestamp(log.created_at)}</span>
-        {log.completion_percentage !== null && (
-          <span className="ax-task-detail__log-percentage">{log.completion_percentage}%</span>
+        {log.percentage !== null && (
+          <span className="ax-task-detail__log-percentage">{log.percentage}%</span>
         )}
       </div>
       <p className="ax-task-detail__log-message">{log.message}</p>
@@ -79,7 +79,7 @@ export function TaskDetail({
 
   const latestLog = activity.logs[activity.logs.length - 1];
   const currentStatus = latestLog?.status || 'queued';
-  const currentPercentage = latestLog?.completion_percentage || 0;
+  const currentPercentage = latestLog?.percentage || 0;
 
   return (
     <div className={`ax-task-detail ${className}`.trim()}>

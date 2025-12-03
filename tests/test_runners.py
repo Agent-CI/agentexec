@@ -127,7 +127,7 @@ class TestRunnerTools:
         assert len(update_calls) == 1
         assert update_calls[0]["agent_id"] == agent_id
         assert update_calls[0]["message"] == "Working on task"
-        assert update_calls[0]["completion_percentage"] == 50
+        assert update_calls[0]["percentage"] == 50
 
 
 class TestBaseAgentRunner:

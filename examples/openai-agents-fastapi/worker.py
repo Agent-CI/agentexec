@@ -10,6 +10,9 @@ from db import engine
 from tools import analyze_financial_data, search_company_info
 
 
+ax.Base.metadata.create_all(engine)
+
+
 class ResearchCompanyResult(BaseModel):
     financial_performance: str
     recent_news: str

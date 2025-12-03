@@ -221,9 +221,9 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     # Verify activity was updated (started and completed)
     assert len(activity_updates) == 2
     # First update marks task as started
-    assert activity_updates[0]["completion_percentage"] == 0
+    assert activity_updates[0]["percentage"] == 0
     # Second update marks task as completed
-    assert activity_updates[1]["completion_percentage"] == 100
+    assert activity_updates[1]["percentage"] == 100
 
     # Verify result was stored
     assert len(aset_result_calls) == 1

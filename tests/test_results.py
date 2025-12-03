@@ -1,11 +1,10 @@
 """Test task result storage and retrieval."""
 
 import asyncio
-import pickle
 import uuid
+from unittest.mock import AsyncMock, patch
 
 import pytest
-from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
 
 import agentexec as ax
@@ -18,60 +17,73 @@ class SampleContext(BaseModel):
     message: str
 
 
+class SampleResult(BaseModel):
+    """Sample result model for tests."""
+
+    status: str
+    value: int
+
+
+class ComplexResult(BaseModel):
+    """Complex result model with nested data."""
+
+    items: list[dict[str, int]]
+    nested: dict[str, list[int]]
+
+
 @pytest.fixture
-def fake_redis(monkeypatch):
-    """Setup fake async redis."""
-    fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
-
-    def get_fake_redis():
-        return fake_redis
-
-    monkeypatch.setattr("agentexec.core.results.get_redis", get_fake_redis)
-
-    yield fake_redis
+def mock_state():
+    """Mock the state module's aget_result function."""
+    with patch("agentexec.core.results.state") as mock:
+        yield mock
 
 
-async def test_get_result_returns_pickled_data(fake_redis) -> None:
-    """Test that get_result retrieves and unpickles data from Redis."""
+async def test_get_result_returns_deserialized_data(mock_state) -> None:
+    """Test that get_result retrieves data from state."""
     task = ax.Task(
         task_name="test_task",
         context=SampleContext(message="test"),
         agent_id=uuid.uuid4(),
     )
-    expected_result = {"status": "success", "data": [1, 2, 3]}
+    expected_result = SampleResult(status="success", value=42)
 
-    # Store pickled result in Redis
-    await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(expected_result))
+    # Mock aget_result to return the expected result
+    mock_state.aget_result = AsyncMock(return_value=expected_result)
 
-    # Retrieve the result
     result = await get_result(task, timeout=1)
 
     assert result == expected_result
+    mock_state.aget_result.assert_called_once_with(task.agent_id)
 
 
-async def test_get_result_polls_until_available(fake_redis) -> None:
-    """Test that get_result polls Redis until result is available."""
+async def test_get_result_polls_until_available(mock_state) -> None:
+    """Test that get_result polls until result is available."""
     task = ax.Task(
         task_name="test_task",
         context=SampleContext(message="test"),
         agent_id=uuid.uuid4(),
     )
-    expected_result = "delayed_result"
+    expected_result = SampleResult(status="delayed", value=100)
 
-    async def set_result_after_delay():
-        await asyncio.sleep(0.6)  # Wait a bit more than one poll interval
-        await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(expected_result))
+    # Return None first, then the result
+    call_count = 0
 
-    # Start the delayed setter
-    asyncio.create_task(set_result_after_delay())
+    async def delayed_result(agent_id):
+        nonlocal call_count
+        call_count += 1
+        if call_count < 3:
+            return None
+        return expected_result
 
-    # get_result should wait and eventually get the result
-    result = await get_result(task, timeout=2)
+    mock_state.aget_result = delayed_result
+
+    result = await get_result(task, timeout=5)
 
     assert result == expected_result
+    assert call_count == 3
 
 
-async def test_get_result_timeout(fake_redis) -> None:
+async def test_get_result_timeout(mock_state) -> None:
     """Test that get_result raises TimeoutError if result not available."""
     task = ax.Task(
         task_name="test_task",
@@ -79,13 +91,15 @@ async def test_get_result_timeout(fake_redis) -> None:
         agent_id=uuid.uuid4(),
     )
 
+    # Always return None to trigger timeout
+    mock_state.aget_result = AsyncMock(return_value=None)
+
     with pytest.raises(TimeoutError, match=f"Result for {task.agent_id} not available"):
         await get_result(task, timeout=0.5)
 
 
-async def test_gather_multiple_tasks(fake_redis) -> None:
+async def test_gather_multiple_tasks(mock_state) -> None:
     """Test that gather waits for multiple tasks and returns results."""
-    # Create test tasks
     task1 = ax.Task(
         task_name="task1",
         context=SampleContext(message="test1"),
@@ -97,21 +111,26 @@ async def test_gather_multiple_tasks(fake_redis) -> None:
         agent_id=uuid.uuid4(),
     )
 
-    result1 = {"task": "task1", "value": 100}
-    result2 = {"task": "task2", "value": 200}
+    result1 = SampleResult(status="task1", value=100)
+    result2 = SampleResult(status="task2", value=200)
 
-    # Store results
-    await fake_redis.set(f"result:{task1.agent_id}", pickle.dumps(result1))
-    await fake_redis.set(f"result:{task2.agent_id}", pickle.dumps(result2))
+    # Mock to return different results for different agent_ids
+    async def mock_aget_result(agent_id):
+        if agent_id == task1.agent_id:
+            return result1
+        elif agent_id == task2.agent_id:
+            return result2
+        return None
 
-    # Gather results
+    mock_state.aget_result = mock_aget_result
+
     results = await gather(task1, task2)
 
     assert results == (result1, result2)
     assert len(results) == 2
 
 
-async def test_gather_single_task(fake_redis) -> None:
+async def test_gather_single_task(mock_state) -> None:
     """Test that gather works with a single task."""
     task = ax.Task(
         task_name="single_task",
@@ -119,15 +138,15 @@ async def test_gather_single_task(fake_redis) -> None:
         agent_id=uuid.uuid4(),
     )
 
-    expected = "single_result"
-    await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(expected))
+    expected = SampleResult(status="single", value=1)
+    mock_state.aget_result = AsyncMock(return_value=expected)
 
     results = await gather(task)
 
     assert results == (expected,)
 
 
-async def test_gather_preserves_order(fake_redis) -> None:
+async def test_gather_preserves_order(mock_state) -> None:
     """Test that gather returns results in the same order as input tasks."""
     tasks = [
         ax.Task(
@@ -138,35 +157,37 @@ async def test_gather_preserves_order(fake_redis) -> None:
         for i in range(5)
     ]
 
-    # Store results in reverse order to test ordering
-    for i, task in enumerate(reversed(tasks)):
-        await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(f"result_{4-i}"))
+    # Create results mapped to task agent_ids
+    results_map = {task.agent_id: SampleResult(status=f"result_{i}", value=i) for i, task in enumerate(tasks)}
+
+    async def mock_aget_result(agent_id):
+        return results_map.get(agent_id)
+
+    mock_state.aget_result = mock_aget_result
 
     results = await gather(*tasks)
 
-    # Results should be in task order, not storage order
-    assert results == ("result_0", "result_1", "result_2", "result_3", "result_4")
+    # Results should be in task order
+    expected = tuple(SampleResult(status=f"result_{i}", value=i) for i in range(5))
+    assert results == expected
 
 
-async def test_get_result_with_complex_object(fake_redis) -> None:
-    """Test that get_result handles complex pickled objects."""
+async def test_get_result_with_complex_object(mock_state) -> None:
+    """Test that get_result handles complex BaseModel objects."""
     task = ax.Task(
         task_name="test_task",
         context=SampleContext(message="test"),
         agent_id=uuid.uuid4(),
     )
 
-    # Use a dict with complex structure instead of a custom class
-    # (local classes can't be pickled)
-    expected = {
-        "value": 42,
-        "nested": {"key": [1, 2, 3]},
-        "items": [{"a": 1}, {"b": 2}],
-    }
-    await fake_redis.set(f"result:{task.agent_id}", pickle.dumps(expected))
+    expected = ComplexResult(
+        items=[{"a": 1}, {"b": 2}],
+        nested={"key": [1, 2, 3]},
+    )
+    mock_state.aget_result = AsyncMock(return_value=expected)
 
     result = await get_result(task, timeout=1)
 
-    assert result["value"] == 42
-    assert result["nested"] == {"key": [1, 2, 3]}
-    assert result["items"] == [{"a": 1}, {"b": 2}]
+    assert isinstance(result, ComplexResult)
+    assert result.items == [{"a": 1}, {"b": 2}]
+    assert result.nested == {"key": [1, 2, 3]}

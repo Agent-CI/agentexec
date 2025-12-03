@@ -65,6 +65,11 @@ class _RunnerPrompts:
     Accessed via runner.prompts.*
     """
 
+    use_max_turms: str = (
+        "You will be notified when you have exhausted the computing resources available, "
+        "so continue until you are able to completely populate the schema or you are "
+        "notified that you have exhausted your resources."
+    )
     report_status: str = (
         "Using report_activity tool:\n"
         "    - Always report your current activity before you start a new step using the report_activity tool. \n"
@@ -128,7 +133,7 @@ class _RunnerTools:
             activity.update(
                 agent_id=agent_id,
                 message=message,
-                completion_percentage=percentage,
+                percentage=percentage,
             )
             return "Status updated"
 

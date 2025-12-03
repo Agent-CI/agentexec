@@ -92,9 +92,9 @@ export function TaskList({
                 </td>
                 <td className="ax-task-list__cell ax-task-list__cell--progress">
                   <div className="ax-task-list__progress-container">
-                    <ProgressBar percentage={item.completion_percentage} status={item.status} />
+                    <ProgressBar percentage={item.percentage} status={item.status} />
                     <span className="ax-task-list__progress-text">
-                      {item.completion_percentage}%
+                      {item.percentage}%
                     </span>
                   </div>
                 </td>

@@ -192,7 +192,7 @@ async def get_task_status(agent_id: str, db: Session = Depends(get_db)):
     return StatusResponse(
         agent_id=str(activity.agent_id),
         status=activity.status.value,
-        progress=activity.latest_completion_percentage,
+        progress=activity.latest_percentage,
         message=activity.logs[-1].message if activity.logs else None
     )
 ```

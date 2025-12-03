@@ -51,7 +51,7 @@ def test_create_activity(db_session: Session):
     assert len(activity_record.logs) == 1
     assert activity_record.logs[0].message == "Task queued for testing"
     assert activity_record.logs[0].status == Status.QUEUED
-    assert activity_record.logs[0].completion_percentage == 0
+    assert activity_record.logs[0].percentage == 0
 
 
 def test_normalize_agent_id():
@@ -96,7 +96,7 @@ def test_update_activity(db_session: Session):
     result = activity.update(
         agent_id=agent_id,
         message="Processing...",
-        completion_percentage=50,
+        percentage=50,
         session=db_session,
     )
 
@@ -107,7 +107,7 @@ def test_update_activity(db_session: Session):
     assert len(activity_record.logs) == 2
     assert activity_record.logs[1].message == "Processing..."
     assert activity_record.logs[1].status == Status.RUNNING
-    assert activity_record.logs[1].completion_percentage == 50
+    assert activity_record.logs[1].percentage == 50
 
 
 def test_update_activity_with_custom_status(db_session: Session):
@@ -122,7 +122,7 @@ def test_update_activity_with_custom_status(db_session: Session):
         agent_id=agent_id,
         message="Custom status update",
         status=Status.RUNNING,
-        completion_percentage=25,
+        percentage=25,
         session=db_session,
     )
 
@@ -151,7 +151,7 @@ def test_complete_activity(db_session: Session):
     latest_log = activity_record.logs[-1]
     assert latest_log.message == "Successfully completed"
     assert latest_log.status == Status.COMPLETE
-    assert latest_log.completion_percentage == 100
+    assert latest_log.percentage == 100
 
 
 def test_complete_activity_custom_percentage(db_session: Session):
@@ -165,13 +165,13 @@ def test_complete_activity_custom_percentage(db_session: Session):
     activity.complete(
         agent_id=agent_id,
         message="Done",
-        completion_percentage=95,
+        percentage=95,
         session=db_session,
     )
 
     activity_record = Activity.get_by_agent_id(db_session, agent_id)
     latest_log = activity_record.logs[-1]
-    assert latest_log.completion_percentage == 95
+    assert latest_log.percentage == 95
 
 
 def test_error_activity(db_session: Session):
@@ -194,7 +194,7 @@ def test_error_activity(db_session: Session):
     latest_log = activity_record.logs[-1]
     assert latest_log.message == "Task failed: connection timeout"
     assert latest_log.status == Status.ERROR
-    assert latest_log.completion_percentage == 100
+    assert latest_log.percentage == 100
 
 
 def test_cancel_pending_activities(db_session: Session):
@@ -286,7 +286,7 @@ def test_detail_activity(db_session: Session):
     activity.update(
         agent_id=agent_id,
         message="Processing",
-        completion_percentage=50,
+        percentage=50,
         session=db_session,
     )
     activity.complete(agent_id=agent_id, session=db_session)

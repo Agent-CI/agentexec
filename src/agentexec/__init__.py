@@ -1,34 +1,26 @@
-"""`agentexec` - Production-ready orchestration for OpenAI Agents.
-
-This library provides:
-- Background worker pool with Redis-backed task queue
-- Activity tracking with pluggable storage backends
-- OpenAI Agents SDK runner with max turns recovery
-- Type-safe task context via Pydantic models
+"""`agentexec` - Background task orchestration for AI Agents.
 
 Example:
     from uuid import UUID
     from pydantic import BaseModel
     import agentexec as ax
 
-    # Create worker pool
-    engine = create_engine("sqlite:///agents.db")
-    pool = ax.WorkerPool(engine=engine)
+    pool = ax.WorkerPool(database_url="sqlite:///tasks.db")
 
-    # Define typed context for your task
-    class ResearchContext(BaseModel):
-        company_name: str
+    class Input(BaseModel):
+        query: str
 
-    # Register task with pool
-    @pool.task("research_company")
-    async def research_company(agent_id: UUID, context: ResearchContext):
-        print(f"Researching {context.company_name}")  # Typed!
+    class Output(BaseModel):
+        answer: str
 
-    # Enqueue from anywhere (e.g., web handler)
-    task = ax.enqueue("research_company", ResearchContext(company_name="Acme"))
+    @pool.task("search")
+    async def search(agent_id: UUID, context: Input) -> Output:
+        return Output(answer=f"Result for {context.query}")
 
-    # Start worker pool
-    pool.start()
+    # Enqueue from anywhere (returns Task with agent_id for tracking)
+    task = await ax.enqueue("search", Input(query="hello"))
+
+    pool.run()  # Blocks and processes tasks
 """
 
 from importlib.metadata import PackageNotFoundError, version

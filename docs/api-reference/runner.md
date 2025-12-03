@@ -240,7 +240,7 @@ def report_activity(message: str, percentage: int) -> str:
 When the agent calls this tool, it updates the activity:
 
 ```python
-ax.activity.update(agent_id, message, completion_percentage=percentage)
+ax.activity.update(agent_id, message, percentage=percentage)
 ```
 
 ---

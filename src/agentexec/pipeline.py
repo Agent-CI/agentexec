@@ -1,7 +1,7 @@
 from __future__ import annotations
+from typing import Any, Callable, TypeVar, get_type_hints, get_origin, get_args
 import inspect
 from dataclasses import dataclass
-from typing import Any, Callable, TypeVar, get_type_hints, get_origin, get_args
 
 from pydantic import BaseModel
 

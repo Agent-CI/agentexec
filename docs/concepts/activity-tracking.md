@@ -83,7 +83,7 @@ async def long_task(agent_id: UUID, context: MyContext):
     ax.activity.update(
         agent_id,
         "Phase 1 complete, starting phase 2",
-        completion_percentage=33
+        percentage=33
     )
 
     await phase_2()
@@ -91,7 +91,7 @@ async def long_task(agent_id: UUID, context: MyContext):
     ax.activity.update(
         agent_id,
         "Phase 2 complete, starting phase 3",
-        completion_percentage=66
+        percentage=66
     )
 
     await phase_3()
@@ -112,7 +112,7 @@ result = await runner.run(agent, input="...")
 ax.activity.complete(
     agent_id,
     message="All processing finished",
-    completion_percentage=100
+    percentage=100
 )
 ```
 
@@ -155,7 +155,7 @@ with Session(engine) as session:
         print(f"Status: {activity.status}")
         print(f"Created: {activity.created_at}")
         print(f"Updated: {activity.updated_at}")
-        print(f"Progress: {activity.latest_completion_percentage}%")
+        print(f"Progress: {activity.latest_percentage}%")
 
         print("\nLog history:")
         for log in activity.logs:
@@ -223,7 +223,7 @@ class ActivityDetailSchema(BaseModel):
     created_at: datetime
     updated_at: datetime
     status: Status                     # Current status
-    latest_completion_percentage: int | None
+    latest_percentage: int | None
     logs: list[ActivityLogSchema]      # All log entries
 ```
 
@@ -252,7 +252,7 @@ class ActivityListItemSchema(BaseModel):
     updated_at: datetime
     status: Status
     latest_log: str | None              # Most recent log message
-    latest_completion_percentage: int | None
+    latest_percentage: int | None
 ```
 
 ### ActivityLogSchema
@@ -264,7 +264,7 @@ class ActivityLogSchema(BaseModel):
     id: int
     message: str
     status: Status
-    completion_percentage: int | None
+    percentage: int | None
     created_at: datetime
 ```
 
@@ -292,7 +292,7 @@ CREATE TABLE agentexec_activity_log (
     activity_id UUID REFERENCES agentexec_activity(id),
     message TEXT NOT NULL,
     status VARCHAR NOT NULL,  -- QUEUED, RUNNING, COMPLETE, ERROR, CANCELED
-    completion_percentage INTEGER,
+    percentage INTEGER,
     created_at TIMESTAMP DEFAULT NOW()
 );
 
@@ -415,7 +415,7 @@ def get_status(agent_id: str, db: Session = Depends(get_db)):
         raise HTTPException(404, "Activity not found")
     return {
         "status": activity.status,
-        "progress": activity.latest_completion_percentage,
+        "progress": activity.latest_percentage,
         "message": activity.logs[-1].message if activity.logs else None
     }
 ```
@@ -439,7 +439,7 @@ async def long_task(agent_id: UUID, context: MyContext):
         ax.activity.update(
             agent_id,
             f"Processed {i+1}/{len(items)} items",
-            completion_percentage=progress
+            percentage=progress
         )
 ```
 
@@ -452,11 +452,11 @@ Make messages informative:
 ax.activity.update(
     agent_id,
     f"Found {len(results)} matching documents, analyzing...",
-    completion_percentage=50
+    percentage=50
 )
 
 # Bad - vague message
-ax.activity.update(agent_id, "Working...", completion_percentage=50)
+ax.activity.update(agent_id, "Working...", percentage=50)
 ```
 
 ### 3. Handle Errors Gracefully

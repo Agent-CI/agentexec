@@ -20,13 +20,13 @@ def test_activity_log_schema():
         id=uuid.uuid4(),
         message="Test message",
         status=Status.RUNNING,
-        completion_percentage=50,
+        percentage=50,
         created_at=datetime.now(UTC),
     )
 
     assert log.message == "Test message"
     assert log.status == Status.RUNNING
-    assert log.completion_percentage == 50
+    assert log.percentage == 50
 
 
 def test_activity_log_schema_default_percentage():
@@ -38,7 +38,7 @@ def test_activity_log_schema_default_percentage():
         created_at=datetime.now(UTC),
     )
 
-    assert log.completion_percentage == 0
+    assert log.percentage == 0
 
 
 def test_activity_detail_schema():
@@ -55,7 +55,7 @@ def test_activity_detail_schema():
                 id=uuid.uuid4(),
                 message="Log entry",
                 status=Status.RUNNING,
-                completion_percentage=25,
+                percentage=25,
                 created_at=now,
             )
         ],
@@ -88,12 +88,12 @@ def test_activity_list_item_schema():
         status=Status.RUNNING,
         latest_log_message="Processing",
         latest_log_timestamp=now,
-        completion_percentage=75,
+        percentage=75,
         started_at=now - timedelta(seconds=30),
     )
 
     assert item.status == Status.RUNNING
-    assert item.completion_percentage == 75
+    assert item.percentage == 75
 
 
 def test_activity_list_item_elapsed_time_computed():
@@ -107,7 +107,7 @@ def test_activity_list_item_elapsed_time_computed():
         status=Status.RUNNING,
         latest_log_message="Running",
         latest_log_timestamp=latest,
-        completion_percentage=50,
+        percentage=50,
         started_at=started,
     )
 

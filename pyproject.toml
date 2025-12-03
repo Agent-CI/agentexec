@@ -6,7 +6,7 @@ readme = "README.md"
 requires-python = ">=3.11"
 license = { text = "MIT" }
 authors = [
-    {name = "Agent CI", email = "hello@agentci.com"},
+    {name = "Agent CI", email = "hello@agent-ci.com"},
     {name = "Travis Dent", email = "root@a10k.co"}
 ]
 keywords = ["agents", "openai", "redis", "orchestration", "async", "background-workers"]

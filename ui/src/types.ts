@@ -10,7 +10,7 @@ export interface ActivityLog {
   id: string;
   message: string;
   status: Status;
-  completion_percentage: number;
+  percentage: number;
   created_at: string;
 }
 
@@ -35,7 +35,7 @@ export interface ActivityListItem {
   status: Status;
   latest_log_message: string | null;
   latest_log_timestamp: string | null;
-  completion_percentage: number;
+  percentage: number;
   started_at: string | null;
   elapsed_time_seconds: number;
 }

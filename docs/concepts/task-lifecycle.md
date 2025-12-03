@@ -223,13 +223,13 @@ For custom runners, you can manage lifecycle manually:
 @pool.task("custom_task")
 async def custom_task(agent_id: UUID, context: MyContext):
     # Manual status updates
-    ax.activity.update(agent_id, "Starting phase 1", completion_percentage=0)
+    ax.activity.update(agent_id, "Starting phase 1", percentage=0)
 
     await phase_1()
-    ax.activity.update(agent_id, "Phase 1 complete", completion_percentage=33)
+    ax.activity.update(agent_id, "Phase 1 complete", percentage=33)
 
     await phase_2()
-    ax.activity.update(agent_id, "Phase 2 complete", completion_percentage=66)
+    ax.activity.update(agent_id, "Phase 2 complete", percentage=66)
 
     await phase_3()
     # Final status is set automatically
@@ -337,7 +337,7 @@ with Session(engine) as session:
     activity = ax.activity.detail(session, agent_id)
 
     print(f"Status: {activity.status}")
-    print(f"Progress: {activity.latest_completion_percentage}%")
+    print(f"Progress: {activity.latest_percentage}%")
 
     for log in activity.logs:
         print(f"[{log.created_at}] {log.message}")
@@ -363,69 +363,6 @@ with Session(engine) as session:
     running = session.query(Activity).filter(
         Activity.logs.any(status=Status.RUNNING)
     ).all()
-```
-
-## Best Practices
-
-### 1. Keep Contexts Small
-
-Don't embed large data in contexts. Use references instead:
-
-```python
-# Bad: Large data in context
-class BadContext(BaseModel):
-    file_contents: str  # Could be megabytes
-
-# Good: Reference to data
-class GoodContext(BaseModel):
-    file_id: str  # Fetch from storage in handler
-```
-
-### 2. Idempotent Handlers
-
-Design handlers to be safely re-runnable:
-
-```python
-@pool.task("process_order")
-async def process_order(agent_id: UUID, context: OrderContext):
-    # Check if already processed
-    if await is_order_processed(context.order_id):
-        return {"status": "already_processed"}
-
-    # Process and mark as done atomically
-    await process_and_mark(context.order_id)
-```
-
-### 3. Progress Reporting
-
-Report progress for long-running tasks:
-
-```python
-@pool.task("long_task")
-async def long_task(agent_id: UUID, context: MyContext):
-    items = await get_items()
-
-    for i, item in enumerate(items):
-        await process_item(item)
-        progress = int((i + 1) / len(items) * 100)
-        ax.activity.update(agent_id, f"Processed {i+1}/{len(items)}", progress)
-```
-
-### 4. Graceful Timeout Handling
-
-Handle timeouts gracefully in handlers:
-
-```python
-import asyncio
-
-@pool.task("timed_task")
-async def timed_task(agent_id: UUID, context: MyContext):
-    try:
-        result = await asyncio.wait_for(slow_operation(), timeout=60)
-        return result
-    except asyncio.TimeoutError:
-        ax.activity.update(agent_id, "Operation timed out, using fallback")
-        return await fallback_operation()
 ```
 
 ## Next Steps

@@ -90,7 +90,7 @@ Activity tracking provides observability:
 │ activity_id: UUID (foreign key)                      │
 │ message: text                                        │
 │ status: enum (QUEUED, RUNNING, COMPLETE, ERROR, ...) │
-│ completion_percentage: int (nullable)                │
+│ percentage: int (nullable)                │
 │ created_at: datetime                                 │
 └──────────────────────────────────────────────────────┘
 ```
@@ -165,7 +165,7 @@ return {"agent_id": task.agent_id}
 activity = ax.activity.detail(session, agent_id)
 return {
     "status": activity.status,
-    "progress": activity.latest_completion_percentage,
+    "progress": activity.latest_percentage,
     "logs": [{"message": log.message} for log in activity.logs]
 }
 ```

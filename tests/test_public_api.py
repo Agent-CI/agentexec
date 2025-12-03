@@ -15,6 +15,12 @@ class SampleContext(BaseModel):
     param: str
 
 
+class SampleResult(BaseModel):
+    """Sample result for public API tests."""
+
+    message: str
+
+
 @pytest.fixture
 def pool():
     """Create a WorkerPool for testing."""
@@ -80,8 +86,8 @@ def test_config_environment_variables() -> None:
 def test_task_decorator_interface(pool) -> None:
     """Test that @pool.task() decorator works."""
     @pool.task("test_task")
-    async def test_handler(agent_id: uuid.UUID, context: SampleContext) -> str:
-        return f"Processed: {context.param}"
+    async def test_handler(agent_id: uuid.UUID, context: SampleContext) -> SampleResult:
+        return SampleResult(message=f"Processed: {context.param}")
 
     # Verify task definition was registered with pool
     assert "test_task" in pool._context.tasks

@@ -6,6 +6,8 @@ from sqlalchemy import create_engine
 import agentexec as ax
 
 engine = create_engine("sqlite:///agents.db", echo=False)
+ax.Base.metadata.create_all(engine)
+
 pool = ax.WorkerPool(engine=engine)
 
 

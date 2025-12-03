@@ -73,7 +73,7 @@ class Activity(Base):
         agent_id: uuid.UUID,
         message: str,
         status: Status,
-        completion_percentage: int | None = None,
+        percentage: int | None = None,
     ) -> None:
         """Append a log entry to the activity for the given agent_id.
 
@@ -85,7 +85,7 @@ class Activity(Base):
             agent_id: The agent_id to append the log to
             message: Log message
             status: Current status of the agent
-            completion_percentage: Optional completion percentage (0-100)
+            percentage: Optional completion percentage (0-100)
 
         Raises:
             ValueError: If agent_id not found (foreign key constraint will fail)
@@ -98,7 +98,7 @@ class Activity(Base):
             activity_id=activity_id_subq,
             message=message,
             status=status,
-            completion_percentage=completion_percentage,
+            percentage=percentage,
         )
 
         try:
@@ -152,7 +152,7 @@ class Activity(Base):
         Returns:
             List of RowMapping objects (dict-like) with keys matching ActivitySummarySchema:
             agent_id, agent_type, latest_log_message, status, latest_log_timestamp,
-            completion_percentage, started_at
+            percentage, started_at
 
         Example:
             results = Activity.get_list(session, page=1, page_size=20)
@@ -165,7 +165,7 @@ class Activity(Base):
             ActivityLog.message,
             ActivityLog.status,
             ActivityLog.created_at,
-            ActivityLog.completion_percentage,
+            ActivityLog.percentage,
             func.row_number()
             .over(
                 partition_by=ActivityLog.activity_id,
@@ -196,7 +196,7 @@ class Activity(Base):
                 latest_log.c.message.label("latest_log_message"),
                 latest_log.c.status,
                 latest_log.c.created_at.label("latest_log_timestamp"),
-                latest_log.c.completion_percentage,
+                latest_log.c.percentage,
                 started_at.c.started_at,
             )
             .outerjoin(
@@ -322,7 +322,7 @@ class ActivityLog(Base):
     )
     message: Mapped[str] = mapped_column(Text, nullable=False)
     status: Mapped[Status] = mapped_column(Enum(Status), nullable=False, index=True)
-    completion_percentage: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    percentage: Mapped[int | None] = mapped_column(Integer, nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         nullable=False,

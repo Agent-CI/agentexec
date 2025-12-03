@@ -59,12 +59,12 @@ from sqlalchemy import create_engine
 import agentexec as ax
 
 
-# Define typed context for your task
+# agentexec uses Pydantic models for input and outuput schemas
 class ResearchContext(BaseModel):
     company: str
 
 
-# Database for activity tracking (share with your app)
+# Database for activity tracking (share with the rest of your app)
 engine = create_engine("sqlite:///agents.db")
 
 # Create worker pool
@@ -76,45 +76,34 @@ async def research_company(agent_id: UUID, context: ResearchContext) -> None:
     """Background task that runs an AI agent."""
     runner = ax.OpenAIRunner(
         agent_id=agent_id,
-        max_turns_recovery=True,
     )
 
     agent = Agent(
         name="Research Agent",
         instructions=(
-            f"Research {context.company}.\n"  # Typed access!
-            "\n"
-            f"{runner.prompts.report_status}"
+            f"Research {context.company}.\n"
+            runner.prompts.report_status
         ),
         tools=[
-            runner.tools.report_status,
+            runner.tools.report_status,  # Automatically associated with agent_id
         ],
-        model="gpt-4o",
+        model="gpt-5",
     )
 
     result = await runner.run(
         agent,
         input="Start research",
-        max_turns=15,
     )
-    print(f"Done! {result.final_output}")
+    print(f"Done! {result.final_output}")  # Native result object
 
 
 if __name__ == "__main__":
-    pool.start()  # Start workers
+    pool.start()  # Start worker process
 ```
 
 ### 2. Queue Tasks from Your Application
 
 ```python
-import agentexec as ax
-from pydantic import BaseModel
-
-
-class ResearchContext(BaseModel):
-    company: str
-
-
 # Enqueue a task (from your async API handler, etc.)
 task = await ax.enqueue(
     "research_company",
@@ -163,10 +152,17 @@ Agents can report their own progress using a built-in tool:
 ```python
 agent = Agent(
     instructions=f"Do research. {runner.prompts.report_status}",
-    tools=[runner.tools.report_status],  # Agent can call this
+    tools=[runner.tools.report_status],  # Agent passes a short message and percentage
 )
 
 # Agent will report: "Gathering data" (40%), "Analyzing results" (80%), etc.
+```
+
+### Explicit Reporting
+Manually update activity status and progress from within your task:
+
+```python
+ax.activity.update(agent_id, "Starting data collection", percentage=10)
 ```
 
 ### Max Turns Recovery
@@ -179,6 +175,10 @@ runner = ax.OpenAIRunner(
     max_turns_recovery=True,
     wrap_up_prompt="Please summarize your findings.",
 )
+agent = Agent(
+    instructions="Research the topic thoroughly."
+)
+result = await runner.run(agent, max_turns=5)
 
 # If agent hits max turns, runner automatically:
 # 1. Catches MaxTurnsExceeded
@@ -203,23 +203,24 @@ await ax.enqueue("batch_job", context, priority=ax.Priority.LOW)
 Orchestrate multi-step workflows with parallel task execution:
 
 ```python
-import agentexec as ax
-
 pipeline = ax.Pipeline(pool=pool)
 
 
 class MyPipeline(pipeline.Base):
     @pipeline.step(0)
-    async def parallel_research(self, input_ctx: InputContext):
+    async def parallel_research(self, context: InputContext):
         """Run multiple tasks in parallel."""
-        task1 = await ax.enqueue("research_brand", BrandContext(...))
-        task2 = await ax.enqueue("research_market", MarketContext(...))
-        return await ax.gather(task1, task2)
+        brand_task = await ax.enqueue("research_brand", context)
+        market_task = await ax.enqueue("research_market", context)
+        return await ax.gather(brand_task, market_task)
 
     @pipeline.step(1)
-    async def analyze(self, brand_result, market_result):
+    async def analyze(self, brand_result: BrandResult, market_result: MarketResult) -> AnalysisResult:
         """Combine results from previous step."""
-        task = await ax.enqueue("analyze", AnalysisContext(...))
+        task = await ax.enqueue("analyze_research", AnalysisContext(
+            brand=brand_result, 
+            market=market_result,
+        ))
         return await ax.get_result(task)
 
 
@@ -366,7 +367,7 @@ AgentExec creates two tables (prefix configurable):
 - `activity_id` - Foreign key to activity
 - `message` - Log message
 - `status` - QUEUED, RUNNING, COMPLETE, ERROR, CANCELED
-- `completion_percentage` - Progress (0-100)
+- `percentage` - Progress (0-100)
 - `created_at` - When log was created
 
 ---
