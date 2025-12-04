@@ -23,7 +23,7 @@ class BaseAgentRunner(ABC):
     - max_turns_exceptions: Tuple of exception classes for max turns errors
     """
 
-    agent_id: uuid.UUID
+    agent_id: uuid.UUID | None
     max_turns_recovery: bool
     recovery_turns: int
 
@@ -32,7 +32,7 @@ class BaseAgentRunner(ABC):
 
     def __init__(
         self,
-        agent_id: uuid.UUID,
+        agent_id: uuid.UUID | None = None,
         *,
         max_turns_recovery: bool = True,
         recovery_turns: int = 5,
@@ -53,7 +53,6 @@ class BaseAgentRunner(ABC):
 
         # Tools namespace for accessing runner-provided tools
         self.prompts = _RunnerPrompts(
-            report_status=report_status_prompt,
             wrap_up=wrap_up_prompt,
         )
         self.tools = _RunnerTools(self.agent_id)
@@ -70,6 +69,9 @@ class _RunnerPrompts:
         "so continue until you are able to completely populate the schema or you are "
         "notified that you have exhausted your resources."
     )
+    wrap_up: str = (
+        "You have exhausted the computing resources available. Please summarize your findings."
+    )
     report_status: str = (
         "Using report_activity tool:\n"
         "    - Always report your current activity before you start a new step using the report_activity tool. \n"
@@ -79,18 +81,14 @@ class _RunnerPrompts:
         "    - You can call multiple tools in parallel per step so don't waste an entire step on this.\n"
         "    - Call it at the top of your list of the next round of tool uses; we should be careful to minimize turns used.\n"
     )
-    wrap_up: str = "Please summarize your findings."
 
     def __init__(
         self,
         *,
         wrap_up: str | None = None,
-        report_status: str | None = None,
     ) -> None:
         if wrap_up is not None:
             self.wrap_up = wrap_up
-        if report_status is not None:
-            self.report_status = report_status
 
 
 class _RunnerTools:
@@ -99,9 +97,9 @@ class _RunnerTools:
     Accessed via runner.tools.*
     """
 
-    _agent_id: uuid.UUID
+    _agent_id: uuid.UUID | None
 
-    def __init__(self, agent_id: uuid.UUID) -> None:
+    def __init__(self, agent_id: uuid.UUID | None = None) -> None:
         self._agent_id = agent_id
 
     @property
@@ -117,6 +115,7 @@ class _RunnerTools:
             Plain function for status updates.
         """
         agent_id = self._agent_id
+        assert agent_id, "agent_id must be set to use report_status tool"
 
         def report_activity(message: str, percentage: int) -> str:
             """Report progress and status updates.

@@ -22,6 +22,8 @@ __all__ = [
     "set",
     "adelete",
     "delete",
+    "incr",
+    "decr",
     "publish",
     "subscribe",
     "close",
@@ -309,6 +311,32 @@ def delete(key: str) -> int:
     """
     client = _get_sync_client()
     return client.delete(key)  # type: ignore[return-value]
+
+
+def incr(key: str) -> int:
+    """Increment a counter atomically.
+
+    Args:
+        key: Counter key
+
+    Returns:
+        Value after increment
+    """
+    client = _get_sync_client()
+    return client.incr(key)  # type: ignore[return-value]
+
+
+def decr(key: str) -> int:
+    """Decrement a counter atomically.
+
+    Args:
+        key: Counter key
+
+    Returns:
+        Value after decrement
+    """
+    client = _get_sync_client()
+    return client.decr(key)  # type: ignore[return-value]
 
 
 def publish(channel: str, message: str) -> None:

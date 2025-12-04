@@ -33,6 +33,7 @@ from agentexec.core.task import Task, TaskDefinition, TaskHandler, TaskHandlerKw
 from agentexec.worker import WorkerPool
 from agentexec.pipeline import Pipeline
 from agentexec.runners import BaseAgentRunner
+from agentexec.tracker import Tracker
 
 try:
     __version__ = version("agentexec")
@@ -43,6 +44,7 @@ __all__ = [
     "CONF",
     "Base",
     "Pipeline",
+    "Tracker",
     "WorkerPool",
     "Task",
     "TaskDefinition",

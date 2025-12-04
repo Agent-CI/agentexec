@@ -136,6 +136,29 @@ class StateBackend(Protocol):
         """
         ...
 
+    # Counter operations
+    def incr(self, key: str) -> int:
+        """Increment a counter atomically.
+
+        Args:
+            key: Counter key
+
+        Returns:
+            Value after increment
+        """
+        ...
+
+    def decr(self, key: str) -> int:
+        """Decrement a counter atomically.
+
+        Args:
+            key: Counter key
+
+        Returns:
+            Value after decrement
+        """
+        ...
+
     # Pub/sub operations
     def publish(self, channel: str, message: str) -> None:
         """Publish message to a channel.
