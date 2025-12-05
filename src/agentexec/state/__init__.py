@@ -1,6 +1,7 @@
 # cspell:ignore acheck
 
-from typing import AsyncGenerator, Coroutine, cast
+from typing import cast, AsyncGenerator, Coroutine
+import importlib
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -11,15 +12,6 @@ from agentexec.state.backend import StateBackend
 KEY_RESULT = (CONF.key_prefix, "result")
 KEY_EVENT = (CONF.key_prefix, "event")
 CHANNEL_LOGS = (CONF.key_prefix, "logs")
-
-
-match CONF.state_backend:
-    case "redis":
-        from agentexec.state import redis_backend as _backend
-    case _:
-        raise RuntimeError(f"Unsupported state backend: {CONF.state_backend}.")
-
-backend: StateBackend = cast(StateBackend, _backend)
 
 __all__ = [
     "backend",
@@ -36,6 +28,16 @@ __all__ = [
     "check_event",
     "acheck_event",
 ]
+
+
+def _load_backend(module_name: str) -> StateBackend:
+    module = cast(StateBackend, importlib.import_module(module_name))
+    if not isinstance(module, StateBackend):  # type: ignore[invalid-argument-type]
+        raise RuntimeError(f"State backend ({module_name}) does not conform to protocol.")
+    return module
+
+
+backend: StateBackend = _load_backend(CONF.state_backend)
 
 
 def get_result(agent_id: UUID | str) -> BaseModel | None:

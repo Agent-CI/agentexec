@@ -1,9 +1,3 @@
-"""Worker pool for background task execution.
-
-Tasks are registered via @WorkerPool.task() decorator before starting the pool.
-Workers use the class-level registry to deserialize and execute tasks.
-"""
-
 from __future__ import annotations
 
 import asyncio
@@ -13,6 +7,7 @@ from dataclasses import dataclass
 from typing import Callable
 from uuid import uuid4
 
+from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
 
 from agentexec import state
@@ -30,16 +25,12 @@ from agentexec.worker.logging import (
 __all__ = [
     "Worker",
     "WorkerPool",
-    "WorkerContext",
 ]
-
-
-from pydantic import BaseModel
 
 
 def _get_pool_id() -> str:
     """Get a unique pool ID for shutdown event keys."""
-    return uuid4().hex[:8]
+    return str(uuid4())
 
 
 @dataclass
@@ -179,7 +170,7 @@ class WorkerPool:
         if not engine and not database_url:
             raise ValueError("Either engine or database_url must be provided")
 
-        engine = engine or create_engine(database_url)
+        engine = engine or create_engine(database_url)  # type: ignore[arg-type]
         set_global_session(engine)
 
         self._context = WorkerContext(

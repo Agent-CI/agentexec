@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import asyncio
 import inspect
-from typing import Any, Protocol, TypedDict, get_type_hints
+from typing import Any, Protocol, TypeAlias, TypedDict, cast, get_type_hints
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
@@ -21,19 +20,36 @@ class TaskHandlerKwargs(TypedDict):
     context: BaseModel
 
 
-TaskResult = BaseModel  # Union[BaseModel, tuple[BaseModel, ...]]
+TaskResult: TypeAlias = BaseModel
 
 
-class TaskHandler(Protocol):
+class _SyncTaskHandler(Protocol):
     """Protocol for task handler functions."""
 
     __name__: str
 
     def __call__(
         self,
+        *,
         agent_id: UUID,
         context: BaseModel,
     ) -> TaskResult: ...
+
+
+class _AsyncTaskHandler(Protocol):
+    """Protocol for async task handler functions."""
+
+    __name__: str
+
+    async def __call__(
+        self,
+        *,
+        agent_id: UUID,
+        context: BaseModel,
+    ) -> TaskResult: ...
+
+
+TaskHandler: TypeAlias = _SyncTaskHandler | _AsyncTaskHandler
 
 
 class TaskDefinition:
@@ -82,6 +98,15 @@ class TaskDefinition:
         self.handler = handler
         self.context_type = context_type or self._infer_context_type(handler)
         self.result_type = result_type or self._infer_result_type(handler)
+
+    async def __call__(self, agent_id: UUID, context: BaseModel) -> TaskResult:
+        """Delegate calls to the handler function."""
+        if inspect.iscoroutinefunction(self.handler):
+            handler = cast(_AsyncTaskHandler, self.handler)
+            return await handler(agent_id=agent_id, context=context)
+        else:
+            handler = cast(_SyncTaskHandler, self.handler)
+            return handler(agent_id=agent_id, context=context)
 
     def _infer_context_type(self, handler: TaskHandler) -> type[BaseModel]:
         """Infer context class from handler's type annotations.
@@ -244,23 +269,18 @@ class Task(BaseModel):
         )
 
         try:
-            result: TaskResult
-            if asyncio.iscoroutinefunction(self._definition.handler):
-                result = await self._definition.handler(
-                    agent_id=self.agent_id,
-                    context=self.context,
-                )
-            else:
-                result = self._definition.handler(
-                    agent_id=self.agent_id,
-                    context=self.context,
-                )
-
-            await state.aset_result(
-                self.agent_id,
-                result,
-                ttl_seconds=CONF.result_ttl,
+            result = await self._definition(
+                agent_id=self.agent_id,
+                context=self.context,
             )
+
+            # TODO ensure we are properly supporting None return values
+            if isinstance(result, BaseModel):
+                await state.aset_result(
+                    self.agent_id,
+                    result,
+                    ttl_seconds=CONF.result_ttl,
+                )
 
             activity.update(
                 agent_id=self.agent_id,

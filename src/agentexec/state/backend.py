@@ -1,7 +1,10 @@
-from typing import AsyncGenerator, Coroutine, Optional, Protocol
+from types import ModuleType
+from typing import AsyncGenerator, Coroutine, Optional, Protocol, runtime_checkable
+
 from pydantic import BaseModel
 
 
+@runtime_checkable
 class StateBackend(Protocol):
     """Protocol defining the state backend interface.
 
@@ -12,13 +15,15 @@ class StateBackend(Protocol):
     - Pub/sub messaging (worker logging)
 
     Any module that implements these functions can serve as a state backend.
+    Methods are defined as @staticmethod to match module-level functions.
 
     Connection management is handled internally - connections are established
     lazily when first accessed. Only cleanup needs to be explicit.
     """
 
     # Connection management
-    async def close(self) -> None:
+    @staticmethod
+    async def close() -> None:
         """Close all connections to the backend.
 
         This should close both async and sync connections and clean up
@@ -27,7 +32,8 @@ class StateBackend(Protocol):
         ...
 
     # Queue operations (Redis list commands)
-    def rpush(self, key: str, value: str) -> int:
+    @staticmethod
+    def rpush(key: str, value: str) -> int:
         """Push value to the right (front) of the list - for high priority tasks.
 
         Args:
@@ -39,7 +45,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def lpush(self, key: str, value: str) -> int:
+    @staticmethod
+    def lpush(key: str, value: str) -> int:
         """Push value to the left (back) of the list - for low priority tasks.
 
         Args:
@@ -51,7 +58,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    async def brpop(self, key: str, timeout: int = 0) -> Optional[tuple[str, str]]:
+    @staticmethod
+    async def brpop(key: str, timeout: int = 0) -> Optional[tuple[str, str]]:
         """Pop value from the right of the list with blocking.
 
         Args:
@@ -64,7 +72,8 @@ class StateBackend(Protocol):
         ...
 
     # Key-value operations
-    def aget(self, key: str) -> Coroutine[None, None, Optional[bytes]]:
+    @staticmethod
+    def aget(key: str) -> Coroutine[None, None, Optional[bytes]]:
         """Get value for key asynchronously.
 
         Args:
@@ -75,7 +84,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def get(self, key: str) -> Optional[bytes]:
+    @staticmethod
+    def get(key: str) -> Optional[bytes]:
         """Get value for key synchronously.
 
         Args:
@@ -86,8 +96,9 @@ class StateBackend(Protocol):
         """
         ...
 
+    @staticmethod
     def aset(
-        self, key: str, value: bytes, ttl_seconds: Optional[int] = None
+        key: str, value: bytes, ttl_seconds: Optional[int] = None
     ) -> Coroutine[None, None, bool]:
         """Set value for key asynchronously with optional TTL.
 
@@ -101,7 +112,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def set(self, key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
+    @staticmethod
+    def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
         """Set value for key synchronously with optional TTL.
 
         Args:
@@ -114,7 +126,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def adelete(self, key: str) -> Coroutine[None, None, int]:
+    @staticmethod
+    def adelete(key: str) -> Coroutine[None, None, int]:
         """Delete key asynchronously.
 
         Args:
@@ -125,7 +138,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def delete(self, key: str) -> int:
+    @staticmethod
+    def delete(key: str) -> int:
         """Delete key synchronously.
 
         Args:
@@ -137,7 +151,8 @@ class StateBackend(Protocol):
         ...
 
     # Counter operations
-    def incr(self, key: str) -> int:
+    @staticmethod
+    def incr(key: str) -> int:
         """Increment a counter atomically.
 
         Args:
@@ -148,7 +163,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def decr(self, key: str) -> int:
+    @staticmethod
+    def decr(key: str) -> int:
         """Decrement a counter atomically.
 
         Args:
@@ -160,7 +176,8 @@ class StateBackend(Protocol):
         ...
 
     # Pub/sub operations
-    def publish(self, channel: str, message: str) -> None:
+    @staticmethod
+    def publish(channel: str, message: str) -> None:
         """Publish message to a channel.
 
         Args:
@@ -169,7 +186,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def subscribe(self, channel: str) -> AsyncGenerator[str, None]:
+    @staticmethod
+    def subscribe(channel: str) -> AsyncGenerator[str, None]:
         """Subscribe to a channel and yield messages.
 
         Args:
@@ -181,7 +199,8 @@ class StateBackend(Protocol):
         ...
 
     # Key formatting
-    def format_key(self, *args: str) -> str:
+    @staticmethod
+    def format_key(*args: str) -> str:
         """Format a key by joining parts in a backend-specific way.
 
         Args:
@@ -193,7 +212,8 @@ class StateBackend(Protocol):
         ...
 
     # Serialization
-    def serialize(self, obj: BaseModel) -> bytes:
+    @staticmethod
+    def serialize(obj: BaseModel) -> bytes:
         """Serialize a Pydantic BaseModel to bytes.
 
         Stores the fully qualified class name alongside the data to enable
@@ -210,7 +230,8 @@ class StateBackend(Protocol):
         """
         ...
 
-    def deserialize(self, data: bytes) -> BaseModel:
+    @staticmethod
+    def deserialize(data: bytes) -> BaseModel:
         """Deserialize bytes back to a Pydantic BaseModel instance.
 
         Uses the stored class information to dynamically import and reconstruct
@@ -228,3 +249,27 @@ class StateBackend(Protocol):
             ValueError: If the data is invalid
         """
         ...
+
+
+def load_backend(module: ModuleType) -> StateBackend:
+    """Load and validate a backend module conforms to StateBackend protocol.
+
+    Uses the Protocol's __protocol_attrs__ to determine required methods.
+
+    Args:
+        module: Backend module to validate
+
+    Returns:
+        The module typed as StateBackend
+
+    Raises:
+        TypeError: If the module is missing required functions
+    """
+    required: frozenset[str] = getattr(StateBackend, "__protocol_attrs__")
+    missing = [name for name in required if not hasattr(module, name)]
+    if missing:
+        raise TypeError(
+            f"Backend module '{module.__name__}' missing required functions: {missing}"
+        )
+
+    return module  # type: ignore[return-value]

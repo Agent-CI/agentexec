@@ -47,7 +47,7 @@ dev-dependencies = [
     "pytest-asyncio>=0.23.0",
     "pytest-cov>=4.1.0",
     "ruff>=0.5.0",
-    "mypy>=1.10.0",
+    "ty>=0.0.1a7",
     "fakeredis>=2.32.1",
 ]
 
@@ -55,12 +55,11 @@ dev-dependencies = [
 line-length = 100
 target-version = "py311"
 
-[tool.mypy]
-python_version = "3.11"
-warn_return_any = true
-warn_unused_configs = true
-disallow_untyped_defs = true
-disallow_incomplete_defs = true
+[tool.ty.environment]
+python-version = "3.11"
+
+[tool.ty.src]
+include = ["src/agentexec"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"

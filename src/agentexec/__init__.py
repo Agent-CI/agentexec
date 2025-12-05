@@ -59,7 +59,7 @@ __all__ = [
 
 # OpenAI runner is only available if agents package is installed
 try:
-    from agentexec.runners import OpenAIRunner
+    from agentexec.runners import OpenAIRunner  # type: ignore[possibly-missing-import]
 
     __all__.append("OpenAIRunner")
 except ImportError:

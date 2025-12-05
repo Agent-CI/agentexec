@@ -5,6 +5,7 @@ from typing import Any, Callable
 from agents import Agent, MaxTurnsExceeded, Runner, function_tool
 from agents.items import TResponseInputItem
 from agents.result import RunResult, RunResultStreaming
+from openai.types.responses.easy_input_message_param import EasyInputMessageParam
 
 from agentexec.runners.base import BaseAgentRunner, _RunnerTools
 
@@ -29,7 +30,7 @@ def _extract_input(e: MaxTurnsExceeded) -> list[TResponseInputItem]:
     final_input: list[TResponseInputItem] = (
         list(e.run_data.input)
         if isinstance(e.run_data.input, list)
-        else [{"role": "user", "content": e.run_data.input}]
+        else [EasyInputMessageParam(role="user", content=e.run_data.input)]
     )
 
     # Add all the conversation items that were generated
@@ -107,6 +108,12 @@ class OpenAIRunner(BaseAgentRunner):
         # Override with OpenAI-specific tools
         self.tools = _OpenAIRunnerTools(self.agent_id)
 
+    def _wrap_up_prompt(self) -> EasyInputMessageParam:
+        return EasyInputMessageParam(
+            role="system",
+            content=self.prompts.wrap_up,
+        )
+
     async def run(
         self,
         agent: Agent[Any],
@@ -142,12 +149,7 @@ class OpenAIRunner(BaseAgentRunner):
 
             logger.info("Max turns exceeded, attempting recovery")
             final_input = _extract_input(e)
-            final_input.append(
-                {
-                    "role": "user",
-                    "content": self.prompts.wrap_up,
-                }
-            )
+            final_input.append(self._wrap_up_prompt())
             result = await Runner.run(
                 agent,
                 final_input,
@@ -212,12 +214,7 @@ class OpenAIRunner(BaseAgentRunner):
 
             logger.info("Max turns exceeded, attempting recovery")
             final_input = _extract_input(e)
-            final_input.append(
-                {
-                    "role": "user",
-                    "content": self.prompts.wrap_up,
-                }
-            )
+            final_input.append(self._wrap_up_prompt())
             result = Runner.run_streamed(
                 agent,
                 final_input,

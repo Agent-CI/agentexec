@@ -74,8 +74,8 @@ class Config(BaseSettings):
     )
 
     state_backend: str = Field(
-        default="redis",
-        description="State backend to use (redis, memory, etc.)",
+        default="agentexec.state.redis_backend",
+        description="State backend to use (fully-qualified module path)",
         validation_alias="AGENTEXEC_STATE_BACKEND",
     )
 

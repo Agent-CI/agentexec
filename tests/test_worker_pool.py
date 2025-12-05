@@ -244,6 +244,4 @@ def test_get_pool_id() -> None:
     id1 = _get_pool_id()
     id2 = _get_pool_id()
 
-    assert len(id1) == 8
-    assert len(id2) == 8
     assert id1 != id2

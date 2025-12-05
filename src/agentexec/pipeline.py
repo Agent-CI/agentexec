@@ -8,8 +8,10 @@ from typing import (
     Any,
     Callable,
     ClassVar,
-    Coroutine,
+    Protocol,
+    TypeAlias,
     Union,
+    cast,
     get_type_hints,
     get_origin,
     get_args,
@@ -20,13 +22,47 @@ from pydantic import BaseModel
 
 from agentexec import activity
 from agentexec.core import queue
-from agentexec.core.task import Task
+from agentexec.core.task import Task, TaskResult
 
 if TYPE_CHECKING:
     from agentexec.worker import WorkerPool
 
-StepResult = Union[BaseModel, tuple[BaseModel, ...]]
-StepHandler = Callable[..., Union[StepResult, Coroutine[Any, Any, StepResult]]]
+StepResult: TypeAlias = Union[TaskResult, tuple[TaskResult, ...]]
+
+
+class _SyncStepHandler(Protocol):
+    """Protocol for pipeline step handler methods.
+
+    Step handlers are methods on a pipeline class that receive
+    one or more BaseModel context arguments from the previous step.
+    """
+
+    __name__: str
+
+    def __call__(
+        self,
+        instance: _PipelineBase,
+        **kwargs: BaseModel,
+    ) -> StepResult: ...
+
+
+class _AsyncStepHandler(Protocol):
+    """Protocol for async pipeline step handler methods.
+
+    Step handlers are methods on a pipeline class that receive
+    one or more BaseModel context arguments from the previous step.
+    """
+
+    __name__: str
+
+    async def __call__(
+        self,
+        instance: _PipelineBase,
+        **kwargs: BaseModel,
+    ) -> StepResult: ...
+
+
+StepHandler: TypeAlias = _SyncStepHandler | _AsyncStepHandler
 
 
 def _format_pipeline_name(cls: type) -> str:
@@ -38,7 +74,7 @@ class _PipelineBaseMeta(type):
     """Metaclass that registers pipeline subclasses with their bound pipeline."""
 
     @classmethod
-    def bind_pipeline(mcs, pipeline: Pipeline) -> type:
+    def bind_pipeline(mcs, pipeline: Pipeline) -> type[_PipelineBase]:
         """Create a new PipelineBase class bound to the given pipeline.
 
         Args:
@@ -66,8 +102,8 @@ class _PipelineBase(metaclass=_PipelineBaseMeta):
         if cls.__name__ == "PipelineBase":
             return
 
-        cls._pipeline.bind_user_pipeline(cls)
-        cls._pipeline.register_task()
+        cls._pipeline._bind_user_pipeline(cls)
+        cls._pipeline._register_task()
 
 
 class StepDefinition:
@@ -76,8 +112,8 @@ class StepDefinition:
     name: str
     order: Any
     handler: StepHandler
-    return_type: type | None
-    param_types: dict[str, type | None]
+    return_type: type[BaseModel] | None
+    param_types: dict[str, type[BaseModel] | None]
     _description: str | None = None
 
     def __init__(
@@ -85,8 +121,8 @@ class StepDefinition:
         name: str,
         order: Any,
         handler: StepHandler,
-        return_type: type | None,
-        param_types: dict[str, type | None],
+        return_type: type[BaseModel] | None,
+        param_types: dict[str, type[BaseModel] | None],
         description: str | None = None,
     ) -> None:
         self.name = name
@@ -102,6 +138,15 @@ class StepDefinition:
         if self._description:
             return self._description
         return self.handler.__name__
+
+    async def __call__(self, instance: _PipelineBase, **kwargs: BaseModel) -> StepResult:
+        """Invoke the step handler."""
+        if asyncio.iscoroutinefunction(self.handler):
+            handler = cast(_AsyncStepHandler, self.handler)
+            return await handler(instance, **kwargs)
+        else:
+            handler = cast(_SyncStepHandler, self.handler)
+            return handler(instance, **kwargs)
 
 
 class Pipeline:
@@ -171,7 +216,7 @@ class Pipeline:
         """
         return _PipelineBaseMeta.bind_pipeline(self)
 
-    def bind_user_pipeline(self, cls: type[_PipelineBase]) -> None:
+    def _bind_user_pipeline(self, cls: type[_PipelineBase]) -> None:
         """Manually set the pipeline implementation class.
 
         Args:
@@ -179,7 +224,7 @@ class Pipeline:
         """
         self._user_pipeline_class = cls
 
-    def register_task(self) -> None:
+    def _register_task(self) -> None:
         """
         Register Task handler with the pipeline's worker pool
         """
@@ -190,7 +235,7 @@ class Pipeline:
 
         self._pool._add_task(
             name=self.name,
-            func=self._run_task,  # type: ignore[arg-type]
+            func=self._run_task,
             context_type=self._input_type,
             result_type=self._output_type,
         )
@@ -306,9 +351,10 @@ class Pipeline:
 
     async def _run_task(
         self,
+        *,
         agent_id: UUID,
         context: BaseModel,
-    ) -> StepResult:
+    ) -> TaskResult:
         """Run the pipeline as a task handler.
 
         Args:
@@ -330,6 +376,7 @@ class Pipeline:
             )
             _context = await self._run_step(step, _context)
 
+        assert isinstance(_context, TaskResult), "Final step must return BaseModel"
         return _context
 
     async def _run_step(
@@ -355,9 +402,7 @@ class Pipeline:
         else:
             kwargs = {}
 
-        if asyncio.iscoroutinefunction(step.handler):
-            return await step.handler(instance, **kwargs)
-        return step.handler(instance, **kwargs)
+        return await step(instance, **kwargs)
 
     def _validate_type_flow(self) -> None:
         """Verify that step return types match next step's parameters.
