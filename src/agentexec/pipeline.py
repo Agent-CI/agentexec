@@ -1,6 +1,7 @@
 from __future__ import annotations
-import re
+import asyncio
 import inspect
+import re
 import warnings
 from typing import (
     TYPE_CHECKING,
@@ -37,7 +38,7 @@ class _PipelineBaseMeta(type):
     """Metaclass that registers pipeline subclasses with their bound pipeline."""
 
     @classmethod
-    def _bind_pipeline(mcs, pipeline: Pipeline) -> type:
+    def bind_pipeline(mcs, pipeline: Pipeline) -> type:
         """Create a new PipelineBase class bound to the given pipeline.
 
         Args:
@@ -58,28 +59,15 @@ class _PipelineBase(metaclass=_PipelineBaseMeta):
 
     _pipeline: ClassVar[Pipeline]
 
-    def __init_subclass__(cls, **kwargs) -> None:
+    def __init_subclass__(cls, **kwargs: Any) -> None:
         super().__init_subclass__(**kwargs)
 
         # bind the pipeline only for subclasses, not the base itself
         if cls.__name__ == "PipelineBase":
             return
 
-        pipeline = cls._pipeline
-        pipeline._pipeline_class = cls
-
-        if not pipeline._steps:
-            warnings.warn(f"Pipeline '{pipeline.name}' has no steps defined")
-
-        # register Task handler with the pipeline's worker pool
-        assert pipeline._pool, "Pipeline must inherit from pipeline.Base"
-        pipeline._pool._add_task(
-            name=pipeline.name,
-            func=pipeline._run_task,
-            context_class=pipeline._input_type,
-            result_class=pipeline._output_type,
-        )
-        del pipeline._pool  # pool is only needed for registration
+        cls._pipeline.bind_user_pipeline(cls)
+        cls._pipeline.register_task()
 
 
 class StepDefinition:
@@ -146,20 +134,20 @@ class Pipeline:
     _pool: WorkerPool | None
     _name: str | None
     _steps: dict[str, StepDefinition]
-    _pipeline_class: type[_PipelineBase] | None = None
-    _pipeline_instance: _PipelineBase | None = None
+    _user_pipeline_class: type[_PipelineBase] | None = None
+    _user_pipeline_instance: _PipelineBase | None = None
 
     def __init__(
         self,
         pool: WorkerPool,
         *,
         name: str | None = None,
-    ):
+    ) -> None:
         """Initialize a pipeline.
 
         Args:
             pool: WorkerPool instance for task registration and enqueueing.
-            name: Optional name for task registration. Defaults to 'pipeline:{ClassName}'.
+            name: Optional name for task registration; defaults to class-based name.
         """
         self._steps = {}
         self._pool = pool
@@ -171,9 +159,44 @@ class Pipeline:
         if self._name:  # overridden name
             return self._name
 
-        return _format_pipeline_name(self._get_pipeline_class())
+        return _format_pipeline_name(self._get_user_pipeline_class())
 
-    def _get_pipeline_class(self) -> type[_PipelineBase]:
+    @property
+    def Base(self) -> type[_PipelineBase]:
+        """Returns a base class bound to this pipeline instance.
+
+        When a class inherits from pipeline.Base, it is automatically
+        registered as the pipeline's implementation class and as a task
+        with the pool.
+        """
+        return _PipelineBaseMeta.bind_pipeline(self)
+
+    def bind_user_pipeline(self, cls: type[_PipelineBase]) -> None:
+        """Manually set the pipeline implementation class.
+
+        Args:
+            cls: Pipeline implementation class
+        """
+        self._user_pipeline_class = cls
+
+    def register_task(self) -> None:
+        """
+        Register Task handler with the pipeline's worker pool
+        """
+        assert self._pool, "Pipeline must inherit from pipeline.Base"
+
+        if not self._steps:
+            warnings.warn(f"Pipeline '{self.name}' has no steps defined")
+
+        self._pool._add_task(
+            name=self.name,
+            func=self._run_task,  # type: ignore[arg-type]
+            context_type=self._input_type,
+            result_type=self._output_type,
+        )
+        self._pool = None  # pool is only needed for registration
+
+    def _get_user_pipeline_class(self) -> type[_PipelineBase]:
         """Get the pipeline implementation class.
 
         Returns:
@@ -182,19 +205,19 @@ class Pipeline:
         Raises:
             RuntimeError: If no pipeline class has been defined
         """
-        if self._pipeline_class is None:
+        if self._user_pipeline_class is None:
             raise RuntimeError("Pipeline must inherit from pipeline.Base.")
-        return self._pipeline_class
+        return self._user_pipeline_class
 
-    def _get_pipeline_instance(self) -> _PipelineBase:
+    def _get_user_pipeline_instance(self) -> _PipelineBase:
         """
         Instantiate a single instance of the pipeline class.
         Returns:
             Pipeline implementation instance
         """
-        if self._pipeline_instance is None:
-            self._pipeline_instance = self._get_pipeline_class()()
-        return self._pipeline_instance
+        if self._user_pipeline_instance is None:
+            self._user_pipeline_instance = self._get_user_pipeline_class()()
+        return self._user_pipeline_instance
 
     @property
     def _sorted_steps(self) -> list[StepDefinition]:
@@ -216,16 +239,6 @@ class Pipeline:
         """Output type from the final step."""
         last_step = self._sorted_steps[-1]
         return last_step.return_type
-
-    @property
-    def Base(self) -> type[_PipelineBase]:
-        """Returns a base class bound to this pipeline instance.
-
-        When a class inherits from pipeline.Base, it is automatically
-        registered as the pipeline's implementation class and as a task
-        with the pool.
-        """
-        return _PipelineBaseMeta._bind_pipeline(self)
 
     def step(
         self,
@@ -275,18 +288,17 @@ class Pipeline:
         self._validate_type_flow()
         return await queue.enqueue(self.name, context)
 
-    async def run(self, context: BaseModel) -> tuple[BaseModel] | BaseModel:
+    async def run(self, context: BaseModel) -> StepResult:
         """Execute the pipeline inline (blocking).
 
         Args:
-            agent_id: Agent ID for activity tracking (None to skip tracking)
             context: Initial context passed to the first step
 
         Returns:
             Output from the final step
         """
         self._validate_type_flow()
-        _context: tuple[BaseModel] | BaseModel = context
+        _context: StepResult = context
         for step in self._sorted_steps:
             _context = await self._run_step(step, _context)
 
@@ -296,7 +308,7 @@ class Pipeline:
         self,
         agent_id: UUID,
         context: BaseModel,
-    ) -> tuple[BaseModel, ...] | BaseModel:
+    ) -> StepResult:
         """Run the pipeline as a task handler.
 
         Args:
@@ -305,18 +317,17 @@ class Pipeline:
         Returns:
             Output from the final step
         """
+        self._validate_type_flow()
         steps = self._sorted_steps
         total_steps = len(steps)
-        self._validate_type_flow()
 
-        _context: tuple[BaseModel] | BaseModel = context
+        _context: StepResult = context
         for i, step in enumerate(steps):
-            if agent_id:
-                activity.update(
-                    agent_id,
-                    step.description,
-                    percentage=int((i / total_steps) * 100),
-                )
+            activity.update(
+                agent_id,
+                f"Started {step.description}",
+                percentage=int((i / total_steps) * 100),
+            )
             _context = await self._run_step(step, _context)
 
         return _context
@@ -324,8 +335,8 @@ class Pipeline:
     async def _run_step(
         self,
         step: StepDefinition,
-        context: tuple[BaseModel] | BaseModel,
-    ) -> BaseModel:
+        context: StepResult,
+    ) -> StepResult:
         """Run a single step of the pipeline.
 
         Args:
@@ -334,7 +345,7 @@ class Pipeline:
         Returns:
             Output from the step
         """
-        instance = self._get_pipeline_instance()
+        instance = self._get_user_pipeline_instance()
 
         param_names = list(step.param_types.keys())
         if isinstance(context, tuple):
@@ -344,7 +355,9 @@ class Pipeline:
         else:
             kwargs = {}
 
-        return await step.handler(instance, **kwargs)
+        if asyncio.iscoroutinefunction(step.handler):
+            return await step.handler(instance, **kwargs)
+        return step.handler(instance, **kwargs)
 
     def _validate_type_flow(self) -> None:
         """Verify that step return types match next step's parameters.
@@ -389,3 +402,14 @@ class Pipeline:
                             f"Type mismatch between step '{step.name}' and '{next_step.name}': "
                             f"return type {ret_type} doesn't match parameter type {param_type}"
                         )
+
+        # Validate final step returns a single BaseModel (not tuple) for serialization
+        if steps:
+            last_step = steps[-1]
+            if last_step.return_type is not None:
+                origin = get_origin(last_step.return_type)
+                if origin is tuple:
+                    raise TypeError(
+                        f"Final step '{last_step.name}' returns a tuple, but pipelines "
+                        f"must return a single BaseModel for result serialization."
+                    )

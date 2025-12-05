@@ -18,7 +18,7 @@ from sqlalchemy import Engine, create_engine
 from agentexec import state
 from agentexec.config import CONF
 from agentexec.core.db import remove_global_session, set_global_session
-from agentexec.core.queue import Priority, dequeue, enqueue
+from agentexec.core.queue import dequeue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec.worker.event import StateEvent
 from agentexec.worker.logging import (
@@ -28,7 +28,6 @@ from agentexec.worker.logging import (
 )
 
 __all__ = [
-    "TaskWrapper",
     "Worker",
     "WorkerPool",
     "WorkerContext",
@@ -36,74 +35,6 @@ __all__ = [
 
 
 from pydantic import BaseModel
-
-
-class TaskWrapper:
-    """Wrapper for task handlers that provides .enqueue() and .run() methods.
-
-    This is returned by the @pool.task() decorator instead of the raw function.
-    The wrapper is callable, so existing code that calls the function directly
-    still works.
-
-    Example:
-        @pool.task("research")
-        async def research(agent_id: UUID, context: ResearchContext) -> ResearchResult:
-            ...
-
-        # Enqueue to worker pool (non-blocking)
-        task = await research.enqueue(ResearchContext(company="Acme"))
-
-        # Run inline (blocking)
-        result = await research.run(ResearchContext(company="Acme"))
-    """
-
-    def __init__(self, name: str, handler: TaskHandler, definition: TaskDefinition):
-        self._name = name
-        self._handler = handler
-        self._definition = definition
-        # Copy function attributes for introspection
-        self.__name__ = handler.__name__
-        self.__doc__ = handler.__doc__
-        self.__wrapped__ = handler
-
-    def __call__(self, **kwargs):
-        """Direct call delegates to the original handler."""
-        return self._handler(**kwargs)
-
-    async def enqueue(
-        self,
-        context: BaseModel,
-        priority: Priority = Priority.LOW,
-    ) -> Task:
-        """Enqueue the task to run on a worker.
-
-        Args:
-            context: Task context (must match handler's context type)
-            priority: Task priority (HIGH or LOW)
-
-        Returns:
-            Task instance with agent_id for tracking
-        """
-        return await enqueue(self._name, context, priority=priority)
-
-    async def run(self, context: BaseModel) -> BaseModel:
-        """Execute the task inline (not on a worker).
-
-        Creates an activity record and runs the handler directly.
-        Useful for testing or when already running on a worker.
-
-        Args:
-            context: Task context (must match handler's context type)
-
-        Returns:
-            Handler result
-        """
-        task = Task.create(self._name, context)
-        task._definition = self._definition
-        result = await task.execute()
-        if result is None:
-            raise RuntimeError(f"Task {self._name} failed")
-        return result
 
 
 def _get_pool_id() -> str:
@@ -260,34 +191,26 @@ class WorkerPool:
         self._processes = []
         self._log_handler = None
 
-    def task(self, name: str) -> Callable[[TaskHandler], TaskWrapper]:
+    def task(self, name: str) -> Callable[[TaskHandler], TaskHandler]:
         """Decorator to register a task handler with this pool.
 
         Creates a TaskDefinition that captures the handler and its context class
-        from type annotations. Returns a TaskWrapper with .enqueue() and .run()
-        methods.
+        from type annotations.
 
         Args:
             name: Task name used when enqueueing and for worker routing.
 
         Returns:
-            Decorator function that returns a TaskWrapper.
+            Decorator function that returns the handler.
 
         Example:
             @pool.task("research_company")
             async def research(agent_id: UUID, context: ResearchContext) -> ResearchResult:
                 ...
-
-            # Enqueue to worker
-            task = await research.enqueue(ResearchContext(company="Acme"))
-
-            # Run inline
-            result = await research.run(ResearchContext(company="Acme"))
         """
 
-        def decorator(func: TaskHandler) -> TaskWrapper:
-            wrapper = self._add_task(name, func)
-            # TODO wrapper is breaking pikcling for the forked process.
+        def decorator(func: TaskHandler) -> TaskHandler:
+            self._add_task(name, func)
             return func
 
         return decorator
@@ -297,20 +220,20 @@ class WorkerPool:
         name: str,
         func: TaskHandler,
         *,
-        context_class: type[BaseModel] | None = None,
-        result_class: type[BaseModel] | None = None,
-    ) -> TaskWrapper:
+        context_type: type[BaseModel] | None = None,
+        result_type: type[BaseModel] | None = None,
+    ) -> None:
         """Add a task to the pool (internal use)."""
+        if name in self._context.tasks:
+            raise ValueError(f"Task '{name}' is already registered in this pool")
+
         definition = TaskDefinition(
             name=name,
             handler=func,
-            context_class=context_class,
-            result_class=result_class,
+            context_type=context_type,
+            result_type=result_type,
         )
         self._context.tasks[name] = definition
-        return func
-
-        # return TaskWrapper(name, func, definition)
 
     def start(self) -> None:
         """Start worker processes (non-blocking).
@@ -342,7 +265,7 @@ class WorkerPool:
         down gracefully.
         """
 
-        async def _loop():
+        async def _loop() -> None:
             try:
                 await self._collect_logs()
             except asyncio.CancelledError:

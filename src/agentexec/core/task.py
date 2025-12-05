@@ -57,17 +57,17 @@ class TaskDefinition:
 
     name: str
     handler: TaskHandler
-    context_class: type[BaseModel]
+    context_type: type[BaseModel]
     # Optional: only set if handler returns a BaseModel subclass
-    result_class: type[BaseModel] | None
+    result_type: type[BaseModel] | None
 
     def __init__(
         self,
         name: str,
         handler: TaskHandler,
         *,
-        context_class: type[BaseModel] | None = None,
-        result_class: type[BaseModel] | None = None,
+        context_type: type[BaseModel] | None = None,
+        result_type: type[BaseModel] | None = None,
     ) -> None:
         """Initialize task definition.
 
@@ -80,10 +80,10 @@ class TaskDefinition:
         """
         self.name = name
         self.handler = handler
-        self.context_class = context_class or self._infer_context_class(handler)
-        self.result_class = result_class or self._infer_result_class(handler)
+        self.context_type = context_type or self._infer_context_type(handler)
+        self.result_type = result_type or self._infer_result_type(handler)
 
-    def _infer_context_class(self, handler: TaskHandler) -> type[BaseModel]:
+    def _infer_context_type(self, handler: TaskHandler) -> type[BaseModel]:
         """Infer context class from handler's type annotations.
 
         Looks for a 'context' parameter with a Pydantic BaseModel type hint.
@@ -113,7 +113,7 @@ class TaskDefinition:
 
         return context_type
 
-    def _infer_result_class(self, handler: TaskHandler) -> type[BaseModel] | None:
+    def _infer_result_type(self, handler: TaskHandler) -> type[BaseModel] | None:
         """Infer result class from handler's return type annotation.
 
         Looks for a return annotation with a Pydantic BaseModel type hint.
@@ -179,7 +179,7 @@ class Task(BaseModel):
         """Create a Task from serialized data with its definition bound.
 
         Args:
-            definition: The TaskDefinition containing the handler and context_class
+            definition: The TaskDefinition containing the handler and context_type
             data: Serialized task data with task_name, context, and agent_id
 
         Returns:
@@ -187,7 +187,7 @@ class Task(BaseModel):
         """
         task = cls(
             task_name=data["task_name"],
-            context=definition.context_class.model_validate(data["context"]),
+            context=definition.context_type.model_validate(data["context"]),
             agent_id=data["agent_id"],
         )
         task._definition = definition

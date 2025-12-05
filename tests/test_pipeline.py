@@ -59,7 +59,7 @@ def test_pipeline_initialization(mock_pool) -> None:
     p = Pipeline(mock_pool)
 
     assert p._steps == {}
-    assert p._pipeline_class is None
+    assert p._user_pipeline_class is None
     assert p._pool is mock_pool
 
 
@@ -98,7 +98,7 @@ def test_base_class_registration(pipeline) -> None:
         async def step_one(self, ctx: InputContext) -> IntermediateA:
             return IntermediateA(a_value=ctx.value)
 
-    assert pipeline._pipeline_class is MyPipeline
+    assert pipeline._user_pipeline_class is MyPipeline
 
 
 async def test_pipeline_run_executes_steps_in_order(pipeline) -> None:
@@ -121,7 +121,7 @@ async def test_pipeline_run_executes_steps_in_order(pipeline) -> None:
             execution_order.append("third")
             return f"result: {y}"
 
-    result = await pipeline.run(None, InputContext(value=5))
+    result = await pipeline.run(InputContext(value=5))
 
     assert execution_order == ["first", "second", "third"]
     assert result == "result: 20"  # (5 * 2) + 10 = 20
@@ -129,8 +129,13 @@ async def test_pipeline_run_executes_steps_in_order(pipeline) -> None:
 
 async def test_pipeline_run_without_class_raises(pipeline) -> None:
     """Test that pipeline.run() raises if no class is defined."""
+
+    @pipeline.step(0)
+    async def orphan_step(ctx: InputContext) -> int:
+        return ctx.value
+
     with pytest.raises(RuntimeError, match="Pipeline must inherit from pipeline.Base"):
-        await pipeline.run(None, InputContext(value=1))
+        await pipeline.run(InputContext(value=1))
 
 
 async def test_pipeline_passes_output_to_next_step(pipeline) -> None:
@@ -145,7 +150,7 @@ async def test_pipeline_passes_output_to_next_step(pipeline) -> None:
         async def consume(self, value: int) -> str:
             return f"got {value}"
 
-    result = await pipeline.run(None, InputContext(value=7))
+    result = await pipeline.run(InputContext(value=7))
     assert result == "got 700"
 
 
@@ -161,7 +166,7 @@ async def test_pipeline_handles_tuple_return(pipeline) -> None:
         async def combine(self, num: int, text: str) -> str:
             return f"{text}_{num * 2}"
 
-    result = await pipeline.run(None, InputContext(value=5))
+    result = await pipeline.run(InputContext(value=5))
     assert result == "str_5_10"
 
 
@@ -220,7 +225,7 @@ def test_verify_type_flow_allows_none_types(pipeline) -> None:
         pass
 
     # Should not raise - None return type is skipped
-    pipeline._verify_type_flow()
+    pipeline._validate_type_flow()
 
 
 def test_step_ordering_with_non_sequential_numbers(pipeline) -> None:
@@ -270,4 +275,4 @@ async def test_pipeline_type_verification_rejects_mismatched_params(pipeline) ->
             return "no params"
 
     with pytest.raises(TypeError, match="returns 1 values.*expects 0 parameters"):
-        await pipeline.run(None, InputContext(value=42))
+        await pipeline.run(InputContext(value=42))

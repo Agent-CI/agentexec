@@ -58,7 +58,7 @@ def test_task_serialization() -> None:
 
 
 def test_task_deserialization(pool) -> None:
-    """Test that tasks can be deserialized using context_class."""
+    """Test that tasks can be deserialized using context_type."""
     # Register a task to get a TaskDefinition
     @pool.task("test_task")
     async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
@@ -75,7 +75,7 @@ def test_task_deserialization(pool) -> None:
 
     task = ax.Task(
         task_name=data["task_name"],
-        context=task_def.context_class.model_validate(data["context"]),
+        context=task_def.context_type.model_validate(data["context"]),
         agent_id=data["agent_id"],
     )
 
@@ -107,7 +107,7 @@ def test_task_round_trip(pool) -> None:
     data = json.loads(serialized)
     deserialized = ax.Task(
         task_name=data["task_name"],
-        context=task_def.context_class.model_validate(data["context"]),
+        context=task_def.context_type.model_validate(data["context"]),
         agent_id=data["agent_id"],
     )
 

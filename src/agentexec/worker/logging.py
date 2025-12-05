@@ -28,7 +28,7 @@ class LogMessage(BaseModel):
             levelno=record.levelno,
             levelname=record.levelname,
             msg=record.getMessage(),
-            processName=record.processName,
+            processName=record.processName or "MainProcess",
             process=record.process,
             thread=record.thread,
             created=record.created,

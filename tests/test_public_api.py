@@ -84,18 +84,15 @@ def test_config_environment_variables() -> None:
 
 def test_task_decorator_interface(pool) -> None:
     """Test that @pool.task() decorator works."""
-    from agentexec.worker.pool import TaskWrapper
 
     @pool.task("test_task")
     async def test_handler(agent_id: uuid.UUID, context: SampleContext) -> SampleResult:
         return SampleResult(message=f"Processed: {context.param}")
 
-    # Verify decorator returns TaskWrapper with .enqueue() and .run() methods
-    assert isinstance(test_handler, TaskWrapper)
-    assert hasattr(test_handler, "enqueue")
-    assert hasattr(test_handler, "run")
+    # Decorator returns the raw handler function
+    assert callable(test_handler)
 
     # Verify task definition was registered with pool
     assert "test_task" in pool._context.tasks
     task_def = pool._context.tasks["test_task"]
-    assert task_def.context_class == SampleContext
+    assert task_def.context_type == SampleContext
