@@ -11,19 +11,19 @@ class Pipeline:
     def __init__(self, pool: WorkerPool)
 ```
 
-### Constructor Parameters
+### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pool` | `WorkerPool` | Worker pool with registered tasks |
+| `pool` | `WorkerPool` | Worker pool for task registration and enqueueing |
 
 ### Example
 
 ```python
 import agentexec as ax
-from myapp.worker import pool
 
-pipeline = ax.Pipeline(pool=pool)
+pool = ax.WorkerPool(database_url="sqlite:///agents.db")
+pipeline = ax.Pipeline(pool)
 
 class MyPipeline(pipeline.Base):
     @pipeline.step(0)
@@ -33,6 +33,12 @@ class MyPipeline(pipeline.Base):
     @pipeline.step(1)
     async def second_step(self, result):
         ...
+
+# Queue to worker (non-blocking)
+task = await pipeline.enqueue(context=InputContext(...))
+
+# Run inline (blocking)
+result = await pipeline.run(context=InputContext(...))
 ```
 
 ---
@@ -71,7 +77,7 @@ class ResearchPipeline(pipeline.Base):
 Decorator to define a pipeline step.
 
 ```python
-def step(self, order: int | str) -> Callable
+def step(self, order: int | str, description: str | None = None) -> Callable
 ```
 
 ### Parameters
@@ -79,6 +85,7 @@ def step(self, order: int | str) -> Callable
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `order` | `int \| str` | Step execution order (sorted using Python's `sorted()`) |
+| `description` | `str \| None` | Optional description for activity tracking messages |
 
 ### Behavior
 
@@ -104,37 +111,37 @@ sorted(["c_save", "a_fetch", "b_process"])  # → ["a_fetch", "b_process", "c_sa
 ### Example
 
 ```python
-# Numeric ordering
-@pipeline.step(0)  # Runs first
+# Numeric ordering with activity descriptions
+@pipeline.step(0, "initial data gathering")  # Runs first
 async def first(self, ctx: InputContext):
     return "result"
 
-@pipeline.step(1)  # Runs second
+@pipeline.step(1, "result processing")  # Runs second
 async def second(self, previous_result: str):
     return previous_result.upper()
 
 # Alphabetical string ordering
-@pipeline.step("a_fetch")     # Runs first
+@pipeline.step("a_fetch", "data fetch")
 async def fetch(self, ctx):
     ...
 
-@pipeline.step("b_process")   # Runs second
+@pipeline.step("b_process", "data processing")
 async def process(self, data):
     ...
 
-@pipeline.step("c_finalize")  # Runs third
+@pipeline.step("c_finalize", "finalization")
 async def finalize(self, result):
     ...
 ```
 
 ---
 
-## pipeline.run()
+## pipeline.enqueue()
 
-Execute the pipeline.
+Queue the pipeline to run on a worker.
 
 ```python
-async def run(self, context: BaseModel) -> Any
+async def enqueue(self, context: BaseModel) -> Task
 ```
 
 ### Parameters
@@ -145,12 +152,53 @@ async def run(self, context: BaseModel) -> Any
 
 ### Returns
 
+`Task` - Task instance for tracking the pipeline execution.
+
+### Example
+
+```python
+# Queue pipeline to run on a worker
+task = await pipeline.enqueue(context=InputContext(
+    query="Research AI safety",
+    depth="comprehensive"
+))
+
+# Wait for result
+result = await ax.get_result(task)
+```
+
+---
+
+## pipeline.run()
+
+Execute the pipeline inline (blocking).
+
+```python
+async def run(self, agent_id: str | UUID | None, context: BaseModel) -> Any
+```
+
+### Parameters
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `agent_id` | `str \| UUID \| None` | Agent ID for activity tracking (None to skip tracking) |
+| `context` | `BaseModel` | Input context for the first step |
+
+### Returns
+
 `Any` - The return value of the final step.
 
 ### Example
 
 ```python
-result = await pipeline.run(context=InputContext(
+# Run pipeline inline without activity tracking
+result = await pipeline.run(None, InputContext(
+    query="Research AI safety",
+    depth="comprehensive"
+))
+
+# Run pipeline with activity tracking
+result = await pipeline.run(agent_id, InputContext(
     query="Research AI safety",
     depth="comprehensive"
 ))
@@ -303,13 +351,14 @@ class ReportContext(BaseModel):
     analysis: dict
     format: str
 
-# Create pipeline
-pipeline = ax.Pipeline(pool=pool)
+# Create pool and pipeline
+pool = ax.WorkerPool(database_url="sqlite:///agents.db")
+pipeline = ax.Pipeline(pool)
 
 class ResearchPipeline(pipeline.Base):
     """Multi-step company research pipeline."""
 
-    @pipeline.step(0)
+    @pipeline.step(0, "data gathering")
     async def gather_data(self, ctx: ResearchInput):
         """Step 0: Gather data from multiple sources in parallel."""
         sources = 5 if ctx.depth == "standard" else 15
@@ -337,13 +386,13 @@ class ResearchPipeline(pipeline.Base):
             "financial": financial
         }
 
-    @pipeline.step(1)
+    @pipeline.step(1, "data analysis")
     async def analyze(self, data: dict):
         """Step 1: Analyze gathered data."""
         task = await ax.enqueue("analyze_data", AnalyzeContext(data=data))
         return await ax.get_result(task)
 
-    @pipeline.step(2)
+    @pipeline.step(2, "report generation")
     async def generate_report(self, analysis: dict):
         """Step 2: Generate final report."""
         task = await ax.enqueue("generate_report", ReportContext(
@@ -354,10 +403,15 @@ class ResearchPipeline(pipeline.Base):
 
 # Usage
 async def main():
-    report = await pipeline.run(context=ResearchInput(
-        company="Acme Corp",
-        depth="comprehensive"
-    ))
+    ctx = ResearchInput(company="Acme Corp", depth="comprehensive")
+
+    # Option 1: Run inline (blocking, no activity tracking)
+    report = await pipeline.run(None, ctx)
+    print(report)
+
+    # Option 2: Queue to worker (non-blocking, activity tracked automatically)
+    task = await pipeline.enqueue(context=ctx)
+    report = await ax.get_result(task)
     print(report)
 ```
 

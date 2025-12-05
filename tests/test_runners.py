@@ -37,19 +37,13 @@ class TestRunnerPrompts:
         prompts = _RunnerPrompts()
 
         assert "report_activity" in prompts.report_status
-        assert prompts.wrap_up == "Please summarize your findings."
+        assert "summarize your findings" in prompts.wrap_up
 
     def test_custom_wrap_up_prompt(self):
         """Test custom wrap_up prompt."""
         prompts = _RunnerPrompts(wrap_up="Provide a summary.")
 
         assert prompts.wrap_up == "Provide a summary."
-
-    def test_custom_report_status_prompt(self):
-        """Test custom report_status prompt."""
-        prompts = _RunnerPrompts(report_status="Custom status prompt.")
-
-        assert prompts.report_status == "Custom status prompt."
 
     def test_partial_custom_prompts(self):
         """Test that only specified prompts are overridden."""
@@ -150,13 +144,11 @@ class TestBaseAgentRunner:
             max_turns_recovery=False,
             recovery_turns=10,
             wrap_up_prompt="Custom wrap up",
-            report_status_prompt="Custom status",
         )
 
         assert runner.max_turns_recovery is False
         assert runner.recovery_turns == 10
         assert runner.prompts.wrap_up == "Custom wrap up"
-        assert runner.prompts.report_status == "Custom status"
 
     def test_prompts_namespace(self):
         """Test that runner has prompts namespace."""

@@ -63,7 +63,7 @@ class FinalReport(BaseModel):
 
 
 # Create pipeline
-pipeline = ax.Pipeline(pool=pool)
+pipeline = ax.Pipeline()
 
 
 class CompanyResearchPipeline(pipeline.Base):

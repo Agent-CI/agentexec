@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import inspect
-from typing import Any, Coroutine, Protocol, TypedDict, Union, Unpack, get_type_hints
+from typing import Any, Protocol, TypedDict, get_type_hints
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
@@ -21,19 +21,19 @@ class TaskHandlerKwargs(TypedDict):
     context: BaseModel
 
 
+TaskResult = BaseModel  # Union[BaseModel, tuple[BaseModel, ...]]
+
+
 class TaskHandler(Protocol):
-    """Protocol for task handler functions (sync or async).
+    """Protocol for task handler functions."""
 
-    Handlers accept **kwargs matching TaskHandlerKwargs structure.
-    Must return a Pydantic BaseModel (or Coroutine that resolves to BaseModel).
-    """
-
-    __name__: str  # All functions have __name__ attribute
+    __name__: str
 
     def __call__(
         self,
-        **kwargs: Unpack[TaskHandlerKwargs],
-    ) -> Union[BaseModel, Coroutine[Any, Any, BaseModel]]: ...
+        agent_id: UUID,
+        context: BaseModel,
+    ) -> TaskResult: ...
 
 
 class TaskDefinition:
@@ -58,10 +58,17 @@ class TaskDefinition:
     name: str
     handler: TaskHandler
     context_class: type[BaseModel]
-    # TODO we handle this with serialize/deserialize when writing the result so this can probably go away
-    result_class: type[BaseModel]
+    # Optional: only set if handler returns a BaseModel subclass
+    result_class: type[BaseModel] | None
 
-    def __init__(self, name: str, handler: TaskHandler):
+    def __init__(
+        self,
+        name: str,
+        handler: TaskHandler,
+        *,
+        context_class: type[BaseModel] | None = None,
+        result_class: type[BaseModel] | None = None,
+    ) -> None:
         """Initialize task definition.
 
         Args:
@@ -70,12 +77,11 @@ class TaskDefinition:
 
         Raises:
             TypeError: If handler doesn't have a typed 'context' parameter with BaseModel subclass
-            TypeError: If handler doesn't have a return type annotation with BaseModel subclass
         """
         self.name = name
         self.handler = handler
-        self.context_class = self._infer_context_class(handler)
-        self.result_class = self._infer_result_class(handler)
+        self.context_class = context_class or self._infer_context_class(handler)
+        self.result_class = result_class or self._infer_result_class(handler)
 
     def _infer_context_class(self, handler: TaskHandler) -> type[BaseModel]:
         """Infer context class from handler's type annotations.
@@ -107,7 +113,7 @@ class TaskDefinition:
 
         return context_type
 
-    def _infer_result_class(self, handler: TaskHandler) -> type[BaseModel]:
+    def _infer_result_class(self, handler: TaskHandler) -> type[BaseModel] | None:
         """Infer result class from handler's return type annotation.
 
         Looks for a return annotation with a Pydantic BaseModel type hint.
@@ -116,24 +122,15 @@ class TaskDefinition:
             handler: The task handler function
 
         Returns:
-            Result class (BaseModel subclass)
-
-        Raises:
-            TypeError: If return annotation is missing or not a BaseModel subclass
+            Result class (BaseModel subclass) or None if return type is not BaseModel
         """
         hints = get_type_hints(handler)
         if "return" not in hints:
-            raise TypeError(
-                f"Task handler '{handler.__name__}' must have a return type "
-                f"annotation with a BaseModel subclass"
-            )
+            return None
 
         return_type = hints["return"]
         if not (inspect.isclass(return_type) and issubclass(return_type, BaseModel)):
-            raise TypeError(
-                f"Task handler '{handler.__name__}' return type must be a "
-                f"BaseModel subclass, got {return_type}"
-            )
+            return None
 
         return return_type
 
@@ -226,7 +223,7 @@ class Task(BaseModel):
             agent_id=agent_id,
         )
 
-    async def execute(self) -> BaseModel | None:
+    async def execute(self) -> TaskResult | None:
         """Execute the task using its bound definition's handler.
 
         Manages task lifecycle: marks started, runs handler, marks completed/errored.
@@ -247,16 +244,17 @@ class Task(BaseModel):
         )
 
         try:
-            kwargs: TaskHandlerKwargs = {
-                "agent_id": self.agent_id,
-                "context": self.context,
-            }
-
-            result: BaseModel
+            result: TaskResult
             if asyncio.iscoroutinefunction(self._definition.handler):
-                result = await self._definition.handler(**kwargs)
+                result = await self._definition.handler(
+                    agent_id=self.agent_id,
+                    context=self.context,
+                )
             else:
-                result = self._definition.handler(**kwargs)  # type: ignore[assignment]
+                result = self._definition.handler(
+                    agent_id=self.agent_id,
+                    context=self.context,
+                )
 
             await state.aset_result(
                 self.agent_id,

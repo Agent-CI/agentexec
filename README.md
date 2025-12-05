@@ -203,32 +203,75 @@ await ax.enqueue("batch_job", context, priority=ax.Priority.LOW)
 Orchestrate multi-step workflows with parallel task execution:
 
 ```python
-pipeline = ax.Pipeline(pool=pool)
+pipeline = ax.Pipeline(pool)
 
 
 class MyPipeline(pipeline.Base):
-    @pipeline.step(0)
+    @pipeline.step(0, "brand and market research")
     async def parallel_research(self, context: InputContext):
         """Run multiple tasks in parallel."""
         brand_task = await ax.enqueue("research_brand", context)
         market_task = await ax.enqueue("research_market", context)
         return await ax.gather(brand_task, market_task)
 
-    @pipeline.step(1)
+    @pipeline.step(1, "research analysis")
     async def analyze(self, brand_result: BrandResult, market_result: MarketResult) -> AnalysisResult:
         """Combine results from previous step."""
         task = await ax.enqueue("analyze_research", AnalysisContext(
-            brand=brand_result, 
+            brand=brand_result,
             market=market_result,
         ))
         return await ax.get_result(task)
 
 
-# Run the pipeline
-result = await pipeline.run(context=InputContext(company="Anthropic"))
+# Queue to worker (non-blocking, activity tracked automatically)
+task = await pipeline.enqueue(context=InputContext(company="Anthropic"))
+
+# Or run inline (blocking)
+result = await pipeline.run(None, InputContext(company="Anthropic"))
 ```
 
 See **[examples/openai-agents-fastapi/pipeline.py](examples/openai-agents-fastapi/pipeline.py)** for a complete example.
+
+### Dynamic Fan-Out with Tracker
+
+Coordinate tasks that are queued dynamically and trigger a follow-up when all complete:
+
+```python
+import uuid
+
+tracker = ax.Tracker("research", uuid.uuid4())
+
+@pool.task("research")
+async def research(agent_id: UUID, context: ResearchContext) -> ResearchResult:
+    runner = ax.OpenAIRunner(agent_id=agent_id)
+    agent = Agent(
+        name="Research Agent",
+        instructions="...",
+        tools=[save_research],
+        output_type=ResearchResult,
+    )
+    return await runner.run(agent, input=f"Research {context.company}")
+
+
+@pool.task("aggregate")
+async def aggregate(agent_id: UUID, context: AggregateContext) -> None:
+    # ... aggregate results ...
+
+@function_tool
+async def queue_research(company: str) -> None:
+    tracker.incr()
+    await ax.enqueue("research", ResearchContext(company=company, batch_id=batch_id))
+
+@function_tool
+async def save_research(context: ResearchResult) -> None:
+    # save_research_to_database(context)
+    tracker.decr()
+    if tracker.complete:
+        await ax.enqueue("aggregate", ...)
+
+
+```
 
 ---
 

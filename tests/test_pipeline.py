@@ -1,10 +1,11 @@
 """Test Pipeline orchestration functionality."""
 
+from dataclasses import dataclass, field
+from unittest.mock import MagicMock
+
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import create_engine
 
-import agentexec as ax
 from agentexec.pipeline import Pipeline, StepDefinition
 
 
@@ -32,26 +33,34 @@ class FinalResult(BaseModel):
     combined: str
 
 
-@pytest.fixture
-def pool():
-    """Create a WorkerPool for testing."""
-    engine = create_engine("sqlite:///:memory:")
-    return ax.WorkerPool(engine=engine)
+@dataclass
+class MockWorkerContext:
+    """Mock WorkerContext for testing."""
+
+    tasks: dict = field(default_factory=dict)
 
 
 @pytest.fixture
-def pipeline(pool):
+def mock_pool():
+    """Create a mock WorkerPool for testing."""
+    pool = MagicMock()
+    pool._context = MockWorkerContext()
+    return pool
+
+
+@pytest.fixture
+def pipeline(mock_pool):
     """Create a Pipeline for testing."""
-    return Pipeline(pool=pool)
+    return Pipeline(mock_pool)
 
 
-def test_pipeline_initialization(pool) -> None:
-    """Test Pipeline can be initialized with a pool."""
-    p = Pipeline(pool=pool)
+def test_pipeline_initialization(mock_pool) -> None:
+    """Test Pipeline can be initialized."""
+    p = Pipeline(mock_pool)
 
-    assert p._pool is pool
     assert p._steps == {}
     assert p._pipeline_class is None
+    assert p._pool is mock_pool
 
 
 def test_step_decorator_registers_step(pipeline) -> None:
@@ -112,7 +121,7 @@ async def test_pipeline_run_executes_steps_in_order(pipeline) -> None:
             execution_order.append("third")
             return f"result: {y}"
 
-    result = await pipeline.run(context=InputContext(value=5))
+    result = await pipeline.run(None, InputContext(value=5))
 
     assert execution_order == ["first", "second", "third"]
     assert result == "result: 20"  # (5 * 2) + 10 = 20
@@ -120,8 +129,8 @@ async def test_pipeline_run_executes_steps_in_order(pipeline) -> None:
 
 async def test_pipeline_run_without_class_raises(pipeline) -> None:
     """Test that pipeline.run() raises if no class is defined."""
-    with pytest.raises(RuntimeError, match="No pipeline class defined"):
-        await pipeline.run(context=InputContext(value=1))
+    with pytest.raises(RuntimeError, match="Pipeline must inherit from pipeline.Base"):
+        await pipeline.run(None, InputContext(value=1))
 
 
 async def test_pipeline_passes_output_to_next_step(pipeline) -> None:
@@ -136,7 +145,7 @@ async def test_pipeline_passes_output_to_next_step(pipeline) -> None:
         async def consume(self, value: int) -> str:
             return f"got {value}"
 
-    result = await pipeline.run(context=InputContext(value=7))
+    result = await pipeline.run(None, InputContext(value=7))
     assert result == "got 700"
 
 
@@ -152,7 +161,7 @@ async def test_pipeline_handles_tuple_return(pipeline) -> None:
         async def combine(self, num: int, text: str) -> str:
             return f"{text}_{num * 2}"
 
-    result = await pipeline.run(context=InputContext(value=5))
+    result = await pipeline.run(None, InputContext(value=5))
     assert result == "str_5_10"
 
 
@@ -174,10 +183,8 @@ def test_verify_type_flow_count_mismatch(pipeline) -> None:
     BadPipeline.returns_two = returns_two
     BadPipeline.expects_one = expects_one
 
-    steps = sorted(pipeline._steps.values(), key=lambda s: s.order)
-
     with pytest.raises(TypeError, match="returns 2 values.*expects 1 parameters"):
-        pipeline._verify_type_flow(steps)
+        pipeline._validate_type_flow()
 
 
 def test_verify_type_flow_type_mismatch(pipeline) -> None:
@@ -194,10 +201,8 @@ def test_verify_type_flow_type_mismatch(pipeline) -> None:
     class TypeMismatchPipeline(pipeline.Base):
         pass
 
-    steps = sorted(pipeline._steps.values(), key=lambda s: s.order)
-
     with pytest.raises(TypeError, match="Type mismatch"):
-        pipeline._verify_type_flow(steps)
+        pipeline._validate_type_flow()
 
 
 def test_verify_type_flow_allows_none_types(pipeline) -> None:
@@ -214,10 +219,8 @@ def test_verify_type_flow_allows_none_types(pipeline) -> None:
     class NoTypePipeline(pipeline.Base):
         pass
 
-    steps = sorted(pipeline._steps.values(), key=lambda s: s.order)
-
     # Should not raise - None return type is skipped
-    pipeline._verify_type_flow(steps)
+    pipeline._verify_type_flow()
 
 
 def test_step_ordering_with_non_sequential_numbers(pipeline) -> None:
@@ -267,4 +270,4 @@ async def test_pipeline_type_verification_rejects_mismatched_params(pipeline) ->
             return "no params"
 
     with pytest.raises(TypeError, match="returns 1 values.*expects 0 parameters"):
-        await pipeline.run(context=InputContext(value=42))
+        await pipeline.run(None, InputContext(value=42))

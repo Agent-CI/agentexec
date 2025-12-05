@@ -1,16 +1,87 @@
 from __future__ import annotations
-from typing import Any, Callable, TypeVar, get_type_hints, get_origin, get_args
+import re
 import inspect
-from dataclasses import dataclass
+import warnings
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    Callable,
+    ClassVar,
+    Coroutine,
+    Union,
+    get_type_hints,
+    get_origin,
+    get_args,
+)
+from uuid import UUID
 
 from pydantic import BaseModel
 
-from agentexec.worker import WorkerPool
+from agentexec import activity
+from agentexec.core import queue
+from agentexec.core.task import Task
 
-StepHandler = TypeVar("StepHandler", bound=Callable[..., Any])
+if TYPE_CHECKING:
+    from agentexec.worker import WorkerPool
+
+StepResult = Union[BaseModel, tuple[BaseModel, ...]]
+StepHandler = Callable[..., Union[StepResult, Coroutine[Any, Any, StepResult]]]
 
 
-@dataclass
+def _format_pipeline_name(cls: type) -> str:
+    """Generate a default pipeline name based on the class name."""
+    return re.sub(r"(?<!^)(?=[A-Z])", "_", cls.__name__).lower()
+
+
+class _PipelineBaseMeta(type):
+    """Metaclass that registers pipeline subclasses with their bound pipeline."""
+
+    @classmethod
+    def _bind_pipeline(mcs, pipeline: Pipeline) -> type:
+        """Create a new PipelineBase class bound to the given pipeline.
+
+        Args:
+            pipeline: Pipeline instance to bind
+
+        Returns:
+            New PipelineBase class
+        """
+        return mcs(
+            "PipelineBase",
+            (_PipelineBase,),
+            {"_pipeline": pipeline},
+        )
+
+
+class _PipelineBase(metaclass=_PipelineBaseMeta):
+    """Base class for pipeline definitions."""
+
+    _pipeline: ClassVar[Pipeline]
+
+    def __init_subclass__(cls, **kwargs) -> None:
+        super().__init_subclass__(**kwargs)
+
+        # bind the pipeline only for subclasses, not the base itself
+        if cls.__name__ == "PipelineBase":
+            return
+
+        pipeline = cls._pipeline
+        pipeline._pipeline_class = cls
+
+        if not pipeline._steps:
+            warnings.warn(f"Pipeline '{pipeline.name}' has no steps defined")
+
+        # register Task handler with the pipeline's worker pool
+        assert pipeline._pool, "Pipeline must inherit from pipeline.Base"
+        pipeline._pool._add_task(
+            name=pipeline.name,
+            func=pipeline._run_task,
+            context_class=pipeline._input_type,
+            result_class=pipeline._output_type,
+        )
+        del pipeline._pool  # pool is only needed for registration
+
+
 class StepDefinition:
     """Definition of a pipeline step."""
 
@@ -19,6 +90,30 @@ class StepDefinition:
     handler: StepHandler
     return_type: type | None
     param_types: dict[str, type | None]
+    _description: str | None = None
+
+    def __init__(
+        self,
+        name: str,
+        order: Any,
+        handler: StepHandler,
+        return_type: type | None,
+        param_types: dict[str, type | None],
+        description: str | None = None,
+    ) -> None:
+        self.name = name
+        self.order = order
+        self.handler = handler
+        self.return_type = return_type
+        self.param_types = param_types
+        self._description = description
+
+    @property
+    def description(self) -> str:
+        """Get the step description for activity tracking."""
+        if self._description:
+            return self._description
+        return self.handler.__name__
 
 
 class Pipeline:
@@ -28,7 +123,7 @@ class Pipeline:
     Steps are methods decorated with @pipeline.step() that execute in order.
 
     Example:
-        pipeline = ax.Pipeline(pool=pool)
+        pipeline = ax.Pipeline(pool)
 
         class ResearchPipeline(pipeline.Base):
             @pipeline.step(0)
@@ -41,44 +136,107 @@ class Pipeline:
             async def analyze(self, a: A, b: B) -> Result:
                 ...
 
+        # Queue to worker (non-blocking)
+        task = await pipeline.enqueue(context=InputContext(...))
+
+        # Run inline (blocking)
         result = await pipeline.run(context=InputContext(...))
     """
 
-    _pool: WorkerPool
+    _pool: WorkerPool | None
+    _name: str | None
     _steps: dict[str, StepDefinition]
-    _pipeline_class: type | None
+    _pipeline_class: type[_PipelineBase] | None = None
+    _pipeline_instance: _PipelineBase | None = None
 
-    def __init__(self, pool: WorkerPool):
+    def __init__(
+        self,
+        pool: WorkerPool,
+        *,
+        name: str | None = None,
+    ):
         """Initialize a pipeline.
 
         Args:
-            pool: WorkerPool for task execution
+            pool: WorkerPool instance for task registration and enqueueing.
+            name: Optional name for task registration. Defaults to 'pipeline:{ClassName}'.
         """
-        self._pool = pool
         self._steps = {}
-        self._pipeline_class = None
+        self._pool = pool
+        self._name = name
 
     @property
-    def Base(self) -> type:
-        """Dynamic base class for pipeline definitions.
+    def name(self) -> str:
+        """Pipeline name used for task registration."""
+        if self._name:  # overridden name
+            return self._name
+
+        return _format_pipeline_name(self._get_pipeline_class())
+
+    def _get_pipeline_class(self) -> type[_PipelineBase]:
+        """Get the pipeline implementation class.
+
+        Returns:
+            Pipeline implementation class
+
+        Raises:
+            RuntimeError: If no pipeline class has been defined
+        """
+        if self._pipeline_class is None:
+            raise RuntimeError("Pipeline must inherit from pipeline.Base.")
+        return self._pipeline_class
+
+    def _get_pipeline_instance(self) -> _PipelineBase:
+        """
+        Instantiate a single instance of the pipeline class.
+        Returns:
+            Pipeline implementation instance
+        """
+        if self._pipeline_instance is None:
+            self._pipeline_instance = self._get_pipeline_class()()
+        return self._pipeline_instance
+
+    @property
+    def _sorted_steps(self) -> list[StepDefinition]:
+        """Steps sorted by their order value."""
+        return sorted(self._steps.values(), key=lambda s: s.order)
+
+    @property
+    def _input_type(self) -> type[BaseModel]:
+        """Input context type for the first step."""
+        first_step = self._sorted_steps[0]
+        param_types = list(first_step.param_types.values())
+        if not param_types:
+            raise RuntimeError("First step must have at least one parameter for input context.")
+        assert isinstance(param_types[0], type)  # TODO type checker
+        return param_types[0]
+
+    @property
+    def _output_type(self) -> type[BaseModel] | None:
+        """Output type from the final step."""
+        last_step = self._sorted_steps[-1]
+        return last_step.return_type
+
+    @property
+    def Base(self) -> type[_PipelineBase]:
+        """Returns a base class bound to this pipeline instance.
 
         When a class inherits from pipeline.Base, it is automatically
-        registered as the pipeline's implementation class.
+        registered as the pipeline's implementation class and as a task
+        with the pool.
         """
-        pipeline = self
+        return _PipelineBaseMeta._bind_pipeline(self)
 
-        class PipelineBase:
-            def __init_subclass__(cls, **kwargs: Any) -> None:
-                super().__init_subclass__(**kwargs)
-                pipeline._pipeline_class = cls
-
-        return PipelineBase
-
-    def step(self, order: Any) -> Callable[[StepHandler], StepHandler]:
+    def step(
+        self,
+        order: Any,
+        description: str | None = None,
+    ) -> Callable[[StepHandler], StepHandler]:
         """Decorator to register a method as a pipeline step.
 
         Args:
             order: Sortable value for step sequencing (0, 1, 2 or 'a', 'b', 'c')
+            description: Optional description for activity tracking messages
 
         Returns:
             Decorated function
@@ -86,12 +244,10 @@ class Pipeline:
 
         def decorator(func: StepHandler) -> StepHandler:
             hints = get_type_hints(func)
-            return_type = hints.pop("return", None)
-
             sig = inspect.signature(func)
             param_types = {
                 name: hints.get(name)
-                for name, param in sig.parameters.items()
+                for name, _ in sig.parameters.items()
                 if name != "self"  #
             }
 
@@ -99,64 +255,104 @@ class Pipeline:
                 name=func.__name__,
                 order=order,
                 handler=func,
-                return_type=return_type,
+                return_type=hints.get("return"),
                 param_types=param_types,
+                description=description,
             )
             return func
 
         return decorator
 
-    async def run(self, context: BaseModel) -> Any:
-        """Execute the pipeline.
+    async def enqueue(self, context: BaseModel) -> Task:
+        """Enqueue the pipeline to run on a worker.
 
         Args:
             context: Initial context passed to the first step
 
         Returns:
-            Output from the final step
-
-        Raises:
-            RuntimeError: If no pipeline class has been defined
-            TypeError: If step input/output types don't match
+            Task instance for tracking the pipeline execution
         """
-        if self._pipeline_class is None:
-            raise RuntimeError(
-                "No pipeline class defined. Create a class that inherits from pipeline.Base."
-            )
+        self._validate_type_flow()
+        return await queue.enqueue(self.name, context)
 
-        instance = self._pipeline_class()  # TODO reuse instance.
-        sorted_steps = sorted(self._steps.values(), key=lambda s: s.order)
-
-        # Verify type flow at runtime
-        self._verify_type_flow(sorted_steps)
-
-        # Execute steps in order
-        current_output: Any = context
-        for step in sorted_steps:
-            # Unpack tuple into kwargs if needed
-            if isinstance(current_output, tuple):
-                param_names = list(step.param_types.keys())
-                kwargs = dict(zip(param_names, current_output))
-            else:
-                param_names = list(step.param_types.keys())
-                if param_names:
-                    kwargs = {param_names[0]: current_output}
-                else:
-                    kwargs = {}
-
-            current_output = await step.handler(instance, **kwargs)
-
-        return current_output
-
-    def _verify_type_flow(self, steps: list[StepDefinition]) -> None:
-        """Verify that step return types match next step's parameters.
+    async def run(self, context: BaseModel) -> tuple[BaseModel] | BaseModel:
+        """Execute the pipeline inline (blocking).
 
         Args:
-            steps: Ordered list of step definitions
+            agent_id: Agent ID for activity tracking (None to skip tracking)
+            context: Initial context passed to the first step
+
+        Returns:
+            Output from the final step
+        """
+        self._validate_type_flow()
+        _context: tuple[BaseModel] | BaseModel = context
+        for step in self._sorted_steps:
+            _context = await self._run_step(step, _context)
+
+        return _context
+
+    async def _run_task(
+        self,
+        agent_id: UUID,
+        context: BaseModel,
+    ) -> tuple[BaseModel, ...] | BaseModel:
+        """Run the pipeline as a task handler.
+
+        Args:
+            agent_id: Agent ID for activity tracking
+            context: Initial context passed to the first step
+        Returns:
+            Output from the final step
+        """
+        steps = self._sorted_steps
+        total_steps = len(steps)
+        self._validate_type_flow()
+
+        _context: tuple[BaseModel] | BaseModel = context
+        for i, step in enumerate(steps):
+            if agent_id:
+                activity.update(
+                    agent_id,
+                    step.description,
+                    percentage=int((i / total_steps) * 100),
+                )
+            _context = await self._run_step(step, _context)
+
+        return _context
+
+    async def _run_step(
+        self,
+        step: StepDefinition,
+        context: tuple[BaseModel] | BaseModel,
+    ) -> BaseModel:
+        """Run a single step of the pipeline.
+
+        Args:
+            step: StepDefinition to execute
+            **kwargs: Parameters to pass to the step
+        Returns:
+            Output from the step
+        """
+        instance = self._get_pipeline_instance()
+
+        param_names = list(step.param_types.keys())
+        if isinstance(context, tuple):
+            kwargs = dict(zip(param_names, context))
+        elif param_names:
+            kwargs = {param_names[0]: context}
+        else:
+            kwargs = {}
+
+        return await step.handler(instance, **kwargs)
+
+    def _validate_type_flow(self) -> None:
+        """Verify that step return types match next step's parameters.
 
         Raises:
             TypeError: If types don't connect properly
         """
+        steps = self._sorted_steps
         for i, step in enumerate(steps[:-1]):
             next_step = steps[i + 1]
 
@@ -181,7 +377,7 @@ class Pipeline:
                 )
 
             # Check types match
-            for j, (ret_type, param_type) in enumerate(zip(return_types, param_types)):
+            for _, (ret_type, param_type) in enumerate(zip(return_types, param_types)):
                 if param_type is not None and ret_type != param_type:
                     # Allow subclass relationships
                     if not (

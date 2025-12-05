@@ -207,9 +207,14 @@ async def run_company_research(company_name: str) -> FinalAnalysis:
     Returns:
         Final analysis with recommendations
     """
-    result = await pipeline.run(
+    # run in this thread (blocking
+    # result = await pipeline.run(...)
+
+    # run in the task queue
+    task = await pipeline.enqueue(
         context=CompanyContext(company_name=company_name),
     )
+    result = await ax.get_result(task)
     return result
 
 

@@ -55,12 +55,11 @@ def test_runner_initialization() -> None:
         agent_id=uuid.uuid4(),
         max_turns_recovery=True,
         wrap_up_prompt="Please summarize your findings.",
-        report_status_prompt="Use report_status to report progress.",
     )
 
     assert runner is not None
     assert runner.max_turns_recovery is True
-    assert runner.prompts.report_status == "Use report_status to report progress."
+    assert runner.prompts.wrap_up == "Please summarize your findings."
     assert hasattr(runner, "tools")
     assert hasattr(runner, "run")
 
@@ -85,12 +84,18 @@ def test_config_environment_variables() -> None:
 
 def test_task_decorator_interface(pool) -> None:
     """Test that @pool.task() decorator works."""
+    from agentexec.worker.pool import TaskWrapper
+
     @pool.task("test_task")
     async def test_handler(agent_id: uuid.UUID, context: SampleContext) -> SampleResult:
         return SampleResult(message=f"Processed: {context.param}")
 
+    # Verify decorator returns TaskWrapper with .enqueue() and .run() methods
+    assert isinstance(test_handler, TaskWrapper)
+    assert hasattr(test_handler, "enqueue")
+    assert hasattr(test_handler, "run")
+
     # Verify task definition was registered with pool
     assert "test_task" in pool._context.tasks
     task_def = pool._context.tasks["test_task"]
-    assert task_def.handler == test_handler
     assert task_def.context_class == SampleContext
