@@ -577,8 +577,10 @@ ax.Base                  # SQLAlchemy declarative base
 ### `agentexec.activity`
 
 ```python
-# Create/update activities
-activity = ax.activity.create(db, agent_id, agent_type)
+# Create activity (returns agent_id for tracking)
+agent_id = ax.activity.create(task_name, message="Starting...")
+
+# Update progress
 ax.activity.update(agent_id, message, percentage=50)
 ax.activity.complete(agent_id, message="Done")
 ax.activity.error(agent_id, error="Failed: ...")
