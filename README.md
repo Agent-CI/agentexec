@@ -554,53 +554,37 @@ The components are headless (no built-in styling) and work with any CSS framewor
 
 ## Module Reference
 
-### `agentexec` (main package)
+### Task Queue
 
 ```python
 import agentexec as ax
 
-# Task Queue
-task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)  # Returns Task with agent_id
+task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)
 result = await ax.get_result(task, timeout=300)
 results = await ax.gather(task1, task2, task3)
-
-# Worker Pool
-pool = ax.Pool(engine=engine)
-
-@pool.task("task_name")
-async def handler(agent_id: UUID, context: MyContext) -> Result:
-    pass
-
-pool.run()
-
-# Runners
-runner = ax.OpenAIRunner(agent_id, max_turns_recovery=True)
-result = await runner.run(agent, input="...", max_turns=15)
-
-# Pipelines
-pipeline = ax.Pipeline(pool)
-
-class MyPipeline(pipeline.Base):
-    @pipeline.step(0, "description")
-    async def step_one(self, context): ...
-
-# Tracker
-tracker = ax.Tracker("name", batch_id)
-tracker.incr()
-if tracker.decr() == 0: ...  # All complete
-
-# Configuration
-ax.CONF.num_workers      # Number of worker processes
-ax.CONF.queue_name       # Redis queue name
-ax.CONF.redis_url        # Redis connection URL
-
-# Database
-ax.Base                  # SQLAlchemy declarative base
 ```
 
-### `agentexec.activity`
+### Worker Pool
 
 ```python
+import agentexec as ax
+
+pool = ax.Pool(engine=engine)
+pool = ax.Pool(database_url="postgresql://...")
+
+@pool.task("name")
+async def handler(agent_id: UUID, context: MyContext) -> None: ...
+
+pool.run()       # Blocking - runs workers
+pool.start()     # Non-blocking - starts workers in background
+pool.shutdown()  # Graceful shutdown
+```
+
+### Activity Tracking
+
+```python
+import agentexec as ax
+
 # Create activity (returns agent_id for tracking)
 agent_id = ax.activity.create(task_name, message="Starting...")
 
@@ -629,11 +613,9 @@ runner = ax.OpenAIRunner(
     wrap_up_prompt="Summarize...",
 )
 
-# Built-in prompts and tools
 runner.prompts.report_status  # Instruction text for agents
 runner.tools.report_status    # Pre-bound function tool
 
-# Run agent
 result = await runner.run(agent, input="...", max_turns=15)
 result = await runner.run_streamed(agent, input="...", max_turns=15)
 
@@ -642,20 +624,34 @@ class MyRunner(ax.BaseAgentRunner):
     async def run(self, agent: Agent, input: str) -> RunResult: ...
 ```
 
-### Worker Pool
+### Pipelines
 
 ```python
 import agentexec as ax
 
-pool = ax.Pool(engine=engine)
-pool = ax.Pool(database_url="postgresql://...")
+pipeline = ax.Pipeline(pool)
 
-@pool.task("name")
-async def handler(agent_id: UUID, context: MyContext) -> None: ...
+class MyPipeline(pipeline.Base):
+    @pipeline.step(0, "description")
+    async def step_one(self, context): ...
+```
 
-pool.run()       # Blocking - runs workers
-pool.start()     # Non-blocking - starts workers in background
-pool.shutdown()  # Graceful shutdown
+### Tracker
+
+```python
+import agentexec as ax
+
+tracker = ax.Tracker("name", batch_id)
+tracker.incr()
+if tracker.complete: ...  # All tasks done
+```
+
+### Database
+
+```python
+import agentexec as ax
+
+ax.Base  # SQLAlchemy declarative base for activity tables
 ```
 
 ---
@@ -713,25 +709,6 @@ uv run ruff check src/
 
 # Formatting
 uv run ruff format src/
-```
-
-### Project Structure
-
-```
-agentexec/
-├── src/agentexec/
-│   ├── activity/       # Activity tracking (models, schemas, tracker)
-│   ├── core/           # Task queue, database, results
-│   ├── runners/        # Agent runners (base, OpenAI)
-│   ├── state/          # State backend (Redis, protocol)
-│   ├── worker/         # Worker pool, multiprocessing
-│   ├── pipeline.py     # Multi-step pipelines
-│   ├── tracker.py      # Dynamic fan-out coordination
-│   └── config.py       # Configuration
-├── ui/                 # React component library
-├── examples/           # Example applications
-├── docs/               # Documentation
-└── docker/             # Docker deployment files
 ```
 
 ### Contributing
