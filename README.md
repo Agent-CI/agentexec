@@ -187,25 +187,24 @@ result = await runner.run(agent, max_turns=15)
 Orchestrate complex workflows with parallel execution:
 
 ```python
+import asyncio
+
 pipeline = ax.Pipeline(pool)
 
 class ResearchPipeline(pipeline.Base):
     @pipeline.step(0, "parallel research")
     async def gather_data(self, context: InputContext):
-        brand_task = await ax.enqueue("research_brand", context)
-        market_task = await ax.enqueue("research_market", context)
-        return await ax.gather(brand_task, market_task)  # Run in parallel
+        return await asyncio.gather(
+            research_brand(context),
+            research_market(context),
+        )
 
     @pipeline.step(1, "analysis")
     async def analyze(self, brand: BrandResult, market: MarketResult) -> FinalReport:
-        task = await ax.enqueue("analyze", AnalysisContext(brand=brand, market=market))
-        return await ax.get_result(task)
+        return await analyze_results(brand, market)
 
-# Queue pipeline (non-blocking)
+# Queue pipeline
 task = await pipeline.enqueue(context=InputContext(company="Anthropic"))
-
-# Or run inline (blocking)
-result = await pipeline.run(None, InputContext(company="Anthropic"))
 ```
 
 ### Dynamic Fan-Out with Tracker
