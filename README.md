@@ -8,30 +8,30 @@
 
 **Production-ready orchestration for OpenAI Agents SDK** with Redis-backed task queues, SQLAlchemy activity tracking, and multiprocessing worker pools.
 
-Build reliable, scalable AI agent applications with automatic lifecycle management, progress tracking, and fault tolerance.
-
-Running AI agents in production requires more than just the SDK. You need:
-
-- **Background execution** - Agents can take minutes to complete; users shouldn't wait
-- **Progress tracking** - Know what your agents are doing and when they finish
-- **Fault tolerance** - Handle failures gracefully with automatic error tracking
-- **Scalability** - Process multiple agent tasks concurrently across worker processes
-- **Observability** - Full audit trail of agent activities and status updates
-
-`agentexec` provides all of this out of the box, with a simple API that integrates seamlessly with the OpenAI Agents SDK (and the extensibility to continue adding support for other frameworks).
-
 ---
 
-## Features
+## The Problem
 
-- **Multi-process worker pool** - True parallelism for concurrent agent execution
-- **Redis task queue** - Reliable job distribution with priority support
-- **Automatic activity tracking** - Full lifecycle management (QUEUED → RUNNING → COMPLETE/ERROR)
-- **OpenAI Agents integration** - Drop-in runner with max turns recovery
-- **Agent self-reporting** - Built-in tools for agents to report progress
-- **SQLAlchemy-based storage** - Flexible database support (PostgreSQL, MySQL, SQLite)
-- **Type-safe** - Full type annotations with Pydantic schemas
-- **Production-ready** - Graceful shutdown, error handling, configurable timeouts
+You've built an AI agent. It works great in development. Now you need to run it in production:
+
+**Customer Support Automation** - A user submits a ticket. Your agent needs to research their account, check previous interactions, and draft a response. This takes 2-3 minutes. You can't block the HTTP request.
+
+**Document Processing Pipeline** - Users upload contracts for analysis. Each document needs OCR, entity extraction, clause identification, and risk scoring. You need to process dozens concurrently while tracking progress.
+
+**Research & Reporting** - Your agent researches companies, gathers data from multiple sources, and generates reports. Users need to see "Gathering financials... 40%" not just a spinning loader.
+
+**Multi-Agent Workflows** - One agent discovers leads, fans out to research each one, then a final agent aggregates results. You need coordination, not chaos.
+
+Running AI agents in production requires:
+
+- **Background execution** - Agents take minutes; users shouldn't wait
+- **Progress tracking** - Know what your agents are doing in real-time
+- **Fault tolerance** - Handle failures gracefully with full error traces
+- **Scalability** - Process multiple tasks across worker processes
+- **Observability** - Complete audit trail of agent activities
+- **User interfaces** - Components to build status dashboards and CLI monitors
+
+`agentexec` provides all of this out of the box.
 
 ---
 
@@ -43,99 +43,100 @@ uv add agentexec
 
 **Requirements:**
 - Python 3.12+
-- Redis (for task queue)
-- SQLAlchemy-compatible database (for activity tracking)
-- Agents that you want to parallelize!
+- Redis
+- SQLAlchemy-compatible database (PostgreSQL, MySQL, SQLite)
 
 ---
 
 ## Quick Start
 
-### 1. Set Up Your Worker
+A typical agentexec application has a few files working together. Here's a complete working example showing each part:
+
+### 1. Database Setup
 
 ```python
-from uuid import UUID
-
-from agents import Agent
-from pydantic import BaseModel
+# db.py
 from sqlalchemy import create_engine
-
+from sqlalchemy.orm import Session
 import agentexec as ax
 
+ax.CONF.redis_url = "redis://localhost:6379/0"
 
-# agentexec uses Pydantic models for input and outuput schemas
+engine = create_engine("sqlite:///agents.db")
+ax.Base.metadata.create_all(engine)  # Creates activity tracking tables
+
+def get_db():
+    with Session(engine) as db:
+        yield db
+```
+
+### 2. Define Your Task
+
+```python
+# worker.py
+from uuid import UUID
+from pydantic import BaseModel
+from agents import Agent
+import agentexec as ax
+from .db import engine
+
 class ResearchContext(BaseModel):
     company: str
 
-
-# Database for activity tracking (share with the rest of your app)
-engine = create_engine("sqlite:///agents.db")
-
-# Create worker pool
 pool = ax.Pool(engine=engine)
 
-
 @pool.task("research_company")
-async def research_company(agent_id: UUID, context: ResearchContext) -> None:
-    """Background task that runs an AI agent."""
-    runner = ax.OpenAIRunner(
-        agent_id=agent_id,
-    )
+async def research_company(agent_id: UUID, context: ResearchContext) -> str:
+    runner = ax.OpenAIRunner(agent_id)
 
     agent = Agent(
         name="Research Agent",
-        instructions=(
-            f"Research {context.company}.\n"
-            runner.prompts.report_status
-        ),
-        tools=[
-            runner.tools.report_status,  # Automatically associated with agent_id
-        ],
-        model="gpt-5",
+        instructions=f"Research {context.company}. {runner.prompts.report_status}",
+        tools=[runner.tools.report_status],  # Agent can report its own progress
+        model="gpt-4o",
     )
 
-    result = await runner.run(
-        agent,
-        input="Start research",
-    )
-    print(f"Done! {result.final_output}")  # Native result object
-
+    result = await runner.run(agent, input="Begin research")
+    return result.final_output
 
 if __name__ == "__main__":
-    pool.start()  # Start worker process
+    pool.run()
 ```
 
-### 2. Queue Tasks from Your Application
+### 3. Queue Tasks and Track Progress
 
 ```python
-# Enqueue a task (from your async API handler, etc.)
-task = await ax.enqueue(
-    "research_company",
-    ResearchContext(company="Anthropic"),
-)
+# views.py
+from uuid import UUID
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
+import agentexec as ax
+from .worker import ResearchContext
+from .db import get_db
 
-print(f"Task queued: {task.agent_id}")
+router = APIRouter()
+
+@router.post("/research")
+async def start_research(company: str) -> dict:
+    task = await ax.enqueue("research_company", ResearchContext(company=company))
+    return {"agent_id": str(task.agent_id), "status": "queued"}  # Return agent_id for status polling
+
+@router.get("/research/{agent_id}")
+def get_status(agent_id: UUID, db: Session = Depends(get_db)) -> ax.activity.ActivityDetailSchema:
+    return ax.activity.detail(db, agent_id=agent_id)  # Query by agent_id
 ```
 
-### 3. Track Progress
+### 4. Run Workers
 
-```python
-with Session(engine) as db:
-    # list recent activities
-    activities = ax.activity.list(db, page=1, page_size=10)
-    for activity in activities:
-        print(f"Agent {activity.agent_id} - Status: {activity.status}")
-
-    # get activity with full log history
-    activity = ax.activity.detail(db, agent_id=task.agent_id)
-    print(f"Activity for {activity.agent_id}:")
-    for log in activity.logs:
-        print(f" - {log.created_at}: {log.message} ({log.status})")
+```bash
+python worker.py
 ```
+
+That's it. Tasks are queued to Redis, workers process them in parallel, progress is tracked in your database, and your API stays responsive.
 
 ---
 
-## What You Get
+## Supported Patterns
 
 ### Automatic Activity Tracking
 
@@ -151,43 +152,22 @@ result = await runner.run(agent, input="...")
 
 ### Agent Self-Reporting
 
-Agents can report their own progress using a built-in tool:
+Agents can report their own progress:
 
 ```python
 agent = Agent(
     instructions=f"Do research. {runner.prompts.report_status}",
-    tools=[runner.tools.report_status],  # Agent passes a short message and percentage
+    tools=[runner.tools.report_status],
 )
-
-# Agent will report: "Gathering data" (40%), "Analyzing results" (80%), etc.
+# Agent calls: report_status("Analyzing financials", 60)
 ```
 
-### Explicit Reporting
-Manually update activity status and progress from within your task:
+### Manual Progress Updates
+
+Update progress explicitly from your task:
 
 ```python
-ax.activity.update(agent_id, "Starting data collection", percentage=10)
-```
-
-### Max Turns Recovery
-
-Automatically handle conversation limits with graceful wrap-up:
-
-```python
-runner = ax.OpenAIRunner(
-    agent_id=agent_id,
-    max_turns_recovery=True,
-    wrap_up_prompt="Please summarize your findings.",
-)
-agent = Agent(
-    instructions="Research the topic thoroughly."
-)
-result = await runner.run(agent, max_turns=5)
-
-# If agent hits max turns, runner automatically:
-# 1. Catches MaxTurnsExceeded
-# 2. Continues with wrap-up prompt
-# 3. Returns final result
+ax.activity.update(agent_id, "Processing batch 3 of 10", percentage=30)
 ```
 
 ### Priority Queue
@@ -195,270 +175,516 @@ result = await runner.run(agent, max_turns=5)
 Control task execution order:
 
 ```python
-# High priority - processed first
-await ax.enqueue("urgent_task", context, priority=ax.Priority.HIGH)
-
-# Low priority - processed later
-await ax.enqueue("batch_job", context, priority=ax.Priority.LOW)
+await ax.enqueue("urgent_task", context, priority=ax.Priority.HIGH)  # Front of queue
+await ax.enqueue("batch_job", context, priority=ax.Priority.LOW)     # Back of queue
 ```
 
-### Pipelines
+### Max Turns Recovery
 
-Orchestrate multi-step workflows with parallel task execution:
-
-```python
-pipeline = ax.Pipeline(pool)
-
-
-class MyPipeline(pipeline.Base):
-    @pipeline.step(0, "brand and market research")
-    async def parallel_research(self, context: InputContext):
-        """Run multiple tasks in parallel."""
-        brand_task = await ax.enqueue("research_brand", context)
-        market_task = await ax.enqueue("research_market", context)
-        return await ax.gather(brand_task, market_task)
-
-    @pipeline.step(1, "research analysis")
-    async def analyze(self, brand_result: BrandResult, market_result: MarketResult) -> AnalysisResult:
-        """Combine results from previous step."""
-        task = await ax.enqueue("analyze_research", AnalysisContext(
-            brand=brand_result,
-            market=market_result,
-        ))
-        return await ax.get_result(task)
-
-
-# Queue to worker (non-blocking, activity tracked automatically)
-task = await pipeline.enqueue(context=InputContext(company="Anthropic"))
-
-# Or run inline (blocking)
-result = await pipeline.run(None, InputContext(company="Anthropic"))
-```
-
-See **[examples/openai-agents-fastapi/pipeline.py](examples/openai-agents-fastapi/pipeline.py)** for a complete example.
-
-### Dynamic Fan-Out with Tracker
-
-Coordinate tasks that are queued dynamically and trigger a follow-up when all complete:
-
-```python
-import uuid
-
-tracker = ax.Tracker("research", uuid.uuid4())
-
-@pool.task("research")
-async def research(agent_id: UUID, context: ResearchContext) -> ResearchResult:
-    runner = ax.OpenAIRunner(agent_id=agent_id)
-    agent = Agent(
-        name="Research Agent",
-        instructions="...",
-        tools=[save_research],
-        output_type=ResearchResult,
-    )
-    return await runner.run(agent, input=f"Research {context.company}")
-
-
-@pool.task("aggregate")
-async def aggregate(agent_id: UUID, context: AggregateContext) -> None:
-    # ... aggregate results ...
-
-@function_tool
-async def queue_research(company: str) -> None:
-    tracker.incr()
-    await ax.enqueue("research", ResearchContext(company=company, batch_id=batch_id))
-
-@function_tool
-async def save_research(context: ResearchResult) -> None:
-    # save_research_to_database(context)
-    tracker.decr()
-    if tracker.complete:
-        await ax.enqueue("aggregate", ...)
-
-
-```
-
----
-
-## Full Example: FastAPI Integration
-
-See **[examples/openai-agents-fastapi/](examples/openai-agents-fastapi/)** for a complete production application showing:
-
-- Background worker pool with task handlers
-- FastAPI routes for queueing tasks and checking status
-- Database session management with SQLAlchemy
-- Custom agents with function tools
-- Real-time progress monitoring
-- Graceful shutdown with cleanup
-
----
-
-## Configuration
-
-Configure via environment variables or `.env` file:
-
-```bash
-# Redis connection (required)
-REDIS_URL=redis://localhost:6379/0
-
-# Worker settings
-AGENTEXEC_NUM_WORKERS=4
-AGENTEXEC_QUEUE_NAME=agentexec_tasks
-
-# Database table prefix
-AGENTEXEC_TABLE_PREFIX=agentexec_
-
-# Activity messages (optional)
-AGENTEXEC_ACTIVITY_MESSAGE_CREATE="Waiting to start."
-AGENTEXEC_ACTIVITY_MESSAGE_STARTED="Task started."
-AGENTEXEC_ACTIVITY_MESSAGE_COMPLETE="Task completed successfully."
-AGENTEXEC_ACTIVITY_MESSAGE_ERROR="Task failed with error: {error}"
-```
----
-
-## Public API
-
-### Task Queue
-
-```python
-# Enqueue task (async)
-task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)
-```
-
-### Activity Tracking
-
-```python
-# Query activities
-activities = ax.activity.list(session, page=1, page_size=50)
-activity = ax.activity.detail(session, agent_id)
-```
-
-### Worker Pool
-
-```python
-from pydantic import BaseModel
-
-
-class MyContext(BaseModel):
-    param: str
-
-
-pool = ax.Pool(engine=engine)
-
-
-@pool.task("task_name")
-async def handler(agent_id: UUID, context: MyContext) -> None:
-    # Task implementation - context is typed!
-    print(context.param)
-
-
-pool.start()  # Start worker processes
-```
-
-### OpenAI Runner
+Gracefully handle conversation limits:
 
 ```python
 runner = ax.OpenAIRunner(
     agent_id=agent_id,
     max_turns_recovery=True,
-    wrap_up_prompt="Summarize...",
+    wrap_up_prompt="Please summarize your findings.",
 )
+result = await runner.run(agent, max_turns=15)
+# If agent hits max turns, automatically continues with wrap-up
+```
 
-# Run agent
-result = await runner.run(agent, input="...", max_turns=15)
+### Multi-Step Pipelines
 
-# Streaming
-result = await runner.run_streamed(agent, input="...", max_turns=15)
+Orchestrate complex workflows with parallel execution:
+
+```python
+import asyncio
+
+pipeline = ax.Pipeline(pool)
+
+class ResearchPipeline(pipeline.Base):
+    @pipeline.step(0, "parallel research")
+    async def gather_data(self, context: InputContext) -> tuple[BrandResult, MarketResult]:
+        return await asyncio.gather(
+            research_brand(context),
+            research_market(context),
+        )
+
+    @pipeline.step(1, "analysis")
+    async def analyze(self, brand: BrandResult, market: MarketResult) -> FinalReport:
+        return await analyze_results(brand, market)
+
+# Queue pipeline
+task = await pipeline.enqueue(context=InputContext(company="Anthropic"))
+```
+
+### Dynamic Fan-Out with Tracker
+
+Coordinate dynamically-queued tasks:
+
+```python
+tracker = ax.Tracker("research", batch_id)
+
+@function_tool
+async def queue_research(company: str) -> None:
+    """Discovery agent calls this for each company found."""
+    tracker.incr()
+    await ax.enqueue("research", ResearchContext(company=company, batch_id=batch_id))
+
+@function_tool
+async def save_result(result: ResearchResult) -> None:
+    """Research agent calls this when done."""
+    save_to_database(result)
+    tracker.decr()
+    if tracker.complete:
+        await ax.enqueue("aggregate", AggregateContext(batch_id=batch_id))
 ```
 
 ---
 
-## Architecture
+## Integration
 
+### Running Alongside Your Application
+
+If you have an existing FastAPI/Flask/Django backend, run the worker pool in a separate process:
+
+```python
+# main.py - Your API server
+from fastapi import FastAPI
+import agentexec as ax
+
+app = FastAPI()
+
+@app.post("/process")
+async def process(data: str) -> dict:
+    task = await ax.enqueue("process_data", ProcessContext(data=data))
+    return {"agent_id": task.agent_id}
 ```
-┌─────────────┐         ┌──────────┐         ┌─────────────┐
-│ Your        │────────>│  Redis   │<────────│  Worker     │
-│ Application │ enqueue │  Queue   │ dequeue │  Pool       │
-└─────────────┘         └──────────┘         └─────────────┘
-       │                                             │
-       │                    Runner                   │
-       │            (+ Activity Tracking)            │
-       v                                             v
-┌─────────────────────────────────────────────────────────-┐
-│                    SQLAlchemy Database                   │
-│               (Activities, Logs, Progress)               │
-└─────────────────────────────────────────────────────────-┘
+
+```python
+# worker.py - Run separately
+from .tasks import pool
+
+if __name__ == "__main__":
+    pool.run()
 ```
 
-**Flow:**
-1. Application enqueues task → Activity created (QUEUED)
-2. Worker dequeues task → Executes with OpenAIRunner
-3. Runner updates activity → RUNNING
-4. Agent reports progress → Log entries created
-5. Task completes → Activity marked COMPLETE/ERROR
+**Terminal 1:** Start your API server
 
----
+```bash
+uvicorn main:app
+```
 
-## Database Models
+**Terminal 2:** Start the workers
 
-AgentExec creates two tables (prefix configurable):
+```bash
+python worker.py
+```
 
-**`agentexec_activity`** - Main activity records
-- `id` - Primary key (UUID)
-- `agent_id` - Unique agent identifier (UUID)
-- `agent_type` - Task name/type
-- `created_at` - When activity was created
-- `updated_at` - Last update timestamp
+### As a Standalone Worker Service
 
-**`agentexec_activity_log`** - Status and progress logs
-- `id` - Primary key (UUID)
-- `activity_id` - Foreign key to activity
-- `message` - Log message
-- `status` - QUEUED, RUNNING, COMPLETE, ERROR, CANCELED
-- `percentage` - Progress (0-100)
-- `created_at` - When log was created
+```python
+# worker.py
+import os
+from uuid import UUID
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+import agentexec as ax
 
----
+engine = create_engine(os.environ["DATABASE_URL"])
+pool = ax.Pool(engine=engine)
 
-## Docker Deployment
+@pool.task("my_task")
+async def my_task(agent_id: UUID, context: MyContext) -> None:
+    # Your task implementation
+    pass
 
-Deploy workers using the official Docker image:
+if __name__ == "__main__":
+    try:
+        pool.run()
+    except KeyboardInterrupt:
+        with Session(engine) as db:
+            ax.activity.cancel_pending(db)
+```
 
-### 1. Create your worker Dockerfile
+### Docker Deployment
+
+**1. Create your worker Dockerfile:**
 
 ```dockerfile
+# Dockerfile.worker
 FROM ghcr.io/agent-ci/agentexec-worker:latest
 
 COPY ./src /app/src
 ENV AGENTEXEC_WORKER_MODULE=src.worker
 ```
 
-### 2. Create your worker module
+**2. Create your worker module:**
 
 ```python
 # src/worker.py
+import atexit
 import os
+from uuid import UUID
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 import agentexec as ax
 
-pool = ax.Pool(database_url=os.environ["DATABASE_URL"])
+engine = create_engine(os.environ["DATABASE_URL"])
+pool = ax.Pool(engine=engine)
+
+def cleanup() -> None:
+    with Session(engine) as db:
+        ax.activity.cancel_pending(db)
+
+atexit.register(cleanup)
 
 @pool.task("my_task")
-async def my_task(agent_id, context):
-    # Your task implementation
+async def my_task(agent_id: UUID, context: MyContext) -> None:
     pass
 ```
 
-### 3. Run with Docker
+**3. Build and run:**
 
 ```bash
-docker build -t my-worker .
-docker run \
-  -e DATABASE_URL=postgresql://... \
-  -e REDIS_URL=redis://... \
-  -e OPENAI_API_KEY=sk-... \
-  my-worker
+docker build -f Dockerfile.worker -t my-worker .
 ```
 
-See **[docker/README.md](docker/README.md)** for full documentation including Docker Compose examples.
+```bash
+docker run -e DATABASE_URL=... -e REDIS_URL=... -e OPENAI_API_KEY=... my-worker
+```
+
+---
+
+## Backend Architecture
+
+### Redis
+
+agentexec uses Redis for task queuing, result storage, real-time log streaming, and coordination between workers. We chose Redis because it provides exactly the primitives we need (lists, pubsub, atomic counters) with minimal operational overhead.
+
+**AWS Compatible:** Since we use standard Redis features, AWS ElastiCache works out of the box.
+
+```bash
+AGENTEXEC_REDIS_URL=redis://localhost:6379/0
+# or
+AGENTEXEC_REDIS_URL=redis://my-cluster.abc123.use1.cache.amazonaws.com:6379
+```
+
+### Extensible State Backend
+
+The state backend is pluggable. We're adding support for additional backends (DynamoDB, PostgreSQL, in-memory for testing). You can also implement your own:
+
+```bash
+AGENTEXEC_STATE_BACKEND=agentexec.state.redis_backend  # Default
+AGENTEXEC_STATE_BACKEND=myapp.state.dynamodb_backend   # Custom
+```
+
+### Database
+
+Activity tracking uses SQLAlchemy with two tables:
+
+**`agentexec_activity`** - Main activity records
+- `agent_id` - Unique identifier (UUID)
+- `agent_type` - Task name
+- `created_at`, `updated_at` - Timestamps
+
+**`agentexec_activity_log`** - Status and progress
+- `activity_id` - Foreign key
+- `message` - Log message
+- `status` - QUEUED, RUNNING, COMPLETE, ERROR, CANCELED
+- `percentage` - Progress (0-100)
+
+---
+
+## Building Your Own Interface
+
+### Data Structures
+
+The activity tracking module exposes Pydantic schemas for building APIs:
+
+```python
+from agentexec.activity.schemas import (
+    ActivityListSchema,      # Paginated list response
+    ActivityListItemSchema,  # Single item in list (lightweight)
+    ActivityDetailSchema,    # Full activity with log history
+    ActivityLogSchema,       # Single log entry
+)
+```
+
+**List activities:**
+
+```python
+with Session(engine) as db:
+    result = ax.activity.list(db, page=1, page_size=20)
+    # Returns ActivityListSchema:
+    # {
+    #   "items": [...],      # List of ActivityListItemSchema
+    #   "total": 150,
+    #   "page": 1,
+    #   "page_size": 20,
+    #   "total_pages": 8
+    # }
+```
+
+**Get activity detail:**
+
+```python
+activity = ax.activity.detail(db, agent_id=agent_id)
+# Returns ActivityDetailSchema:
+# {
+#   "id": "...",
+#   "agent_id": "...",
+#   "agent_type": "research_company",
+#   "created_at": "2024-01-15T10:30:00Z",
+#   "updated_at": "2024-01-15T10:32:45Z",
+#   "logs": [
+#     {"status": "queued", "message": "Waiting to start", "percentage": 0, ...},
+#     {"status": "running", "message": "Gathering data", "percentage": 30, ...},
+#     {"status": "complete", "message": "Done", "percentage": 100, ...}
+#   ]
+# }
+```
+
+**Count active agents:**
+
+```python
+count = ax.activity.active_count(db)
+# Returns number of agents with status QUEUED or RUNNING
+```
+
+### Building a CLI Monitor
+
+```python
+# cli_monitor.py
+from rich.live import Live
+from rich.table import Table
+from sqlalchemy import Engine
+from sqlalchemy.orm import Session
+import agentexec as ax
+
+def build_table(db: Session) -> Table:
+    table = Table(title=f"Active Agents: {ax.activity.active_count(db)}")
+    table.add_column("Status")
+    table.add_column("Task")
+    table.add_column("Message")
+    table.add_column("Progress")
+
+    for item in ax.activity.list(db, page=1, page_size=10).items:
+        table.add_row(
+            item.status,
+            item.agent_type,
+            item.latest_log_message or "",
+            f"{item.percentage}%",
+        )
+    return table
+
+def monitor(engine: Engine) -> None:
+    with Live(refresh_per_second=1) as live:
+        while True:
+            with Session(engine) as db:
+                live.update(build_table(db))
+
+if __name__ == "__main__":
+    from .db import engine
+    monitor(engine)
+```
+
+---
+
+## UI Components
+
+The `agentexec-ui` package provides React components for building monitoring interfaces:
+
+```bash
+npm install agentexec-ui
+```
+
+### Components
+
+```tsx
+import {
+  TaskList,
+  TaskDetail,
+  ActiveAgentsBadge,
+  StatusBadge,
+  ProgressBar,
+} from 'agentexec-ui';
+
+// Display paginated task list
+<TaskList
+  items={activities.items}
+  loading={isLoading}
+  onTaskClick={(agentId) => setSelected(agentId)}
+  selectedAgentId={selectedId}
+/>
+
+// Full activity detail view
+<TaskDetail
+  activity={activityDetail}
+  loading={isDetailLoading}
+  error={error}
+  onClose={() => setSelected(null)}
+/>
+
+// Active count badge
+<ActiveAgentsBadge count={activeCount} loading={isLoading} />
+
+// Individual status indicators
+<StatusBadge status="running" />
+<ProgressBar percentage={65} status="running" />
+```
+
+### TypeScript Types
+
+```typescript
+import type {
+  Status,           // 'queued' | 'running' | 'complete' | 'error' | 'canceled'
+  ActivityLog,
+  ActivityDetail,
+  ActivityListItem,
+  ActivityList,
+} from 'agentexec-ui';
+```
+
+These types mirror the Python API schemas (`ActivityDetailSchema`, `ActivityListSchema`, etc.), so your API responses integrate directly with the components.
+
+The components are headless (no built-in styling) and work with any CSS framework. See `examples/openai-agents-fastapi/ui/` for a complete React app with TanStack Query integration.
+
+---
+
+## Module Reference
+
+### Task Queue
+
+```python
+import agentexec as ax
+
+task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)
+result = await ax.get_result(task, timeout=300)
+results = await ax.gather(task1, task2, task3)
+```
+
+### Worker Pool
+
+```python
+import agentexec as ax
+
+pool = ax.Pool(engine=engine)
+pool = ax.Pool(database_url="postgresql://...")
+
+@pool.task("name")
+async def handler(agent_id: UUID, context: MyContext) -> None: ...
+
+pool.run()       # Blocking - runs workers
+pool.start()     # Non-blocking - starts workers in background
+pool.shutdown()  # Graceful shutdown
+```
+
+### Activity Tracking
+
+```python
+import agentexec as ax
+
+# Create activity (returns agent_id for tracking)
+agent_id = ax.activity.create(task_name, message="Starting...")
+
+# Update progress
+ax.activity.update(agent_id, message, percentage=50)
+ax.activity.complete(agent_id, message="Done")
+ax.activity.error(agent_id, error="Failed: ...")
+
+# Query activities
+activities = ax.activity.list(db, page=1, page_size=20)
+activity = ax.activity.detail(db, agent_id=agent_id)
+count = ax.activity.active_count(db)
+
+# Cleanup
+canceled = ax.activity.cancel_pending(db)
+```
+
+### Runners
+
+```python
+import agentexec as ax
+
+runner = ax.OpenAIRunner(
+    agent_id=agent_id,
+    max_turns_recovery=True,
+    wrap_up_prompt="Summarize...",
+)
+
+runner.prompts.report_status  # Instruction text for agents
+runner.tools.report_status    # Pre-bound function tool
+
+result = await runner.run(agent, input="...", max_turns=15)
+result = await runner.run_streamed(agent, input="...", max_turns=15)
+
+# Base class for custom runners
+class MyRunner(ax.BaseAgentRunner):
+    async def run(self, agent: Agent, input: str) -> RunResult: ...
+```
+
+### Pipelines
+
+```python
+import agentexec as ax
+
+pipeline = ax.Pipeline(pool)
+
+class MyPipeline(pipeline.Base):
+    @pipeline.step(0, "description")
+    async def step_one(self, context): ...
+```
+
+### Tracker
+
+```python
+import agentexec as ax
+
+tracker = ax.Tracker("name", batch_id)
+tracker.incr()
+if tracker.complete: ...  # All tasks done
+```
+
+### Database
+
+```python
+import agentexec as ax
+
+ax.Base  # SQLAlchemy declarative base for activity tables
+```
+
+---
+
+## Configuration
+
+All settings via environment variables:
+
+```bash
+# Redis (required)
+AGENTEXEC_REDIS_URL=redis://localhost:6379/0
+
+# Workers
+AGENTEXEC_NUM_WORKERS=4
+AGENTEXEC_QUEUE_NAME=agentexec_tasks
+AGENTEXEC_GRACEFUL_SHUTDOWN_TIMEOUT=300
+
+# Database
+AGENTEXEC_TABLE_PREFIX=agentexec_
+
+# Results
+AGENTEXEC_RESULT_TTL=3600
+
+# State backend
+AGENTEXEC_STATE_BACKEND=agentexec.state.redis_backend
+AGENTEXEC_KEY_PREFIX=agentexec
+
+# Activity messages (customizable)
+AGENTEXEC_ACTIVITY_MESSAGE_CREATE="Waiting to start."
+AGENTEXEC_ACTIVITY_MESSAGE_STARTED="Task started."
+AGENTEXEC_ACTIVITY_MESSAGE_COMPLETE="Task completed successfully."
+AGENTEXEC_ACTIVITY_MESSAGE_ERROR="Task failed with error: {error}"
+```
 
 ---
 
@@ -485,17 +711,26 @@ uv run ruff check src/
 uv run ruff format src/
 ```
 
+### Contributing
 
+1. Fork the repository
+2. Create a feature branch
+3. Make your changes with tests
+4. Run `uv run pytest` and `uv run ty check`
+5. Submit a pull request
+
+---
 
 ## License
 
-MIT License - see [LICENSE](LICENSE) for details
+MIT License - see [LICENSE](LICENSE) for details.
 
 ---
 
 ## Links
 
-- **Documentation**: See example application in `examples/openai-agents-fastapi/`
-- **Issues**: [GitHub Issues](https://github.com/Agent-CI/agentexec/issues)
 - **PyPI**: [agentexec](https://pypi.org/project/agentexec/)
-
+- **npm**: [agentexec-ui](https://www.npmjs.com/package/agentexec-ui)
+- **Documentation**: [docs/](docs/)
+- **Example App**: [examples/openai-agents-fastapi/](examples/openai-agents-fastapi/)
+- **Issues**: [GitHub Issues](https://github.com/Agent-CI/agentexec/issues)
