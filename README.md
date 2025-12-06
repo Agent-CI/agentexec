@@ -339,9 +339,9 @@ agentexec uses Redis for task queuing, result storage, real-time log streaming, 
 **AWS Compatible:** Since we use standard Redis features, AWS ElastiCache works out of the box.
 
 ```bash
-REDIS_URL=redis://localhost:6379/0
+AGENTEXEC_REDIS_URL=redis://localhost:6379/0
 # or
-REDIS_URL=redis://my-cluster.abc123.use1.cache.amazonaws.com:6379
+AGENTEXEC_REDIS_URL=redis://my-cluster.abc123.use1.cache.amazonaws.com:6379
 ```
 
 ### Extensible State Backend
@@ -636,9 +636,7 @@ All settings via environment variables:
 
 ```bash
 # Redis (required)
-REDIS_URL=redis://localhost:6379/0
-REDIS_POOL_SIZE=10
-REDIS_POOL_TIMEOUT=5
+AGENTEXEC_REDIS_URL=redis://localhost:6379/0
 
 # Workers
 AGENTEXEC_NUM_WORKERS=4
