@@ -52,21 +52,34 @@ uv add agentexec
 
 A typical agentexec application has a few files working together. Here's a complete working example showing each part:
 
-### 1. Define Your Task
+### 1. Database Setup
+
+```python
+# db.py
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
+import agentexec as ax
+
+engine = create_engine("sqlite:///agents.db")
+ax.Base.metadata.create_all(engine)  # Creates activity tracking tables
+
+def get_db():
+    with Session(engine) as db:
+        yield db
+```
+
+### 2. Define Your Task
 
 ```python
 # worker.py
 from uuid import UUID
 from pydantic import BaseModel
 from agents import Agent
-from sqlalchemy import create_engine
 import agentexec as ax
+from .db import engine
 
 class ResearchContext(BaseModel):
     company: str
-
-engine = create_engine("sqlite:///agents.db")
-ax.Base.metadata.create_all(engine)  # Creates activity tracking tables
 
 pool = ax.Pool(engine=engine)
 
@@ -88,7 +101,7 @@ if __name__ == "__main__":
     pool.run()
 ```
 
-### 2. Queue Tasks and Track Progress
+### 3. Queue Tasks and Track Progress
 
 ```python
 # views.py
@@ -111,7 +124,7 @@ def get_status(agent_id: UUID, db: Session = Depends(get_db)) -> ax.activity.Act
     return ax.activity.detail(db, agent_id=agent_id)  # Query by agent_id
 ```
 
-### 3. Run Workers
+### 4. Run Workers
 
 ```bash
 python worker.py
