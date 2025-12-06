@@ -289,8 +289,6 @@ async def my_task(agent_id: UUID, context: MyContext) -> None:
     pass
 
 if __name__ == "__main__":
-    print(f"Starting {ax.CONF.num_workers} workers...")
-    print(f"Queue: {ax.CONF.queue_name}")
     pool.run()
 ```
 
