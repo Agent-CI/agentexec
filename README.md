@@ -278,6 +278,7 @@ python worker.py
 import os
 from uuid import UUID
 from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 import agentexec as ax
 
 engine = create_engine(os.environ["DATABASE_URL"])
@@ -289,7 +290,12 @@ async def my_task(agent_id: UUID, context: MyContext) -> None:
     pass
 
 if __name__ == "__main__":
-    pool.run()
+    try:
+        pool.run()
+    except KeyboardInterrupt:
+        with Session(engine) as db:
+            ax.activity.cancel_pending(db)
+            db.commit()
 ```
 
 ### Docker Deployment
@@ -308,11 +314,22 @@ ENV AGENTEXEC_WORKER_MODULE=src.worker
 
 ```python
 # src/worker.py
+import atexit
 import os
 from uuid import UUID
+from sqlalchemy import create_engine
+from sqlalchemy.orm import Session
 import agentexec as ax
 
-pool = ax.Pool(database_url=os.environ["DATABASE_URL"])
+engine = create_engine(os.environ["DATABASE_URL"])
+pool = ax.Pool(engine=engine)
+
+def cleanup() -> None:
+    with Session(engine) as db:
+        ax.activity.cancel_pending(db)
+        db.commit()
+
+atexit.register(cleanup)
 
 @pool.task("my_task")
 async def my_task(agent_id: UUID, context: MyContext) -> None:
