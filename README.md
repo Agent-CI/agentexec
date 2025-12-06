@@ -60,6 +60,8 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import Session
 import agentexec as ax
 
+ax.CONF.redis_url = "redis://localhost:6379/0"
+
 engine = create_engine("sqlite:///agents.db")
 ax.Base.metadata.create_all(engine)  # Creates activity tracking tables
 
