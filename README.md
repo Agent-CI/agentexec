@@ -101,11 +101,11 @@ router = APIRouter()
 @router.post("/research")
 async def start_research(company: str) -> dict:
     task = await ax.enqueue("research_company", ResearchContext(company=company))
-    return {"agent_id": str(task.agent_id), "status": "queued"}
+    return {"agent_id": str(task.agent_id), "status": "queued"}  # Return agent_id for status polling
 
 @router.get("/research/{agent_id}")
 def get_status(agent_id: UUID, db: Session = Depends(get_db)) -> ax.activity.ActivityDetailSchema:
-    return ax.activity.detail(db, agent_id=agent_id)
+    return ax.activity.detail(db, agent_id=agent_id)  # Query by agent_id
 ```
 
 ### 3. Run Workers
@@ -536,7 +536,7 @@ The components are headless (no built-in styling) and work with any CSS framewor
 import agentexec as ax
 
 # Task Queue
-task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)
+task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)  # Returns Task with agent_id
 result = await ax.get_result(task, timeout=300)
 results = await ax.gather(task1, task2, task3)
 
