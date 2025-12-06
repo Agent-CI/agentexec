@@ -64,7 +64,7 @@ import agentexec as ax
 class ResearchContext(BaseModel):
     company: str
 
-engine = create_engine("postgresql://localhost/myapp")
+engine = create_engine("sqlite:///agents.db")
 ax.Base.metadata.create_all(engine)  # Creates activity tracking tables
 
 pool = ax.Pool(engine=engine)
