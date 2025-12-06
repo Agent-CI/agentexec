@@ -83,6 +83,9 @@ async def research_company(agent_id: UUID, context: ResearchContext) -> str:
 
     result = await runner.run(agent, input="Begin research")
     return result.final_output
+
+if __name__ == "__main__":
+    pool.run()
 ```
 
 ### 2. Queue Tasks and Track Progress
@@ -109,14 +112,6 @@ def get_status(agent_id: UUID, db: Session = Depends(get_db)) -> ax.activity.Act
 ```
 
 ### 3. Run Workers
-
-Add this to the bottom of your worker file:
-
-```python
-# worker.py
-if __name__ == "__main__":
-    pool.run()
-```
 
 ```bash
 python worker.py
