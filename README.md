@@ -469,10 +469,9 @@ def build_table(db: Session) -> Table:
     table.add_column("Message")
     table.add_column("Progress")
 
-    status_icon = {"queued": "⏳", "running": "🔄", "complete": "✅", "error": "❌"}
     for item in ax.activity.list(db, page=1, page_size=10).items:
         table.add_row(
-            status_icon.get(item.status, "?"),
+            item.status,
             item.agent_type,
             item.latest_log_message or "",
             f"{item.percentage}%",
