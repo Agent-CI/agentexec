@@ -110,16 +110,7 @@ from db import SessionLocal
 @router.get("/research/{agent_id}")
 def get_status(agent_id: UUID):
     with SessionLocal() as db:
-        activity = ax.activity.detail(db, agent_id=agent_id)
-        return {
-            "status": activity.logs[-1].status if activity.logs else "unknown",
-            "message": activity.logs[-1].message if activity.logs else None,
-            "progress": activity.logs[-1].percentage if activity.logs else 0,
-            "history": [
-                {"time": log.created_at, "message": log.message, "progress": log.percentage}
-                for log in activity.logs
-            ]
-        }
+        return ax.activity.detail(db, agent_id=agent_id)  # Returns ActivityDetailSchema
 ```
 
 ### 4. Run Workers
