@@ -460,20 +460,33 @@ count = ax.activity.active_count(db)
 
 ```python
 # cli_monitor.py
-import time
+from rich.live import Live
+from rich.table import Table
 from sqlalchemy.orm import Session
 import agentexec as ax
 
+def build_table(db: Session) -> Table:
+    table = Table(title=f"Active Agents: {ax.activity.active_count(db)}")
+    table.add_column("Status")
+    table.add_column("Task")
+    table.add_column("Message")
+    table.add_column("Progress")
+
+    status_icon = {"queued": "⏳", "running": "🔄", "complete": "✅", "error": "❌"}
+    for item in ax.activity.list(db, page=1, page_size=10).items:
+        table.add_row(
+            status_icon.get(item.status, "?"),
+            item.agent_type,
+            item.latest_log_message or "",
+            f"{item.percentage}%",
+        )
+    return table
+
 def monitor(engine):
-    while True:
-        with Session(engine) as db:
-            activities = ax.activity.list(db, page=1, page_size=10)
-            print("\033[2J\033[H")  # Clear screen
-            print(f"Active Agents: {ax.activity.active_count(db)}\n")
-            for item in activities.items:
-                status_icon = {"queued": "⏳", "running": "🔄", "complete": "✅", "error": "❌"}
-                print(f"{status_icon.get(item.status, '?')} {item.agent_type}: {item.latest_log_message} ({item.percentage}%)")
-        time.sleep(2)
+    with Live(refresh_per_second=1) as live:
+        while True:
+            with Session(engine) as db:
+                live.update(build_table(db))
 
 if __name__ == "__main__":
     from db import engine
