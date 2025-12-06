@@ -28,7 +28,7 @@ These settings must be provided - there are no defaults:
 |----------|-------------|---------|
 | `REDIS_URL` or `AGENTEXEC_REDIS_URL` | Redis connection URL | `redis://localhost:6379/0` |
 
-The `DATABASE_URL` is passed directly to `WorkerPool`, not through configuration.
+The `DATABASE_URL` is passed directly to `Pool`, not through configuration.
 
 ## Optional Settings
 
@@ -127,7 +127,7 @@ Create a `.env` file in your project root:
 # Required
 REDIS_URL=redis://localhost:6379/0
 
-# Database (passed to WorkerPool)
+# Database (passed to Pool)
 DATABASE_URL=postgresql://user:password@localhost:5432/myapp
 
 # OpenAI (for agents)
@@ -269,7 +269,7 @@ REDIS_URL=rediss://localhost:6379/0
 
 ## Database URL Format
 
-The `DATABASE_URL` passed to `WorkerPool` follows SQLAlchemy conventions:
+The `DATABASE_URL` passed to `Pool` follows SQLAlchemy conventions:
 
 ```bash
 # PostgreSQL

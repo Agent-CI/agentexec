@@ -61,7 +61,7 @@ class SummarizeResult(BaseModel):
     summary: str
 
 # Create the worker pool
-pool = ax.WorkerPool(engine=engine)
+pool = ax.Pool(engine=engine)
 
 
 # Register a task

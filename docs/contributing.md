@@ -177,7 +177,7 @@ Use clear, descriptive commit messages:
 feat: add support for custom queue names
 
 - Allow specifying queue_name in enqueue()
-- Update WorkerPool to accept queue_name parameter
+- Update Pool to accept queue_name parameter
 - Add tests for custom queue functionality
 ```
 

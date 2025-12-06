@@ -1,23 +1,13 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Protocol, TypeAlias, TypedDict, cast, get_type_hints
+from typing import Any, Protocol, TypeAlias, cast, get_type_hints
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
 
 from agentexec import activity, state
 from agentexec.config import CONF
-
-
-class TaskHandlerKwargs(TypedDict):
-    """Type for kwargs passed to task handlers.
-
-    Handlers receive a typed Pydantic context and agent_id.
-    """
-
-    agent_id: UUID
-    context: BaseModel
 
 
 TaskResult: TypeAlias = BaseModel

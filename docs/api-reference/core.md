@@ -16,7 +16,7 @@ ax.get_result()
 ax.Priority
 
 # Worker
-ax.WorkerPool
+ax.Pool
 
 # Activity
 ax.activity
@@ -235,12 +235,12 @@ Execute the task handler (called by workers).
 
 ---
 
-## WorkerPool
+## Pool
 
 Manages multi-process worker execution.
 
 ```python
-class WorkerPool:
+class Pool:
     def __init__(
         self,
         engine: Engine,
@@ -315,7 +315,7 @@ import agentexec as ax
 engine = create_engine("sqlite:///agents.db")
 ax.Base.metadata.create_all(engine)
 
-pool = ax.WorkerPool(
+pool = ax.Pool(
     engine=engine,
     database_url="sqlite:///agents.db"
 )

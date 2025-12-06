@@ -5,7 +5,7 @@ Example:
     from pydantic import BaseModel
     import agentexec as ax
 
-    pool = ax.WorkerPool(database_url="sqlite:///tasks.db")
+    pool = ax.Pool(database_url="sqlite:///tasks.db")
 
     class Input(BaseModel):
         query: str
@@ -29,8 +29,9 @@ from agentexec.config import CONF
 from agentexec.core.db import Base
 from agentexec.core.queue import Priority, enqueue
 from agentexec.core.results import gather, get_result
-from agentexec.core.task import Task, TaskDefinition, TaskHandler, TaskHandlerKwargs
-from agentexec.worker import WorkerPool
+from agentexec.core.task import Task
+from agentexec import activity
+from agentexec.worker import Pool
 from agentexec.pipeline import Pipeline
 from agentexec.runners import BaseAgentRunner
 from agentexec.tracker import Tracker
@@ -43,23 +44,20 @@ except PackageNotFoundError:
 __all__ = [
     "CONF",
     "Base",
+    "BaseAgentRunner",
     "Pipeline",
     "Tracker",
-    "WorkerPool",
+    "Pool",
     "Task",
-    "TaskDefinition",
-    "TaskHandler",
-    "TaskHandlerKwargs",
     "Priority",
+    "activity",
     "enqueue",
     "gather",
     "get_result",
-    "BaseAgentRunner",
 ]
 
-# OpenAI runner is only available if agents package is installed
 try:
-    from agentexec.runners import OpenAIRunner  # type: ignore[possibly-missing-import]
+    from agentexec.runners.openai import OpenAIRunner  # type: ignore[possibly-missing-import]
 
     __all__.append("OpenAIRunner")
 except ImportError:

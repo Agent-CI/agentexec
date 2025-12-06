@@ -8,7 +8,7 @@ import agentexec as ax
 engine = create_engine("sqlite:///agents.db", echo=False)
 ax.Base.metadata.create_all(engine)
 
-pool = ax.WorkerPool(engine=engine)
+pool = ax.Pool(engine=engine)
 
 
 class CompanyContext(BaseModel):

@@ -1,7 +1,5 @@
-from agentexec.worker.pool import Worker, WorkerContext, WorkerPool
+from agentexec.worker.pool import Pool
 
 __all__ = [
-    "Worker",
-    "WorkerContext",
-    "WorkerPool",
+    "Pool",
 ]

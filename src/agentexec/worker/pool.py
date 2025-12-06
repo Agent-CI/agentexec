@@ -24,7 +24,7 @@ from agentexec.worker.logging import (
 
 __all__ = [
     "Worker",
-    "WorkerPool",
+    "Pool",
 ]
 
 
@@ -35,7 +35,7 @@ def _get_pool_id() -> str:
 
 @dataclass
 class WorkerContext:
-    """Shared context passed from WorkerPool to Worker processes."""
+    """Shared context passed from Pool to Worker processes."""
 
     database_url: str
     shutdown_event: StateEvent
@@ -59,7 +59,7 @@ class Worker:
 
         Args:
             worker_id: Unique identifier for this worker
-            context: Shared context from WorkerPool
+            context: Shared context from Pool
         """
         self._worker_id = worker_id
         self._context = context
@@ -71,7 +71,7 @@ class Worker:
 
         Args:
             worker_id: Unique identifier for this worker
-            context: Shared context from WorkerPool
+            context: Shared context from Pool
         """
         instance = cls(worker_id, context)
         instance.run()
@@ -126,7 +126,7 @@ class Worker:
         return None
 
 
-class WorkerPool:
+class Pool:
     """Manages a pool of worker processes for background task execution.
 
     Tasks are registered via @pool.task() decorator. Workers process tasks
@@ -137,7 +137,7 @@ class WorkerPool:
         from sqlalchemy import create_engine
 
         engine = create_engine("sqlite:///agents.db")
-        pool = ax.WorkerPool(engine=engine)
+        pool = ax.Pool(engine=engine)
 
         @pool.task("research_company")
         async def research(agent_id: UUID, context: ResearchContext):

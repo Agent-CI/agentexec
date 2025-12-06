@@ -31,11 +31,11 @@ class TaskResult(BaseModel):
 
 @pytest.fixture
 def pool():
-    """Create a WorkerPool for testing."""
+    """Create a Pool for testing."""
     from sqlalchemy import create_engine
 
     engine = create_engine("sqlite:///:memory:")
-    return ax.WorkerPool(engine=engine)
+    return ax.Pool(engine=engine)
 
 
 def test_task_serialization() -> None:

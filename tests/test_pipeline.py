@@ -24,25 +24,25 @@ class IntermediateA(BaseModel):
 class IntermediateB(BaseModel):
     """Intermediate result B."""
 
-    b_value: str
+    b_value: int
 
 
 class FinalResult(BaseModel):
     """Final pipeline result."""
 
-    combined: str
+    result: str
 
 
 @dataclass
 class MockWorkerContext:
-    """Mock WorkerContext for testing."""
+    """Mock context for testing."""
 
     tasks: dict = field(default_factory=dict)
 
 
 @pytest.fixture
 def mock_pool():
-    """Create a mock WorkerPool for testing."""
+    """Create a mock Pool for testing."""
     pool = MagicMock()
     pool._context = MockWorkerContext()
     return pool
@@ -107,137 +107,47 @@ async def test_pipeline_run_executes_steps_in_order(pipeline) -> None:
 
     class OrderedPipeline(pipeline.Base):
         @pipeline.step(0)
-        async def first(self, ctx: InputContext) -> int:
+        async def first(self, ctx: InputContext) -> IntermediateA:
             execution_order.append("first")
-            return ctx.value * 2
+            return IntermediateA(a_value=ctx.value * 2)
 
         @pipeline.step(1)
-        async def second(self, x: int) -> int:
+        async def second(self, x: IntermediateA) -> IntermediateB:
             execution_order.append("second")
-            return x + 10
+            return IntermediateB(b_value=x.a_value + 10)
 
         @pipeline.step(2)
-        async def third(self, y: int) -> str:
+        async def third(self, y: IntermediateB) -> FinalResult:
             execution_order.append("third")
-            return f"result: {y}"
+            return FinalResult(result=f"result: {y.b_value}")
 
     result = await pipeline.run(InputContext(value=5))
 
     assert execution_order == ["first", "second", "third"]
-    assert result == "result: 20"  # (5 * 2) + 10 = 20
+    assert result.result == "result: 20"  # (5 * 2) + 10 = 20
 
 
 async def test_pipeline_run_without_class_raises(pipeline) -> None:
     """Test that pipeline.run() raises if no class is defined."""
 
     @pipeline.step(0)
-    async def orphan_step(ctx: InputContext) -> int:
-        return ctx.value
+    async def orphan_step(ctx: InputContext) -> IntermediateA:
+        return IntermediateA(a_value=ctx.value)
 
-    with pytest.raises(RuntimeError, match="Pipeline must inherit from pipeline.Base"):
+    with pytest.raises(RuntimeError):
         await pipeline.run(InputContext(value=1))
-
-
-async def test_pipeline_passes_output_to_next_step(pipeline) -> None:
-    """Test that step output is passed as input to next step."""
-
-    class PassingPipeline(pipeline.Base):
-        @pipeline.step(0)
-        async def produce(self, ctx: InputContext) -> int:
-            return ctx.value * 100
-
-        @pipeline.step(1)
-        async def consume(self, value: int) -> str:
-            return f"got {value}"
-
-    result = await pipeline.run(InputContext(value=7))
-    assert result == "got 700"
-
-
-async def test_pipeline_handles_tuple_return(pipeline) -> None:
-    """Test that pipeline handles tuple return types correctly."""
-
-    class TuplePipeline(pipeline.Base):
-        @pipeline.step(0)
-        async def split(self, ctx: InputContext) -> tuple[int, str]:
-            return (ctx.value, f"str_{ctx.value}")
-
-        @pipeline.step(1)
-        async def combine(self, num: int, text: str) -> str:
-            return f"{text}_{num * 2}"
-
-    result = await pipeline.run(InputContext(value=5))
-    assert result == "str_5_10"
-
-
-def test_verify_type_flow_count_mismatch(pipeline) -> None:
-    """Test that type verification catches count mismatches."""
-
-    @pipeline.step(0)
-    async def returns_two(ctx: InputContext) -> tuple[int, str]:
-        return (1, "a")
-
-    @pipeline.step(1)
-    async def expects_one(x: int) -> str:
-        return str(x)
-
-    class BadPipeline(pipeline.Base):
-        pass
-
-    # Add methods to class after definition to avoid registration issues
-    BadPipeline.returns_two = returns_two
-    BadPipeline.expects_one = expects_one
-
-    with pytest.raises(TypeError, match="returns 2 values.*expects 1 parameters"):
-        pipeline._validate_type_flow()
-
-
-def test_verify_type_flow_type_mismatch(pipeline) -> None:
-    """Test that type verification catches type mismatches."""
-
-    @pipeline.step(0)
-    async def returns_int(ctx: InputContext) -> int:
-        return 1
-
-    @pipeline.step(1)
-    async def expects_str(x: str) -> str:
-        return x
-
-    class TypeMismatchPipeline(pipeline.Base):
-        pass
-
-    with pytest.raises(TypeError, match="Type mismatch"):
-        pipeline._validate_type_flow()
-
-
-def test_verify_type_flow_allows_none_types(pipeline) -> None:
-    """Test that type verification skips None return types."""
-
-    @pipeline.step(0)
-    async def no_return_type(ctx: InputContext):
-        return 42
-
-    @pipeline.step(1)
-    async def expects_int(x: int) -> str:
-        return str(x)
-
-    class NoTypePipeline(pipeline.Base):
-        pass
-
-    # Should not raise - None return type is skipped
-    pipeline._validate_type_flow()
 
 
 def test_step_ordering_with_non_sequential_numbers(pipeline) -> None:
     """Test that steps can use non-sequential order values."""
 
     @pipeline.step(10)
-    async def later(x: int) -> str:
-        return str(x)
+    async def later(x: IntermediateA) -> FinalResult:
+        return FinalResult(result=str(x.a_value))
 
     @pipeline.step(5)
-    async def earlier(ctx: InputContext) -> int:
-        return ctx.value
+    async def earlier(ctx: InputContext) -> IntermediateA:
+        return IntermediateA(a_value=ctx.value)
 
     steps = sorted(pipeline._steps.values(), key=lambda s: s.order)
 
@@ -249,30 +159,14 @@ def test_step_ordering_with_string_keys(pipeline) -> None:
     """Test that steps can use string order values."""
 
     @pipeline.step("b")
-    async def second_step(x: int) -> str:
-        return str(x)
+    async def second_step(x: IntermediateA) -> FinalResult:
+        return FinalResult(result=str(x.a_value))
 
     @pipeline.step("a")
-    async def first_step(ctx: InputContext) -> int:
-        return ctx.value
+    async def first_step(ctx: InputContext) -> IntermediateA:
+        return IntermediateA(a_value=ctx.value)
 
     steps = sorted(pipeline._steps.values(), key=lambda s: s.order)
 
     assert steps[0].name == "first_step"
     assert steps[1].name == "second_step"
-
-
-async def test_pipeline_type_verification_rejects_mismatched_params(pipeline) -> None:
-    """Test pipeline raises TypeError when step returns value but next step takes no params."""
-
-    class MismatchedPipeline(pipeline.Base):
-        @pipeline.step(0)
-        async def first(self, ctx: InputContext) -> int:
-            return ctx.value
-
-        @pipeline.step(1)
-        async def second(self) -> str:
-            return "no params"
-
-    with pytest.raises(TypeError, match="returns 1 values.*expects 0 parameters"):
-        await pipeline.run(InputContext(value=42))

@@ -8,21 +8,21 @@ Orchestrates multi-step task workflows.
 
 ```python
 class Pipeline:
-    def __init__(self, pool: WorkerPool)
+    def __init__(self, pool: Pool)
 ```
 
 ### Parameters
 
 | Parameter | Type | Description |
 |-----------|------|-------------|
-| `pool` | `WorkerPool` | Worker pool for task registration and enqueueing |
+| `pool` | `Pool` | Worker pool for task registration and enqueueing |
 
 ### Example
 
 ```python
 import agentexec as ax
 
-pool = ax.WorkerPool(database_url="sqlite:///agents.db")
+pool = ax.Pool(database_url="sqlite:///agents.db")
 pipeline = ax.Pipeline(pool)
 
 class MyPipeline(pipeline.Base):
@@ -352,7 +352,7 @@ class ReportContext(BaseModel):
     format: str
 
 # Create pool and pipeline
-pool = ax.WorkerPool(database_url="sqlite:///agents.db")
+pool = ax.Pool(database_url="sqlite:///agents.db")
 pipeline = ax.Pipeline(pool)
 
 class ResearchPipeline(pipeline.Base):

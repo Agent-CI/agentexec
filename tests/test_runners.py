@@ -184,7 +184,7 @@ class TestOpenAIRunner:
 
     def test_openai_runner_initialization(self, skip_if_no_agents):
         """Test OpenAIRunner can be initialized."""
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(
@@ -199,7 +199,7 @@ class TestOpenAIRunner:
 
     def test_openai_runner_tools_are_decorated(self, skip_if_no_agents):
         """Test OpenAIRunner tools are wrapped with @function_tool."""
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id)
@@ -213,7 +213,7 @@ class TestOpenAIRunner:
 
     def test_openai_runner_default_max_turns_recovery(self, skip_if_no_agents):
         """Test OpenAIRunner default max_turns_recovery is False."""
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id)
@@ -224,7 +224,7 @@ class TestOpenAIRunner:
     async def test_openai_runner_run_success(self, skip_if_no_agents, monkeypatch):
         """Test OpenAIRunner.run executes successfully."""
         from unittest.mock import AsyncMock, MagicMock
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id)
@@ -253,7 +253,7 @@ class TestOpenAIRunner:
         """Test OpenAIRunner.run raises MaxTurnsExceeded when recovery disabled."""
         from unittest.mock import MagicMock
         from agents import MaxTurnsExceeded
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id, max_turns_recovery=False)
@@ -275,7 +275,7 @@ class TestOpenAIRunner:
         """Test OpenAIRunner.run attempts recovery when max turns exceeded."""
         from unittest.mock import AsyncMock, MagicMock
         from agents import MaxTurnsExceeded
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(
@@ -402,7 +402,7 @@ class TestOpenAIRunnerStreamed:
     async def test_openai_runner_run_streamed_success(self, skip_if_no_agents, monkeypatch):
         """Test OpenAIRunner.run_streamed executes successfully."""
         from unittest.mock import AsyncMock, MagicMock
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id)
@@ -435,7 +435,7 @@ class TestOpenAIRunnerStreamed:
     ):
         """Test OpenAIRunner.run_streamed with forwarder callback."""
         from unittest.mock import AsyncMock, MagicMock
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id)
@@ -475,7 +475,7 @@ class TestOpenAIRunnerStreamed:
         """Test run_streamed raises MaxTurnsExceeded when recovery disabled."""
         from unittest.mock import MagicMock
         from agents import MaxTurnsExceeded
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id, max_turns_recovery=False)
@@ -504,7 +504,7 @@ class TestOpenAIRunnerStreamed:
         """Test run_streamed attempts recovery when max turns exceeded."""
         from unittest.mock import MagicMock
         from agents import MaxTurnsExceeded
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(
@@ -549,7 +549,7 @@ class TestOpenAIRunnerStreamed:
     ):
         """Test OpenAIRunner.run re-raises non-MaxTurnsExceeded exceptions."""
         from unittest.mock import MagicMock
-        from agentexec.runners import OpenAIRunner
+        from agentexec import OpenAIRunner
 
         agent_id = uuid.uuid4()
         runner = OpenAIRunner(agent_id)

@@ -2,7 +2,6 @@ from __future__ import annotations
 import asyncio
 import inspect
 import re
-import warnings
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -25,7 +24,7 @@ from agentexec.core import queue
 from agentexec.core.task import Task, TaskResult
 
 if TYPE_CHECKING:
-    from agentexec.worker import WorkerPool
+    from agentexec.worker import Pool
 
 StepResult: TypeAlias = Union[TaskResult, tuple[TaskResult, ...]]
 
@@ -176,7 +175,7 @@ class Pipeline:
         result = await pipeline.run(context=InputContext(...))
     """
 
-    _pool: WorkerPool | None
+    _pool: Pool | None
     _name: str | None
     _steps: dict[str, StepDefinition]
     _user_pipeline_class: type[_PipelineBase] | None = None
@@ -184,14 +183,14 @@ class Pipeline:
 
     def __init__(
         self,
-        pool: WorkerPool,
+        pool: Pool,
         *,
         name: str | None = None,
     ) -> None:
         """Initialize a pipeline.
 
         Args:
-            pool: WorkerPool instance for task registration and enqueueing.
+            pool: Pool instance for task registration and enqueueing.
             name: Optional name for task registration; defaults to class-based name.
         """
         self._steps = {}
@@ -231,7 +230,7 @@ class Pipeline:
         assert self._pool, "Pipeline must inherit from pipeline.Base"
 
         if not self._steps:
-            warnings.warn(f"Pipeline '{self.name}' has no steps defined")
+            raise RuntimeError(f"Pipeline '{self.name}' has no steps defined.")
 
         self._pool._add_task(
             name=self.name,
@@ -405,56 +404,51 @@ class Pipeline:
         return await step(instance, **kwargs)
 
     def _validate_type_flow(self) -> None:
-        """Verify that step return types match next step's parameters.
+        """Validate that all step types are BaseModel and flow correctly.
 
         Raises:
-            TypeError: If types don't connect properly
+            TypeError: If types aren't BaseModel subclasses or don't connect properly
         """
         steps = self._sorted_steps
-        for i, step in enumerate(steps[:-1]):
-            next_step = steps[i + 1]
+        assert steps, "Pipeline has no steps defined."  # caught on subclass init
 
-            if step.return_type is None:
-                continue
+        def _unpack_types(t: type) -> tuple[type, ...]:
+            """Unpack type annotation, handling tuples."""
+            return get_args(t) if get_origin(t) is tuple else (t,)
 
-            # Handle tuple return types
-            origin = get_origin(step.return_type)
-            if origin is tuple:
-                return_types = get_args(step.return_type)
-            else:
-                return_types = (step.return_type,)
+        def _is_base_model(t: type | None) -> bool:
+            """Check if a single type is a BaseModel subclass."""
+            return inspect.isclass(t) and issubclass(t, BaseModel)
 
-            param_types = list(next_step.param_types.values())
+        # Validate all types are BaseModel subclasses
+        for step in steps:
+            for name, ptype in step.param_types.items():
+                if not _is_base_model(ptype):
+                    raise TypeError(f"Step '{step.name}' parameter '{name}' must be BaseModel.")
+            if step.return_type is None:  # TODO consdider supporting None return types
+                raise TypeError(f"Step '{step.name}' must have a return type.")
+            for rtype in _unpack_types(step.return_type):
+                if not _is_base_model(rtype):
+                    raise TypeError(f"'{step.name}' return type must be {StepResult}.")
 
-            # Check count matches
+        # Validate type flow between consecutive steps
+        for in_step, out_step in zip(steps[:-1], steps[1:]):
+            return_types = _unpack_types(in_step.return_type)
+            param_types = list(out_step.param_types.values())
+
             if len(return_types) != len(param_types):
                 raise TypeError(
-                    f"Step '{step.name}' returns {len(return_types)} values, "
-                    f"but step '{next_step.name}' expects {len(param_types)} parameters. "
-                    f"Return: {return_types}, Params: {param_types}"
+                    f"'{in_step.name}' returns {len(return_types)} value(s), but "
+                    f"'{out_step.name}' expects {len(param_types)} parameter(s)."
                 )
 
-            # Check types match
-            for _, (ret_type, param_type) in enumerate(zip(return_types, param_types)):
-                if param_type is not None and ret_type != param_type:
-                    # Allow subclass relationships
-                    if not (
-                        inspect.isclass(ret_type)
-                        and inspect.isclass(param_type)
-                        and issubclass(ret_type, param_type)
-                    ):
-                        raise TypeError(
-                            f"Type mismatch between step '{step.name}' and '{next_step.name}': "
-                            f"return type {ret_type} doesn't match parameter type {param_type}"
-                        )
-
-        # Validate final step returns a single BaseModel (not tuple) for serialization
-        if steps:
-            last_step = steps[-1]
-            if last_step.return_type is not None:
-                origin = get_origin(last_step.return_type)
-                if origin is tuple:
+            for ret_type, param_type in zip(return_types, param_types):
+                if param_type and ret_type != param_type and not issubclass(ret_type, param_type):
                     raise TypeError(
-                        f"Final step '{last_step.name}' returns a tuple, but pipelines "
-                        f"must return a single BaseModel for result serialization."
+                        f"'{in_step.name}' returns {ret_type.__name__}, but "
+                        f"'{out_step.name}' expects {param_type.__name__}."
                     )
+
+        # Final step must return a single BaseModel
+        if not _is_base_model(steps[-1].return_type):
+            raise TypeError(f"Final step '{steps[-1].name}' must return a BaseModel.")

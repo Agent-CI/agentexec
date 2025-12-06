@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agentexec import activity
 from agentexec.activity.models import Activity, ActivityLog, Base, Status
+from agentexec.activity.tracker import normalize_agent_id
 
 
 @pytest.fixture
@@ -58,13 +59,13 @@ def test_normalize_agent_id():
     """Test the normalize_agent_id helper function."""
     # Test with UUID object
     uuid_obj = uuid.uuid4()
-    result = activity.normalize_agent_id(uuid_obj)
+    result = normalize_agent_id(uuid_obj)
     assert result == uuid_obj
     assert isinstance(result, uuid.UUID)
 
     # Test with string UUID
     uuid_str = str(uuid.uuid4())
-    result = activity.normalize_agent_id(uuid_str)
+    result = normalize_agent_id(uuid_str)
     assert str(result) == uuid_str
     assert isinstance(result, uuid.UUID)
 

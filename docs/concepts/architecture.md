@@ -50,7 +50,7 @@ Redis provides atomic operations, persistence options, and excellent performance
 The worker pool manages multiple Python processes:
 
 ```python
-pool = ax.WorkerPool(engine=engine, database_url=DATABASE_URL)
+pool = ax.Pool(engine=engine, database_url=DATABASE_URL)
 
 @pool.task("my_task")
 async def my_task(agent_id: UUID, context: MyContext):
@@ -256,10 +256,10 @@ Use multiple queues for different workloads:
 
 ```python
 # High-priority pool
-pool_high = ax.WorkerPool(queue_name="high_priority", ...)
+pool_high = ax.Pool(queue_name="high_priority", ...)
 
 # Low-priority pool
-pool_low = ax.WorkerPool(queue_name="low_priority", ...)
+pool_low = ax.Pool(queue_name="low_priority", ...)
 
 # Enqueue to specific queue
 await ax.enqueue("urgent_task", ctx, queue_name="high_priority")

@@ -1,6 +1,10 @@
 # `agentexec`
 
-[![codecov](https://codecov.io/gh/Agent-CI/agentexec/branch/main/graph/badge.svg)](https://codecov.io/gh/Agent-CI/agentexec)
+[![PyPI](https://img.shields.io/pypi/v/agentexec?color=blue)](https://pypi.org/project/agentexec/)
+[![Python](https://img.shields.io/badge/python-3.12+-blue)](https://www.python.org/)
+[![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
+[![Type Checked](https://img.shields.io/badge/type%20checked-ty-blue)](https://github.com/astral-sh/ty)
+[![Code Style](https://img.shields.io/badge/code%20style-ruff-orange)](https://github.com/astral-sh/ruff)
 
 **Production-ready orchestration for OpenAI Agents SDK** with Redis-backed task queues, SQLAlchemy activity tracking, and multiprocessing worker pools.
 
@@ -38,7 +42,7 @@ uv add agentexec
 ```
 
 **Requirements:**
-- Python 3.11+
+- Python 3.12+
 - Redis (for task queue)
 - SQLAlchemy-compatible database (for activity tracking)
 - Agents that you want to parallelize!
@@ -68,7 +72,7 @@ class ResearchContext(BaseModel):
 engine = create_engine("sqlite:///agents.db")
 
 # Create worker pool
-pool = ax.WorkerPool(engine=engine)
+pool = ax.Pool(engine=engine)
 
 
 @pool.task("research_company")
@@ -338,7 +342,7 @@ class MyContext(BaseModel):
     param: str
 
 
-pool = ax.WorkerPool(engine=engine)
+pool = ax.Pool(engine=engine)
 
 
 @pool.task("task_name")
@@ -435,7 +439,7 @@ ENV AGENTEXEC_WORKER_MODULE=src.worker
 import os
 import agentexec as ax
 
-pool = ax.WorkerPool(database_url=os.environ["DATABASE_URL"])
+pool = ax.Pool(database_url=os.environ["DATABASE_URL"])
 
 @pool.task("my_task")
 async def my_task(agent_id, context):
@@ -472,7 +476,7 @@ uv sync
 uv run pytest
 
 # Type checking
-uv run mypy src/agentexec
+uv run ty check
 
 # Linting
 uv run ruff check src/

@@ -73,7 +73,7 @@ import agentexec as ax
 from .db import engine, DATABASE_URL
 
 # Create worker pool
-pool = ax.WorkerPool(engine=engine, database_url=DATABASE_URL)
+pool = ax.Pool(engine=engine, database_url=DATABASE_URL)
 
 class ResearchContext(BaseModel):
     company: str

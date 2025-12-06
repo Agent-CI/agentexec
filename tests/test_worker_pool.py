@@ -1,4 +1,4 @@
-"""Test WorkerPool implementation."""
+"""Test Pool implementation."""
 
 import json
 import uuid
@@ -46,11 +46,11 @@ def mock_state_backend(monkeypatch):
 
 @pytest.fixture
 def pool():
-    """Create a WorkerPool for testing."""
+    """Create a Pool for testing."""
     from sqlalchemy import create_engine
 
     engine = create_engine("sqlite:///:memory:")
-    return ax.WorkerPool(engine=engine)
+    return ax.Pool(engine=engine)
 
 
 async def test_enqueue_task(mock_state_backend, pool, monkeypatch) -> None:
@@ -135,23 +135,23 @@ def test_task_registration_requires_basemodel_context(pool) -> None:
             pass
 
 
-def test_worker_pool_requires_engine_or_database_url() -> None:
-    """Test that WorkerPool requires either engine or database_url."""
+def test_pool_requires_engine_or_database_url() -> None:
+    """Test that Pool requires either engine or database_url."""
     with pytest.raises(ValueError, match="Either engine or database_url must be provided"):
-        ax.WorkerPool()
+        ax.Pool()
 
 
-def test_worker_pool_with_database_url() -> None:
-    """Test that WorkerPool can be created with database_url."""
-    pool = ax.WorkerPool(database_url="sqlite:///:memory:")
+def test_pool_with_database_url() -> None:
+    """Test that Pool can be created with database_url."""
+    pool = ax.Pool(database_url="sqlite:///:memory:")
 
     assert pool._context.database_url == "sqlite:///:memory:"
     assert pool._processes == []
 
 
-def test_worker_pool_with_custom_queue_name() -> None:
-    """Test that WorkerPool can use a custom queue name."""
-    pool = ax.WorkerPool(
+def test_pool_with_custom_queue_name() -> None:
+    """Test that Pool can use a custom queue name."""
+    pool = ax.Pool(
         database_url="sqlite:///:memory:",
         queue_name="custom_queue",
     )

@@ -101,7 +101,7 @@ from agents import Agent
 from .contexts import ResearchContext
 from .db import engine, DATABASE_URL
 
-pool = ax.WorkerPool(engine=engine, database_url=DATABASE_URL)
+pool = ax.Pool(engine=engine, database_url=DATABASE_URL)
 
 @pool.task("research_company")
 async def research_company(agent_id: UUID, context: ResearchContext) -> dict:
@@ -294,7 +294,7 @@ Run different workers for different task types:
 
 ```python
 # email_worker.py
-email_pool = ax.WorkerPool(
+email_pool = ax.Pool(
     engine=engine,
     database_url=DATABASE_URL,
     queue_name="email_queue"
@@ -310,7 +310,7 @@ if __name__ == "__main__":
 
 ```python
 # research_worker.py
-research_pool = ax.WorkerPool(
+research_pool = ax.Pool(
     engine=engine,
     database_url=DATABASE_URL,
     queue_name="research_queue"

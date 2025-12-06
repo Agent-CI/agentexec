@@ -23,16 +23,16 @@ class SampleResult(BaseModel):
 
 @pytest.fixture
 def pool():
-    """Create a WorkerPool for testing."""
+    """Create a Pool for testing."""
     engine = create_engine("sqlite:///:memory:")
-    return ax.WorkerPool(engine=engine)
+    return ax.Pool(engine=engine)
 
 
 def test_main_imports() -> None:
     """Test that main package imports work."""
-    from agentexec import CONF, Task, WorkerPool, enqueue
+    from agentexec import CONF, Task, Pool, enqueue
 
-    assert WorkerPool is not None
+    assert Pool is not None
     assert CONF is not None
     assert Task is not None
     assert enqueue is not None
@@ -41,7 +41,7 @@ def test_main_imports() -> None:
 def test_runner_imports() -> None:
     """Test that runner imports work."""
     pytest.importorskip("agents")
-    from agentexec.runners import OpenAIRunner
+    from agentexec import OpenAIRunner
 
     assert OpenAIRunner is not None
 
@@ -49,7 +49,7 @@ def test_runner_imports() -> None:
 def test_runner_initialization() -> None:
     """Test that OpenAIRunner can be initialized."""
     pytest.importorskip("agents")
-    from agentexec.runners import OpenAIRunner
+    from agentexec import OpenAIRunner
 
     runner = OpenAIRunner(
         agent_id=uuid.uuid4(),

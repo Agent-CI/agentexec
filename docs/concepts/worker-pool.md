@@ -6,7 +6,7 @@ The worker pool is the execution engine of agentexec. It manages multiple Python
 
 ```
 ┌─────────────────────────────────────────────────────────┐
-│                    WorkerPool                           │
+│                    Pool                           │
 │  ┌─────────────────────────────────────────────────┐   │
 │  │                Main Process                      │   │
 │  │  • Spawns worker processes                       │   │
@@ -39,7 +39,7 @@ engine = create_engine("postgresql://user:pass@localhost/mydb")
 ax.Base.metadata.create_all(engine)
 
 # Create worker pool
-pool = ax.WorkerPool(
+pool = ax.Pool(
     engine=engine,
     database_url="postgresql://user:pass@localhost/mydb",
     queue_name=None,  # Uses CONF.queue_name by default
@@ -351,7 +351,7 @@ Run multiple pools for different workloads:
 
 ```python
 # High-priority tasks
-pool_high = ax.WorkerPool(
+pool_high = ax.Pool(
     engine=engine,
     database_url=DATABASE_URL,
     queue_name="high_priority",
@@ -362,7 +362,7 @@ async def urgent_task(agent_id: UUID, context: UrgentContext):
     ...
 
 # Low-priority tasks
-pool_low = ax.WorkerPool(
+pool_low = ax.Pool(
     engine=engine,
     database_url=DATABASE_URL,
     queue_name="low_priority",

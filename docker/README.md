@@ -11,7 +11,7 @@ Base Docker image for deploying agentexec workers.
 import os
 import agentexec as ax
 
-pool = ax.WorkerPool(database_url=os.environ["DATABASE_URL"])
+pool = ax.Pool(database_url=os.environ["DATABASE_URL"])
 
 @pool.task("my_task")
 async def my_task(agent_id, context):
@@ -71,13 +71,13 @@ Your worker module must expose either:
 
 1. A `pool` variable (recommended):
    ```python
-   pool = ax.WorkerPool(database_url=os.environ["DATABASE_URL"])
+   pool = ax.Pool(database_url=os.environ["DATABASE_URL"])
    ```
 
 2. Or a `create_pool()` function:
    ```python
    def create_pool():
-       return ax.WorkerPool(database_url=os.environ["DATABASE_URL"])
+       return ax.Pool(database_url=os.environ["DATABASE_URL"])
    ```
 
 ## Docker Compose Example

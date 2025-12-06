@@ -2,7 +2,7 @@
 """Worker entrypoint for agentexec Docker container.
 
 This script dynamically imports the user's worker module and starts the pool.
-The module must expose a `pool` variable (WorkerPool instance) or a
+The module must expose a `pool` variable (Pool instance) or a
 `create_pool()` function that returns one.
 
 Environment Variables:
@@ -21,12 +21,12 @@ import sys
 
 
 def get_pool():
-    """Import user module and extract the WorkerPool instance."""
+    """Import user module and extract the Pool instance."""
     module_path = os.environ.get("AGENTEXEC_WORKER_MODULE")
 
     if not module_path:
         print("Error: AGENTEXEC_WORKER_MODULE environment variable is required")
-        print("Set it to your Python module containing the WorkerPool instance")
+        print("Set it to your Python module containing the Pool instance")
         print("Example: AGENTEXEC_WORKER_MODULE=myapp.worker")
         sys.exit(1)
 
@@ -54,7 +54,7 @@ def get_pool():
     else:
         print(f"Error: Module '{module_path}' must expose 'pool' or 'create_pool()'")
         print("Example:")
-        print("  pool = ax.WorkerPool(database_url=os.environ['DATABASE_URL'])")
+        print("  pool = ax.Pool(database_url=os.environ['DATABASE_URL'])")
         sys.exit(1)
 
     return pool

@@ -20,7 +20,7 @@ class ResearchCompanyResult(BaseModel):
     team_structure: str
 
 
-pool = ax.WorkerPool(engine=engine)
+pool = ax.Pool(engine=engine)
 
 
 @pool.task("research_company")

@@ -46,7 +46,7 @@ class ResearchResult(BaseModel):
     insights: list[str]
 
 # Create a worker pool
-pool = ax.WorkerPool(engine=engine)
+pool = ax.Pool(engine=engine)
 
 # Register a task
 @pool.task("research_company")

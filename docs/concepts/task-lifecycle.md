@@ -100,7 +100,7 @@ class MyContext(BaseModel):
     company: str
     priority: int = 1
 
-pool = ax.WorkerPool(engine=engine, database_url=DATABASE_URL)
+pool = ax.Pool(engine=engine, database_url=DATABASE_URL)
 
 @pool.task("research_company")
 async def research_company(agent_id: UUID, context: MyContext) -> str:
