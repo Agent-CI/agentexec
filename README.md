@@ -89,10 +89,11 @@ async def research_company(agent_id: UUID, context: ResearchContext):
 ```python
 # views.py
 from uuid import UUID
-from fastapi import APIRouter
+from fastapi import APIRouter, Depends
+from sqlalchemy.orm import Session
 import agentexec as ax
 from worker import ResearchContext
-from db import SessionLocal
+from db import get_db
 
 router = APIRouter()
 
@@ -102,9 +103,8 @@ async def start_research(company: str):
     return {"agent_id": str(task.agent_id), "status": "queued"}
 
 @router.get("/research/{agent_id}")
-def get_status(agent_id: UUID):
-    with SessionLocal() as db:
-        return ax.activity.detail(db, agent_id=agent_id)
+def get_status(agent_id: UUID, db: Session = Depends(get_db)):
+    return ax.activity.detail(db, agent_id=agent_id)
 ```
 
 ### 3. Run Workers
