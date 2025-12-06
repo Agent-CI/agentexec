@@ -29,6 +29,7 @@ Running AI agents in production requires:
 - **Fault tolerance** - Handle failures gracefully with full error traces
 - **Scalability** - Process multiple tasks across worker processes
 - **Observability** - Complete audit trail of agent activities
+- **User interfaces** - Components to build status dashboards and CLI monitors
 
 `agentexec` provides all of this out of the box.
 
