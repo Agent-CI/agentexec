@@ -318,43 +318,14 @@ async def my_task(agent_id, context):
     pass
 ```
 
-**3. Run with Docker Compose:**
+**3. Build and run:**
 
-```yaml
-# docker-compose.yml
-services:
-  api:
-    build: .
-    ports:
-      - "8000:8000"
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/app
-      - REDIS_URL=redis://redis:6379
-
-  worker:
-    build:
-      context: .
-      dockerfile: Dockerfile.worker
-    environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/app
-      - REDIS_URL=redis://redis:6379
-      - OPENAI_API_KEY=${OPENAI_API_KEY}
-    depends_on:
-      - db
-      - redis
-
-  db:
-    image: postgres:15
-    environment:
-      - POSTGRES_DB=app
-      - POSTGRES_PASSWORD=postgres
-
-  redis:
-    image: redis:7-alpine
+```bash
+docker build -f Dockerfile.worker -t my-worker .
 ```
 
 ```bash
-docker-compose up
+docker run -e DATABASE_URL=... -e REDIS_URL=... -e OPENAI_API_KEY=... my-worker
 ```
 
 ---
