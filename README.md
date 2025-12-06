@@ -225,7 +225,8 @@ async def queue_research(company: str) -> None:
 async def save_result(result: ResearchResult) -> None:
     """Research agent calls this when done."""
     save_to_database(result)
-    if tracker.decr() == 0:  # Last one triggers aggregation
+    tracker.decr()
+    if tracker.complete:
         await ax.enqueue("aggregate", AggregateContext(batch_id=batch_id))
 ```
 
