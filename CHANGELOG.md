@@ -1,6 +1,46 @@
 # Changelog
 
-## Unreleased
+## v0.1.4
+
+### Breaking Changes
+
+**Renamed `WorkerPool` to `Pool`**
+- `ax.WorkerPool` is now `ax.Pool` for cleaner API
+- Update imports: `from agentexec import Pool`
+
+**Activity percentage field renamed**
+- `completion_%` renamed to `percentage` for cleaner field naming
+
+### New Features
+
+**Pipelines run on workers**
+- Pipelines can now be executed on worker processes
+- Register pipelines with the pool and enqueue them like tasks
+
+**Tracker for stateful counters**
+- New `Tracker` class for managing stateful counters across workers
+- Useful for tracking progress, metrics, and distributed state
+
+**Strict Pipeline type flow validation**
+- All step parameters and return types must be `BaseModel` subclasses
+- Type flow between consecutive steps is validated at runtime
+- Tuple returns are unpacked and matched to next step's parameters
+- Final step must return a single `BaseModel` (not a tuple)
+- Empty pipelines raise `RuntimeError` at class definition time
+
+### Internal Improvements
+
+**Type checking with `ty`**
+- Added `ty` type checker to development workflow
+- Better Protocol definitions for step handlers
+- Improved type hints throughout pipeline module
+
+**Better Pipeline flow tests**
+- Comprehensive test coverage for valid and invalid type flows
+- Tests for tuple unpacking, subclass compatibility, count mismatches
+- Tests for primitive type rejection and edge cases
+
+## v0.1.3
 
 ### Breaking Changes
 
