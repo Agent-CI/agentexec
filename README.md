@@ -522,6 +522,8 @@ import type {
 } from 'agentexec-ui';
 ```
 
+These types mirror the Python API schemas (`ActivityDetailSchema`, `ActivityListSchema`, etc.), so your API responses integrate directly with the components.
+
 The components are headless (no built-in styling) and work with any CSS framework. See `examples/openai-agents-fastapi/ui/` for a complete React app with TanStack Query integration.
 
 ---
