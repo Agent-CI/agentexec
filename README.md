@@ -71,7 +71,7 @@ ax.Base.metadata.create_all(engine)  # Creates activity tracking tables
 pool = ax.Pool(engine=engine)
 
 @pool.task("research_company")
-async def research_company(agent_id: UUID, context: ResearchContext):
+async def research_company(agent_id: UUID, context: ResearchContext) -> str:
     runner = ax.OpenAIRunner(agent_id)
 
     agent = Agent(
@@ -99,12 +99,12 @@ from .db import get_db
 router = APIRouter()
 
 @router.post("/research")
-async def start_research(company: str):
+async def start_research(company: str) -> dict:
     task = await ax.enqueue("research_company", ResearchContext(company=company))
     return {"agent_id": str(task.agent_id), "status": "queued"}
 
 @router.get("/research/{agent_id}")
-def get_status(agent_id: UUID, db: Session = Depends(get_db)):
+def get_status(agent_id: UUID, db: Session = Depends(get_db)) -> ax.activity.ActivityDetailSchema:
     return ax.activity.detail(db, agent_id=agent_id)
 ```
 
@@ -194,7 +194,7 @@ pipeline = ax.Pipeline(pool)
 
 class ResearchPipeline(pipeline.Base):
     @pipeline.step(0, "parallel research")
-    async def gather_data(self, context: InputContext):
+    async def gather_data(self, context: InputContext) -> tuple[BrandResult, MarketResult]:
         return await asyncio.gather(
             research_brand(context),
             research_market(context),
@@ -246,7 +246,7 @@ import agentexec as ax
 app = FastAPI()
 
 @app.post("/process")
-async def process(data: str):
+async def process(data: str) -> dict:
     task = await ax.enqueue("process_data", ProcessContext(data=data))
     return {"agent_id": task.agent_id}
 ```
@@ -276,6 +276,7 @@ python worker.py
 ```python
 # worker.py
 import os
+from uuid import UUID
 from sqlalchemy import create_engine
 import agentexec as ax
 
@@ -283,7 +284,7 @@ engine = create_engine(os.environ["DATABASE_URL"])
 pool = ax.Pool(engine=engine)
 
 @pool.task("my_task")
-async def my_task(agent_id, context):
+async def my_task(agent_id: UUID, context: MyContext) -> None:
     # Your task implementation
     pass
 
@@ -310,12 +311,13 @@ ENV AGENTEXEC_WORKER_MODULE=src.worker
 ```python
 # src/worker.py
 import os
+from uuid import UUID
 import agentexec as ax
 
 pool = ax.Pool(database_url=os.environ["DATABASE_URL"])
 
 @pool.task("my_task")
-async def my_task(agent_id, context):
+async def my_task(agent_id: UUID, context: MyContext) -> None:
     pass
 ```
 
@@ -433,6 +435,7 @@ count = ax.activity.active_count(db)
 # cli_monitor.py
 from rich.live import Live
 from rich.table import Table
+from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 import agentexec as ax
 
@@ -453,7 +456,7 @@ def build_table(db: Session) -> Table:
         )
     return table
 
-def monitor(engine):
+def monitor(engine: Engine) -> None:
     with Live(refresh_per_second=1) as live:
         while True:
             with Session(engine) as db:
@@ -610,7 +613,7 @@ result = await runner.run_streamed(agent, input="...", max_turns=15)
 
 # Base class for custom runners
 class MyRunner(ax.BaseAgentRunner):
-    async def run(self, agent, input): ...
+    async def run(self, agent: Agent, input: str) -> RunResult: ...
 ```
 
 ### Worker Pool
@@ -622,7 +625,7 @@ pool = ax.Pool(engine=engine)
 pool = ax.Pool(database_url="postgresql://...")
 
 @pool.task("name")
-async def handler(agent_id, context): ...
+async def handler(agent_id: UUID, context: MyContext) -> None: ...
 
 pool.run()       # Blocking - runs workers
 pool.start()     # Non-blocking - starts workers in background
