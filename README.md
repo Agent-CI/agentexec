@@ -37,8 +37,6 @@ Running AI agents in production requires:
 ## Installation
 
 ```bash
-pip install agentexec
-# or
 uv add agentexec
 ```
 
@@ -616,20 +614,12 @@ count = ax.activity.active_count(db)
 canceled = ax.activity.cancel_pending(db)
 ```
 
-### `agentexec.core`
+### Runners
 
 ```python
-from agentexec.core import enqueue, dequeue, Task, Priority
-from agentexec.core.results import get_result, gather
-from agentexec.core.db import Base, set_global_session, get_global_session
-```
+import agentexec as ax
 
-### `agentexec.runners`
-
-```python
-from agentexec.runners import BaseAgentRunner, OpenAIRunner
-
-runner = OpenAIRunner(
+runner = ax.OpenAIRunner(
     agent_id=agent_id,
     max_turns_recovery=True,
     wrap_up_prompt="Summarize...",
@@ -642,15 +632,19 @@ runner.tools.report_status    # Pre-bound function tool
 # Run agent
 result = await runner.run(agent, input="...", max_turns=15)
 result = await runner.run_streamed(agent, input="...", max_turns=15)
+
+# Base class for custom runners
+class MyRunner(ax.BaseAgentRunner):
+    async def run(self, agent, input): ...
 ```
 
-### `agentexec.worker`
+### Worker Pool
 
 ```python
-from agentexec.worker import Pool, Worker, WorkerContext
+import agentexec as ax
 
-pool = Pool(engine=engine)
-pool = Pool(database_url="postgresql://...")
+pool = ax.Pool(engine=engine)
+pool = ax.Pool(database_url="postgresql://...")
 
 @pool.task("name")
 async def handler(agent_id, context): ...
@@ -658,16 +652,6 @@ async def handler(agent_id, context): ...
 pool.run()       # Blocking - runs workers
 pool.start()     # Non-blocking - starts workers in background
 pool.shutdown()  # Graceful shutdown
-```
-
-### `agentexec.state`
-
-```python
-from agentexec.state import get_backend
-
-backend = get_backend()
-backend.set_result(agent_id, result, ttl=3600)
-result = backend.get_result(agent_id)
 ```
 
 ---
