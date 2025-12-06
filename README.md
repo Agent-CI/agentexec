@@ -93,8 +93,8 @@ from uuid import UUID
 from fastapi import APIRouter, Depends
 from sqlalchemy.orm import Session
 import agentexec as ax
-from worker import ResearchContext
-from db import get_db
+from .worker import ResearchContext
+from .db import get_db
 
 router = APIRouter()
 
@@ -253,7 +253,7 @@ async def process(data: str):
 
 ```python
 # worker.py - Run separately
-from myapp.tasks import pool
+from .tasks import pool
 
 if __name__ == "__main__":
     pool.run()
@@ -460,7 +460,7 @@ def monitor(engine):
                 live.update(build_table(db))
 
 if __name__ == "__main__":
-    from db import engine
+    from .db import engine
     monitor(engine)
 ```
 
