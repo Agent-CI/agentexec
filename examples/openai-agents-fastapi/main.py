@@ -23,10 +23,8 @@ async def lifespan(app: FastAPI):
     with SessionLocal() as db:
         try:
             canceled = ax.activity.cancel_pending(db)
-            db.commit()
             print(f"✓ Canceled {canceled} pending agents")
         except Exception as e:
-            db.rollback()
             print(f"✗ Error canceling pending agents: {e}")
 
 

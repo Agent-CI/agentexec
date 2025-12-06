@@ -295,7 +295,6 @@ if __name__ == "__main__":
     except KeyboardInterrupt:
         with Session(engine) as db:
             ax.activity.cancel_pending(db)
-            db.commit()
 ```
 
 ### Docker Deployment
@@ -327,7 +326,6 @@ pool = ax.Pool(engine=engine)
 def cleanup() -> None:
     with Session(engine) as db:
         ax.activity.cancel_pending(db)
-        db.commit()
 
 atexit.register(cleanup)
 

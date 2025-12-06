@@ -200,6 +200,7 @@ def cancel_pending(
             percentage=None,
         )
 
+    db.commit()
     return len(pending_agent_ids)
 
 
