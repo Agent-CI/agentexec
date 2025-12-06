@@ -84,13 +84,15 @@ async def research_company(agent_id: UUID, context: ResearchContext):
     return result.final_output
 ```
 
-### 2. Queue Tasks from Your API
+### 2. Queue Tasks and Track Progress
 
 ```python
 # views.py
+from uuid import UUID
 from fastapi import APIRouter
 import agentexec as ax
 from worker import ResearchContext
+from db import SessionLocal
 
 router = APIRouter()
 
@@ -98,33 +100,25 @@ router = APIRouter()
 async def start_research(company: str):
     task = await ax.enqueue("research_company", ResearchContext(company=company))
     return {"agent_id": str(task.agent_id), "status": "queued"}
-```
-
-### 3. Track Progress
-
-```python
-# views.py (continued)
-from uuid import UUID
-from db import SessionLocal
 
 @router.get("/research/{agent_id}")
 def get_status(agent_id: UUID):
     with SessionLocal() as db:
-        return ax.activity.detail(db, agent_id=agent_id)  # Returns ActivityDetailSchema
+        return ax.activity.detail(db, agent_id=agent_id)
 ```
 
-### 4. Run Workers
+### 3. Run Workers
+
+Add this to the bottom of your worker file:
 
 ```python
-# worker.py (at the bottom)
+# worker.py
 if __name__ == "__main__":
-    pool.run()  # Starts worker processes, handles graceful shutdown
+    pool.run()
 ```
 
 ```bash
 python worker.py
-# Starting worker pool with 4 workers...
-# Press Ctrl+C to shutdown gracefully
 ```
 
 That's it. Tasks are queued to Redis, workers process them in parallel, progress is tracked in your database, and your API stays responsive.
@@ -264,11 +258,15 @@ if __name__ == "__main__":
     pool.run()
 ```
 
-```bash
-# Terminal 1: API server
-uvicorn main:app
+**Terminal 1:** Start your API server
 
-# Terminal 2: Workers
+```bash
+uvicorn main:app
+```
+
+**Terminal 2:** Start the workers
+
+```bash
 python worker.py
 ```
 
@@ -299,6 +297,7 @@ if __name__ == "__main__":
 **1. Create your worker Dockerfile:**
 
 ```dockerfile
+# Dockerfile.worker
 FROM ghcr.io/agent-ci/agentexec-worker:latest
 
 COPY ./src /app/src
