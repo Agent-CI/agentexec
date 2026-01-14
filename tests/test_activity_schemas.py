@@ -112,7 +112,8 @@ def test_activity_list_item_elapsed_time_computed():
     )
 
     # Should be approximately 120 seconds (with a small tolerance)
-    assert 119 <= item.elapsed_time_seconds <= 121
+    # ty doesn't understand pydantic's @computed_field decorator
+    assert 119 <= item.elapsed_time_seconds <= 121  # type: ignore[operator]
 
 
 def test_activity_list_item_elapsed_time_no_timestamps():
