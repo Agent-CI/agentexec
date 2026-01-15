@@ -117,6 +117,43 @@ async def test_enqueue_high_priority_task(mock_state_backend, pool, monkeypatch)
     assert task_data["agent_id"] == str(task2.agent_id)
 
 
+async def test_add_task_registers_handler(mock_state_backend, pool, monkeypatch) -> None:
+    """Test that pool.add_task() registers a task handler."""
+    def mock_create(*args, **kwargs):
+        return uuid.uuid4()
+
+    monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
+
+    # Register the task with add_task instead of decorator
+    async def handler(*, agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult()
+
+    pool.add_task("added_task", handler)
+
+    # Verify task was registered
+    assert "added_task" in pool._context.tasks
+
+    # Enqueue and verify it works
+    ctx = SampleContext(message="Added via add_task")
+    task = await ax.enqueue("added_task", ctx)
+
+    assert task is not None
+    assert task.task_name == "added_task"
+    assert isinstance(task.context, SampleContext)
+    assert task.context.message == "Added via add_task"
+
+
+def test_add_task_duplicate_raises(pool) -> None:
+    """Test that add_task raises ValueError for duplicate task names."""
+    async def handler(*, agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult()
+
+    pool.add_task("duplicate_task", handler)
+
+    with pytest.raises(ValueError, match="already registered"):
+        pool.add_task("duplicate_task", handler)
+
+
 def test_task_registration_requires_typed_context(pool) -> None:
     """Test that task registration fails without typed context parameter."""
     with pytest.raises(TypeError, match="must have a 'context' parameter"):

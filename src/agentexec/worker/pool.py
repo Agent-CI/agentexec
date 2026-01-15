@@ -201,12 +201,12 @@ class Pool:
         """
 
         def decorator(func: TaskHandler) -> TaskHandler:
-            self._add_task(name, func)
+            self.add_task(name, func)
             return func
 
         return decorator
 
-    def _add_task(
+    def add_task(
         self,
         name: str,
         func: TaskHandler,
@@ -214,7 +214,22 @@ class Pool:
         context_type: type[BaseModel] | None = None,
         result_type: type[BaseModel] | None = None,
     ) -> None:
-        """Add a task to the pool (internal use)."""
+        """Register a task handler with this pool.
+
+        Alternative to the @pool.task() decorator for programmatic registration.
+
+        Args:
+            name: Task name used when enqueueing and for worker routing.
+            func: Task handler function (sync or async).
+            context_type: Optional explicit context type (inferred from annotations if not provided).
+            result_type: Optional explicit result type (inferred from annotations if not provided).
+
+        Raises:
+            ValueError: If a task with the same name is already registered.
+
+        Example:
+            pool.add_task("research_company", research_handler)
+        """
         if name in self._context.tasks:
             raise ValueError(f"Task '{name}' is already registered in this pool")
 

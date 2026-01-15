@@ -232,7 +232,7 @@ class Pipeline:
         if not self._steps:
             raise RuntimeError(f"Pipeline '{self.name}' has no steps defined.")
 
-        self._pool._add_task(
+        self._pool.add_task(
             name=self.name,
             func=self._run_task,
             context_type=self._input_type,
