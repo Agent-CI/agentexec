@@ -14,7 +14,7 @@ class ActivityLogSchema(BaseModel):
     id: uuid.UUID
     message: str
     status: Status
-    percentage: int = 0
+    percentage: int | None = 0
     created_at: datetime
 
 
@@ -45,7 +45,7 @@ class ActivityListItemSchema(BaseModel):
     status: Status
     latest_log_message: str | None = None
     latest_log_timestamp: datetime | None = None
-    percentage: int = 0
+    percentage: int | None = 0
     started_at: datetime | None = None
 
     @computed_field
