@@ -174,7 +174,7 @@ class Pool:
         set_global_session(engine)
 
         self._context = WorkerContext(
-            database_url=database_url or str(engine.url),
+            database_url=database_url or engine.url.render_as_string(hide_password=False),
             shutdown_event=StateEvent("shutdown", _get_pool_id()),
             tasks={},
             queue_name=queue_name or CONF.queue_name,
