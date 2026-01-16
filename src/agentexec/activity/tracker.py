@@ -1,4 +1,5 @@
 import uuid
+from typing import Any
 
 from sqlalchemy.orm import Session
 
@@ -45,13 +46,17 @@ def create(
     message: str = "Agent queued",
     agent_id: str | uuid.UUID | None = None,
     session: Session | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> uuid.UUID:
     """Create a new agent activity record with initial queued status.
 
     Args:
         task_name: Name/type of the task (e.g., "research", "analysis")
-        initial_message: Initial log message (default: "Agent queued")
+        message: Initial log message (default: "Agent queued")
         agent_id: Optional custom agent ID (string or UUID). If not provided, one will be auto-generated.
+        session: Optional SQLAlchemy session. If not provided, uses global session factory.
+        metadata: Optional dict of arbitrary metadata to attach to the activity.
+            Useful for multi-tenancy (e.g., {"organization_id": "org-123"}).
 
     Returns:
         The agent_id (as UUID object) of the created record
@@ -62,6 +67,7 @@ def create(
     activity_record = Activity(
         agent_id=agent_id,
         agent_type=task_name,
+        metadata_=metadata,
     )
     db.add(activity_record)
     db.flush()
@@ -208,6 +214,7 @@ def list(
     session: Session,
     page: int = 1,
     page_size: int = 50,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> ActivityListSchema:
     """List activities with pagination.
 
@@ -215,12 +222,26 @@ def list(
         session: SQLAlchemy session to use for the query
         page: Page number (1-indexed)
         page_size: Number of items per page
+        metadata_filter: Optional dict of key-value pairs to filter by.
+            Activities must have metadata containing all specified keys
+            with exactly matching values.
 
     Returns:
         ActivityList with list of ActivityListItemSchema items
     """
-    total = session.query(Activity).count()
-    rows = Activity.get_list(session, page=page, page_size=page_size)
+    # Build base query for total count
+    query = session.query(Activity)
+    if metadata_filter:
+        for key, value in metadata_filter.items():
+            query = query.filter(Activity.metadata_[key].as_string() == str(value))
+    total = query.count()
+
+    rows = Activity.get_list(
+        session,
+        page=page,
+        page_size=page_size,
+        metadata_filter=metadata_filter,
+    )
 
     return ActivityListSchema(
         items=[ActivityListItemSchema.model_validate(row) for row in rows],
@@ -233,17 +254,22 @@ def list(
 def detail(
     session: Session,
     agent_id: str | uuid.UUID,
+    metadata_filter: dict[str, Any] | None = None,
 ) -> ActivityDetailSchema | None:
     """Get a single activity by agent_id with all logs.
 
     Args:
         session: SQLAlchemy session to use for the query
         agent_id: The agent_id to look up
+        metadata_filter: Optional dict of key-value pairs to filter by.
+            If provided and the activity's metadata doesn't match,
+            returns None (same as if not found).
 
     Returns:
         ActivityDetailSchema with full log history, or None if not found
+        or if metadata doesn't match
     """
-    if item := Activity.get_by_agent_id(session, agent_id):
+    if item := Activity.get_by_agent_id(session, agent_id, metadata_filter=metadata_filter):
         return ActivityDetailSchema.model_validate(item)
     return None
 

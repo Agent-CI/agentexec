@@ -11,9 +11,9 @@ from typing import (
     TypeAlias,
     Union,
     cast,
-    get_type_hints,
-    get_origin,
     get_args,
+    get_origin,
+    get_type_hints,
 )
 from uuid import UUID
 
@@ -320,17 +320,23 @@ class Pipeline:
 
         return decorator
 
-    async def enqueue(self, context: BaseModel) -> Task:
+    async def enqueue(
+        self,
+        context: BaseModel,
+        metadata: dict[str, Any] | None = None,
+    ) -> Task:
         """Enqueue the pipeline to run on a worker.
 
         Args:
             context: Initial context passed to the first step
+            metadata: Optional dict of arbitrary metadata to attach to the activity.
+                Useful for multi-tenancy (e.g., {"organization_id": "org-123"}).
 
         Returns:
             Task instance for tracking the pipeline execution
         """
         self._validate_type_flow()
-        return await queue.enqueue(self.name, context)
+        return await queue.enqueue(self.name, context, metadata=metadata)
 
     async def run(self, context: BaseModel) -> StepResult:
         """Execute the pipeline inline (blocking).

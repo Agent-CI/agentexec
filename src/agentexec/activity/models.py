@@ -3,11 +3,14 @@ from enum import Enum as PyEnum
 import uuid
 from datetime import UTC, datetime
 
+from typing import Any
+
 from sqlalchemy import (
     DateTime,
     Enum,
     ForeignKey,
     Integer,
+    JSON,
     String,
     Text,
     Uuid,
@@ -57,6 +60,12 @@ class Activity(Base):
         nullable=False,
         default=lambda: datetime.now(UTC),
         onupdate=lambda: datetime.now(UTC),
+    )
+    metadata_: Mapped[dict[str, Any] | None] = mapped_column(
+        "metadata",
+        JSON,
+        nullable=True,
+        default=None,
     )
 
     logs: Mapped[list[ActivityLog]] = relationship(
@@ -113,15 +122,19 @@ class Activity(Base):
         cls,
         session: Session,
         agent_id: str | uuid.UUID,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> Activity | None:
         """Get an activity by agent_id.
 
         Args:
             session: SQLAlchemy session
             agent_id: The agent_id to look up (string or UUID)
+            metadata_filter: Optional dict of key-value pairs to filter by.
+                If provided and the activity's metadata doesn't match,
+                returns None (same as if not found).
 
         Returns:
-            Activity object or None if not found
+            Activity object or None if not found or metadata doesn't match
 
         Example:
             activity = Activity.get_by_agent_id(session, "abc-123")
@@ -129,11 +142,26 @@ class Activity(Base):
             activity = Activity.get_by_agent_id(session, uuid.UUID("abc-123..."))
             if activity:
                 print(f"Found activity: {activity.agent_type}")
+
+            # With metadata filter (for multi-tenancy)
+            activity = Activity.get_by_agent_id(
+                session,
+                agent_id,
+                metadata_filter={"organization_id": "org-123"}
+            )
         """
         # Normalize to UUID if string
         if isinstance(agent_id, str):
             agent_id = uuid.UUID(agent_id)
-        return session.query(cls).filter_by(agent_id=agent_id).first()
+
+        query = session.query(cls).filter_by(agent_id=agent_id)
+
+        # Apply metadata filtering if provided
+        if metadata_filter:
+            for key, value in metadata_filter.items():
+                query = query.filter(cls.metadata_[key].as_string() == str(value))
+
+        return query.first()
 
     @classmethod
     def get_list(
@@ -141,6 +169,7 @@ class Activity(Base):
         session: Session,
         page: int = 1,
         page_size: int = 50,
+        metadata_filter: dict[str, Any] | None = None,
     ) -> list[RowMapping]:
         """Get a paginated list of activities with summary information.
 
@@ -148,16 +177,25 @@ class Activity(Base):
             session: SQLAlchemy session to use for the query
             page: Page number (1-indexed)
             page_size: Number of items per page
+            metadata_filter: Optional dict of key-value pairs to filter by.
+                Activities must have metadata containing all specified keys
+                with exactly matching values.
 
         Returns:
             List of RowMapping objects (dict-like) with keys matching ActivitySummarySchema:
             agent_id, agent_type, latest_log_message, status, latest_log_timestamp,
-            percentage, started_at
+            percentage, started_at, metadata
 
         Example:
             results = Activity.get_list(session, page=1, page_size=20)
             for row in results:
                 print(f"{row['agent_id']}: {row['latest_log_message']}")
+
+            # Filter by organization
+            results = Activity.get_list(
+                session,
+                metadata_filter={"organization_id": "org-123"}
+            )
         """
         # Subquery to get the latest log for each agent
         latest_log_subq = select(
@@ -198,6 +236,7 @@ class Activity(Base):
                 latest_log.c.created_at.label("latest_log_timestamp"),
                 latest_log.c.percentage,
                 started_at.c.started_at,
+                cls.metadata_.label("metadata"),
             )
             .outerjoin(
                 latest_log,
@@ -205,6 +244,13 @@ class Activity(Base):
             )
             .outerjoin(started_at, cls.id == started_at.c.activity_id)
         )
+
+        # Apply metadata filtering if provided
+        if metadata_filter:
+            for key, value in metadata_filter.items():
+                # Use JSON path extraction for exact string matching
+                # This works across SQLite (for testing) and PostgreSQL (for production)
+                query = query.where(cls.metadata_[key].as_string() == str(value))
 
         # Custom ordering: active agents (running, queued) at the top
         is_active = case(
