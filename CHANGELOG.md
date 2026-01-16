@@ -1,5 +1,43 @@
 # Changelog
 
+## v0.1.5
+
+### New Features
+
+**Public `Pool.add_task()` method**
+- `Pool.add_task()` is now public (was `_add_task()`)
+- Alternative to `@pool.task()` decorator for programmatic task registration
+- Includes comprehensive docstring with usage examples
+
+### Improvements
+
+**Enhanced type safety for TaskHandler protocols**
+- Added generic type parameters (`ContextT`, `ResultT`) to `_SyncTaskHandler` and `_AsyncTaskHandler`
+- Better IDE autocomplete and type checking support
+- Added comprehensive type checking tests in `test_task_types.py`
+
+**Activity tracking improvements**
+- Made `percentage` field optional (`int | None`) in activity schemas
+- More flexible activity percentage tracking
+
+**Configuration robustness**
+- Added `extra="ignore"` to config model for better forward compatibility
+
+### Bug Fixes
+
+**Database URL handling**
+- Fixed database URL rendering to properly handle password visibility
+- Uses `engine.url.render_as_string(hide_password=False)` instead of `str(engine.url)`
+
+**Tracker commit**
+- Added missing `db.commit()` call in activity tracker
+
+### Testing
+
+**Type checking tests**
+- Added `test_task_types.py` for validating TaskHandler protocol compatibility
+- Covers sync/async functions and class methods
+
 ## v0.1.4
 
 ### Breaking Changes
