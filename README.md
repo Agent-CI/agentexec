@@ -138,6 +138,22 @@ That's it. Tasks are queued to Redis, workers process them in parallel, progress
 
 ## Supported Patterns
 
+### Activity Metadata (Multi-Tenancy)
+
+Attach arbitrary metadata when enqueueing tasks for filtering and tenant isolation:
+
+```python
+task = await ax.enqueue(
+    "process_document",
+    context,
+    metadata={"organization_id": "org-123", "user_id": "user-456"}
+)
+
+# Filter activities by metadata
+activities = ax.activity.list(db, metadata_filter={"organization_id": "org-123"})
+detail = ax.activity.detail(db, agent_id, metadata_filter={"organization_id": "org-123"})
+```
+
 ### Automatic Activity Tracking
 
 Every task gets full lifecycle tracking without manual updates:
@@ -386,6 +402,7 @@ Activity tracking uses SQLAlchemy with two tables:
 **`agentexec_activity`** - Main activity records
 - `agent_id` - Unique identifier (UUID)
 - `agent_type` - Task name
+- `metadata` - JSON field for custom data (e.g., tenant info)
 - `created_at`, `updated_at` - Timestamps
 
 **`agentexec_activity_log`** - Status and progress
@@ -560,6 +577,7 @@ The components are headless (no built-in styling) and work with any CSS framewor
 import agentexec as ax
 
 task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)
+task = await ax.enqueue(task_name, context, metadata={"org_id": "..."})  # With metadata
 result = await ax.get_result(task, timeout=300)
 results = await ax.gather(task1, task2, task3)
 ```
@@ -586,16 +604,18 @@ pool.shutdown()  # Graceful shutdown
 import agentexec as ax
 
 # Create activity (returns agent_id for tracking)
-agent_id = ax.activity.create(task_name, message="Starting...")
+agent_id = ax.activity.create(task_name, message="Starting...", metadata={"org_id": "..."})
 
 # Update progress
 ax.activity.update(agent_id, message, percentage=50)
 ax.activity.complete(agent_id, message="Done")
 ax.activity.error(agent_id, error="Failed: ...")
 
-# Query activities
+# Query activities (with optional metadata filtering)
 activities = ax.activity.list(db, page=1, page_size=20)
+activities = ax.activity.list(db, metadata_filter={"org_id": "..."})
 activity = ax.activity.detail(db, agent_id=agent_id)
+activity = ax.activity.detail(db, agent_id, metadata_filter={"org_id": "..."})
 count = ax.activity.active_count(db)
 
 # Cleanup
@@ -634,6 +654,9 @@ pipeline = ax.Pipeline(pool)
 class MyPipeline(pipeline.Base):
     @pipeline.step(0, "description")
     async def step_one(self, context): ...
+
+task = await pipeline.enqueue(context)
+task = await pipeline.enqueue(context, metadata={"org_id": "..."})  # With metadata
 ```
 
 ### Tracker
@@ -733,4 +756,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 - **npm**: [agentexec-ui](https://www.npmjs.com/package/agentexec-ui)
 - **Documentation**: [docs/](docs/)
 - **Example App**: [examples/openai-agents-fastapi/](examples/openai-agents-fastapi/)
+- **Multi-Tenancy Example**: [examples/multi-tenancy/](examples/multi-tenancy/)
 - **Issues**: [GitHub Issues](https://github.com/Agent-CI/agentexec/issues)
