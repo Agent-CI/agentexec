@@ -65,6 +65,7 @@ async def test_enqueue_creates_task(fake_redis, mock_activity_create) -> None:
     assert task is not None
     assert task.task_name == "test_task"
     assert isinstance(task.agent_id, uuid.UUID)
+    assert isinstance(task.context, SampleContext)
     assert task.context.message == "test"
     assert task.context.value == 42
 
@@ -175,6 +176,7 @@ async def test_dequeue_brpop_behavior(fake_redis) -> None:
 
     # BRPOP should get the first task (oldest) from the right
     result = await dequeue(timeout=1)
+    assert result is not None
     assert result["task_name"] == "first"
 
 
@@ -206,4 +208,5 @@ async def test_multiple_enqueue_fifo_order(fake_redis, mock_activity_create) -> 
     # Dequeue should be in FIFO order
     for i in range(3):
         result = await dequeue(timeout=1)
+        assert result is not None
         assert result["task_name"] == f"task_{i}"

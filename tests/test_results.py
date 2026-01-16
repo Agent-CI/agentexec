@@ -95,7 +95,7 @@ async def test_get_result_timeout(mock_state) -> None:
     mock_state.aget_result = AsyncMock(return_value=None)
 
     with pytest.raises(TimeoutError, match=f"Result for {task.agent_id} not available"):
-        await get_result(task, timeout=0.5)
+        await get_result(task, timeout=1)
 
 
 async def test_gather_multiple_tasks(mock_state) -> None:

@@ -58,7 +58,7 @@ def test_task_serialization() -> None:
 
 
 def test_task_deserialization(pool) -> None:
-    """Test that tasks can be deserialized using context_type."""
+    """Test that tasks can be deserialized using Task.from_serialized."""
     # Register a task to get a TaskDefinition
     @pool.task("test_task")
     async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
@@ -73,11 +73,7 @@ def test_task_deserialization(pool) -> None:
         "agent_id": str(agent_id),
     }
 
-    task = ax.Task(
-        task_name=data["task_name"],
-        context=task_def.context_type.model_validate(data["context"]),
-        agent_id=data["agent_id"],
-    )
+    task = ax.Task.from_serialized(task_def, data)
 
     assert task.task_name == "test_task"
     assert isinstance(task.context, SampleContext)
@@ -89,15 +85,15 @@ def test_task_deserialization(pool) -> None:
 def test_task_round_trip(pool) -> None:
     """Test that tasks can be serialized and deserialized."""
     # Register task for deserialization
-    @pool.task("test_task")
+    @pool.task("round_trip_task")
     async def handler(agent_id: uuid.UUID, context: NestedContext) -> TaskResult:
         return TaskResult(status="success")
 
-    task_def = pool._context.tasks["test_task"]
+    task_def = pool._context.tasks["round_trip_task"]
 
     original_ctx = NestedContext(message="hello", nested={"key": "value"})
     original = ax.Task(
-        task_name="test_task",
+        task_name="round_trip_task",
         context=original_ctx,
         agent_id=uuid.uuid4(),
     )
@@ -105,13 +101,12 @@ def test_task_round_trip(pool) -> None:
     # Serialize → JSON → Deserialize
     serialized = original.model_dump_json()
     data = json.loads(serialized)
-    deserialized = ax.Task(
-        task_name=data["task_name"],
-        context=task_def.context_type.model_validate(data["context"]),
-        agent_id=data["agent_id"],
-    )
+    deserialized = ax.Task.from_serialized(task_def, data)
 
     assert deserialized.task_name == original.task_name
+    # Cast to access typed attributes (Task.context is typed as BaseModel)
+    assert isinstance(deserialized.context, NestedContext)
+    assert isinstance(original.context, NestedContext)
     assert deserialized.context.message == original.context.message
     assert deserialized.context.nested == original.context.nested
     assert deserialized.agent_id == original.agent_id
@@ -262,6 +257,8 @@ async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
 
     result = await task.execute()
 
+    assert result is not None
+    assert isinstance(result, TaskResult)
     assert result.status == "Sync result: test"
     assert len(activity_updates) == 2
 

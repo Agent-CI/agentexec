@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import inspect
-from typing import Any, Protocol, TypeAlias, cast, get_type_hints
+from typing import Any, Protocol, TypeAlias, TypeVar, cast, get_type_hints
 from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
@@ -11,10 +11,12 @@ from agentexec.config import CONF
 
 
 TaskResult: TypeAlias = BaseModel
+ContextT = TypeVar("ContextT", bound=BaseModel)
+ResultT = TypeVar("ResultT", bound=TaskResult)
 
 
-class _SyncTaskHandler(Protocol):
-    """Protocol for task handler functions."""
+class _SyncTaskHandler(Protocol[ContextT, ResultT]):
+    """Protocol for sync task handler functions."""
 
     __name__: str
 
@@ -22,11 +24,11 @@ class _SyncTaskHandler(Protocol):
         self,
         *,
         agent_id: UUID,
-        context: BaseModel,
-    ) -> TaskResult: ...
+        context: ContextT,
+    ) -> ResultT: ...
 
 
-class _AsyncTaskHandler(Protocol):
+class _AsyncTaskHandler(Protocol[ContextT, ResultT]):
     """Protocol for async task handler functions."""
 
     __name__: str
@@ -35,11 +37,15 @@ class _AsyncTaskHandler(Protocol):
         self,
         *,
         agent_id: UUID,
-        context: BaseModel,
-    ) -> TaskResult: ...
+        context: ContextT,
+    ) -> ResultT: ...
 
 
-TaskHandler: TypeAlias = _SyncTaskHandler | _AsyncTaskHandler
+# TODO: Using Any,Any here because of contravariance limitations with function parameters.
+# A function accepting MyContext (specific) is not statically assignable to one expecting
+# BaseModel (general). Runtime validation in TaskDefinition._infer_context_type catches
+# invalid context/return types. Revisit if Python typing evolves to support this pattern.
+TaskHandler: TypeAlias = _SyncTaskHandler[Any, Any] | _AsyncTaskHandler[Any, Any]
 
 
 class TaskDefinition:
