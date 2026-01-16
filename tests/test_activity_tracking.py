@@ -353,3 +353,184 @@ def test_create_activity_with_string_agent_id(db_session: Session):
     )
 
     assert agent_id == custom_id
+
+
+# --- Metadata Tests ---
+
+
+def test_create_activity_with_metadata(db_session: Session):
+    """Test creating activity with metadata."""
+    agent_id = activity.create(
+        task_name="metadata_task",
+        message="Test with metadata",
+        session=db_session,
+        metadata={"organization_id": "org-123", "user_id": "user-456"},
+    )
+
+    activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert activity_record is not None
+    assert activity_record.metadata_ == {"organization_id": "org-123", "user_id": "user-456"}
+
+
+def test_create_activity_without_metadata(db_session: Session):
+    """Test that metadata is None by default."""
+    agent_id = activity.create(
+        task_name="no_metadata_task",
+        message="Test without metadata",
+        session=db_session,
+    )
+
+    activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert activity_record is not None
+    assert activity_record.metadata_ is None
+
+
+def test_list_activities_with_metadata_filter(db_session: Session):
+    """Test filtering activities by metadata."""
+    # Create activities for different organizations
+    activity.create(
+        task_name="task_org_a",
+        message="Org A task",
+        session=db_session,
+        metadata={"organization_id": "org-A"},
+    )
+    activity.create(
+        task_name="task_org_a_2",
+        message="Org A task 2",
+        session=db_session,
+        metadata={"organization_id": "org-A"},
+    )
+    activity.create(
+        task_name="task_org_b",
+        message="Org B task",
+        session=db_session,
+        metadata={"organization_id": "org-B"},
+    )
+
+    # Filter by org-A
+    result = activity.list(
+        db_session,
+        metadata_filter={"organization_id": "org-A"},
+    )
+    assert result.total == 2
+    assert len(result.items) == 2
+    for item in result.items:
+        assert item.metadata["organization_id"] == "org-A"
+
+    # Filter by org-B
+    result = activity.list(
+        db_session,
+        metadata_filter={"organization_id": "org-B"},
+    )
+    assert result.total == 1
+    assert result.items[0].metadata["organization_id"] == "org-B"
+
+    # Filter by non-existent org
+    result = activity.list(
+        db_session,
+        metadata_filter={"organization_id": "org-C"},
+    )
+    assert result.total == 0
+
+
+def test_list_activities_with_multiple_metadata_filters(db_session: Session):
+    """Test filtering activities by multiple metadata fields."""
+    activity.create(
+        task_name="task_1",
+        message="User 1 in Org A",
+        session=db_session,
+        metadata={"organization_id": "org-A", "user_id": "user-1"},
+    )
+    activity.create(
+        task_name="task_2",
+        message="User 2 in Org A",
+        session=db_session,
+        metadata={"organization_id": "org-A", "user_id": "user-2"},
+    )
+
+    # Filter by both org and user
+    result = activity.list(
+        db_session,
+        metadata_filter={"organization_id": "org-A", "user_id": "user-1"},
+    )
+    assert result.total == 1
+
+
+def test_detail_activity_with_metadata(db_session: Session):
+    """Test getting activity detail includes metadata."""
+    agent_id = activity.create(
+        task_name="detailed_metadata_task",
+        message="Test",
+        session=db_session,
+        metadata={"organization_id": "org-123"},
+    )
+
+    result = activity.detail(db_session, agent_id)
+    assert result is not None
+    assert result.metadata == {"organization_id": "org-123"}
+
+
+def test_detail_activity_with_metadata_filter_match(db_session: Session):
+    """Test detail returns activity when metadata filter matches."""
+    agent_id = activity.create(
+        task_name="filter_match_task",
+        message="Test",
+        session=db_session,
+        metadata={"organization_id": "org-A"},
+    )
+
+    result = activity.detail(
+        db_session,
+        agent_id,
+        metadata_filter={"organization_id": "org-A"},
+    )
+    assert result is not None
+    assert result.agent_id == agent_id
+
+
+def test_detail_activity_with_metadata_filter_no_match(db_session: Session):
+    """Test detail returns None when metadata filter doesn't match."""
+    agent_id = activity.create(
+        task_name="filter_no_match_task",
+        message="Test",
+        session=db_session,
+        metadata={"organization_id": "org-A"},
+    )
+
+    # Try to access with wrong organization
+    result = activity.detail(
+        db_session,
+        agent_id,
+        metadata_filter={"organization_id": "org-B"},
+    )
+    assert result is None
+
+
+def test_detail_activity_no_metadata_with_filter(db_session: Session):
+    """Test detail returns None when activity has no metadata but filter is applied."""
+    agent_id = activity.create(
+        task_name="no_metadata_with_filter",
+        message="Test",
+        session=db_session,
+    )
+
+    result = activity.detail(
+        db_session,
+        agent_id,
+        metadata_filter={"organization_id": "org-A"},
+    )
+    assert result is None
+
+
+def test_list_metadata_included_in_response(db_session: Session):
+    """Test that metadata is included in list item response."""
+    activity.create(
+        task_name="list_metadata_task",
+        message="Test",
+        session=db_session,
+        metadata={"key1": "value1", "key2": "value2"},
+    )
+
+    result = activity.list(db_session)
+    assert result.total == 1
+    assert result.items[0].metadata == {"key1": "value1", "key2": "value2"}

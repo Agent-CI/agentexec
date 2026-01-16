@@ -29,6 +29,7 @@ async def enqueue(
     *,
     priority: Priority = Priority.LOW,
     queue_name: str | None = None,
+    metadata: dict[str, Any] | None = None,
 ) -> Task:
     """Enqueue a task for background execution.
 
@@ -40,6 +41,8 @@ async def enqueue(
         context: Task context as a Pydantic BaseModel.
         priority: Task priority (Priority.HIGH or Priority.LOW).
         queue_name: Queue name. Defaults to CONF.queue_name.
+        metadata: Optional dict of arbitrary metadata to attach to the activity.
+            Useful for multi-tenancy (e.g., {"organization_id": "org-123"}).
 
     Returns:
         Task instance with typed context and agent_id for tracking.
@@ -50,6 +53,13 @@ async def enqueue(
             ...
 
         task = await ax.enqueue("research_company", ResearchContext(company="Acme"))
+
+        # With metadata for multi-tenancy
+        task = await ax.enqueue(
+            "research_company",
+            ResearchContext(company="Acme"),
+            metadata={"organization_id": "org-123"}
+        )
     """
     push_func = {
         Priority.HIGH: state.backend.rpush,
@@ -59,6 +69,7 @@ async def enqueue(
     task = Task.create(
         task_name=task_name,
         context=context,
+        metadata=metadata,
     )
     push_func(
         queue_name or CONF.queue_name,
