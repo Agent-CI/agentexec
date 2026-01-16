@@ -30,7 +30,7 @@ class ActivityDetailSchema(BaseModel):
     created_at: datetime
     updated_at: datetime
     logs: list[ActivityLogSchema] = Field(default_factory=list)
-    metadata: dict[str, Any] | None = Field(default=None, alias="metadata_")
+    metadata: dict[str, Any] | None = Field(default=None, alias="metadata_", exclude=True)
 
 
 class ActivityListItemSchema(BaseModel):
@@ -49,7 +49,7 @@ class ActivityListItemSchema(BaseModel):
     latest_log_timestamp: datetime | None = None
     percentage: int | None = 0
     started_at: datetime | None = None
-    metadata: dict[str, Any] | None = None
+    metadata: dict[str, Any] | None = Field(default=None, exclude=True)
 
     @computed_field
     def elapsed_time_seconds(self) -> int:

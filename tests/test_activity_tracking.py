@@ -522,8 +522,8 @@ def test_detail_activity_no_metadata_with_filter(db_session: Session):
     assert result is None
 
 
-def test_list_metadata_included_in_response(db_session: Session):
-    """Test that metadata is included in list item response."""
+def test_list_metadata_accessible_as_attribute(db_session: Session):
+    """Test that metadata is accessible as an attribute on schema objects."""
     activity.create(
         task_name="list_metadata_task",
         message="Test",
@@ -533,4 +533,33 @@ def test_list_metadata_included_in_response(db_session: Session):
 
     result = activity.list(db_session)
     assert result.total == 1
+    # Metadata is accessible as attribute for programmatic use
     assert result.items[0].metadata == {"key1": "value1", "key2": "value2"}
+
+
+def test_metadata_excluded_from_serialization(db_session: Session):
+    """Test that metadata is excluded from JSON/dict serialization by default.
+
+    This prevents accidental leakage of tenant info through API responses.
+    Users who want metadata in responses should explicitly include it.
+    """
+    agent_id = activity.create(
+        task_name="serialization_test",
+        message="Test",
+        session=db_session,
+        metadata={"organization_id": "org-123", "secret": "sensitive"},
+    )
+
+    # List view - metadata excluded from serialization
+    result = activity.list(db_session)
+    item_dict = result.items[0].model_dump()
+    assert "metadata" not in item_dict
+
+    # Detail view - metadata excluded from serialization
+    detail = activity.detail(db_session, agent_id)
+    detail_dict = detail.model_dump()
+    assert "metadata" not in detail_dict
+
+    # But still accessible as attribute for internal use
+    assert result.items[0].metadata == {"organization_id": "org-123", "secret": "sensitive"}
+    assert detail.metadata == {"organization_id": "org-123", "secret": "sensitive"}
