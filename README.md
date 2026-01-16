@@ -577,7 +577,6 @@ The components are headless (no built-in styling) and work with any CSS framewor
 import agentexec as ax
 
 task = await ax.enqueue(task_name, context, priority=ax.Priority.LOW)
-task = await ax.enqueue(task_name, context, metadata={"org_id": "..."})  # With metadata
 result = await ax.get_result(task, timeout=300)
 results = await ax.gather(task1, task2, task3)
 ```
@@ -604,18 +603,16 @@ pool.shutdown()  # Graceful shutdown
 import agentexec as ax
 
 # Create activity (returns agent_id for tracking)
-agent_id = ax.activity.create(task_name, message="Starting...", metadata={"org_id": "..."})
+agent_id = ax.activity.create(task_name, message="Starting...")
 
 # Update progress
 ax.activity.update(agent_id, message, percentage=50)
 ax.activity.complete(agent_id, message="Done")
 ax.activity.error(agent_id, error="Failed: ...")
 
-# Query activities (with optional metadata filtering)
+# Query activities
 activities = ax.activity.list(db, page=1, page_size=20)
-activities = ax.activity.list(db, metadata_filter={"org_id": "..."})
 activity = ax.activity.detail(db, agent_id=agent_id)
-activity = ax.activity.detail(db, agent_id, metadata_filter={"org_id": "..."})
 count = ax.activity.active_count(db)
 
 # Cleanup
@@ -654,9 +651,6 @@ pipeline = ax.Pipeline(pool)
 class MyPipeline(pipeline.Base):
     @pipeline.step(0, "description")
     async def step_one(self, context): ...
-
-task = await pipeline.enqueue(context)
-task = await pipeline.enqueue(context, metadata={"org_id": "..."})  # With metadata
 ```
 
 ### Tracker
