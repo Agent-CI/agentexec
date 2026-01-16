@@ -152,6 +152,9 @@ task = await ax.enqueue(
 # Filter activities by metadata
 activities = ax.activity.list(db, metadata_filter={"organization_id": "org-123"})
 detail = ax.activity.detail(db, agent_id, metadata_filter={"organization_id": "org-123"})
+
+# Access metadata programmatically (excluded from API serialization by default)
+org_id = detail.metadata["organization_id"]
 ```
 
 ### Automatic Activity Tracking

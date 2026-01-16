@@ -87,4 +87,6 @@ For PostgreSQL, this maps to JSONB which supports efficient filtering.
 
 - Metadata is immutable once set at enqueue time
 - Filtering uses exact string matching on metadata values
-- The metadata field is included in both list and detail API responses
+- **Metadata is excluded from API serialization by default** to prevent accidental leakage of tenant info
+- Access metadata programmatically via the `.metadata` attribute (e.g., `activity.metadata`)
+- To include metadata in API responses, explicitly add it to your response model
