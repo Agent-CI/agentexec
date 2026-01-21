@@ -215,7 +215,12 @@ class Task(BaseModel):
         return task
 
     @classmethod
-    def create(cls, task_name: str, context: BaseModel) -> Task:
+    def create(
+        cls,
+        task_name: str,
+        context: BaseModel,
+        metadata: dict[str, Any] | None = None,
+    ) -> Task:
         """Create a new task with automatic activity tracking.
 
         This is a convenience method that creates both a Task instance and
@@ -224,6 +229,8 @@ class Task(BaseModel):
         Args:
             task_name: Name/type of the task (e.g., "research", "analysis")
             context: Task context as a Pydantic model
+            metadata: Optional dict of arbitrary metadata to attach to the activity.
+                Useful for multi-tenancy (e.g., {"organization_id": "org-123"}).
 
         Returns:
             Task instance with agent_id set
@@ -232,10 +239,18 @@ class Task(BaseModel):
             ctx = ResearchContext(company="Acme")
             task = Task.create("research_company", ctx)
             task.context.company  # Typed access
+
+            # With metadata for multi-tenancy
+            task = Task.create(
+                "research_company",
+                ctx,
+                metadata={"organization_id": "org-123"}
+            )
         """
         agent_id = activity.create(
             task_name=task_name,
             message=CONF.activity_message_create,
+            metadata=metadata,
         )
 
         return cls(

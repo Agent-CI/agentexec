@@ -138,6 +138,25 @@ That's it. Tasks are queued to Redis, workers process them in parallel, progress
 
 ## Supported Patterns
 
+### Activity Metadata (Multi-Tenancy)
+
+Attach arbitrary metadata when enqueueing tasks for filtering and tenant isolation:
+
+```python
+task = await ax.enqueue(
+    "process_document",
+    context,
+    metadata={"organization_id": "org-123", "user_id": "user-456"}
+)
+
+# Filter activities by metadata
+activities = ax.activity.list(db, metadata_filter={"organization_id": "org-123"})
+detail = ax.activity.detail(db, agent_id, metadata_filter={"organization_id": "org-123"})
+
+# Access metadata programmatically (excluded from API serialization by default)
+org_id = detail.metadata["organization_id"]
+```
+
 ### Automatic Activity Tracking
 
 Every task gets full lifecycle tracking without manual updates:
@@ -386,6 +405,7 @@ Activity tracking uses SQLAlchemy with two tables:
 **`agentexec_activity`** - Main activity records
 - `agent_id` - Unique identifier (UUID)
 - `agent_type` - Task name
+- `metadata` - JSON field for custom data (e.g., tenant info)
 - `created_at`, `updated_at` - Timestamps
 
 **`agentexec_activity_log`** - Status and progress
@@ -733,4 +753,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 - **npm**: [agentexec-ui](https://www.npmjs.com/package/agentexec-ui)
 - **Documentation**: [docs/](docs/)
 - **Example App**: [examples/openai-agents-fastapi/](examples/openai-agents-fastapi/)
+- **Multi-Tenancy Example**: [examples/multi-tenancy/](examples/multi-tenancy/)
 - **Issues**: [GitHub Issues](https://github.com/Agent-CI/agentexec/issues)
