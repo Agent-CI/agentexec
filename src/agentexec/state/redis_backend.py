@@ -27,6 +27,7 @@ __all__ = [
     "publish",
     "subscribe",
     "close",
+    "clear_keys",
 ]
 
 _redis_client: redis.asyncio.Redis | None = None
@@ -378,3 +379,36 @@ async def subscribe(channel: str) -> AsyncGenerator[str, None]:
         await _pubsub.unsubscribe(channel)
         await _pubsub.close()
         _pubsub = None
+
+
+def clear_keys() -> int:
+    """Clear all Redis keys managed by this application.
+
+    Uses SCAN to safely iterate through keys without blocking Redis.
+    Only deletes keys that match the configured prefix and queue name.
+
+    Returns:
+        Total number of keys deleted, or 0 if Redis is not configured
+    """
+    if CONF.redis_url is None:
+        return 0
+
+    client = _get_sync_client()
+    deleted = 0
+
+    # Delete the task queue
+    deleted += client.delete(CONF.queue_name)
+
+    # Scan and delete all keys matching the configured prefix
+    # Pattern: "agentexec:*" (or whatever key_prefix is configured)
+    pattern = f"{CONF.key_prefix}:*"
+    cursor = 0
+
+    while True:
+        cursor, keys = client.scan(cursor=cursor, match=pattern, count=100)
+        if keys:
+            deleted += client.delete(*keys)
+        if cursor == 0:
+            break
+
+    return deleted

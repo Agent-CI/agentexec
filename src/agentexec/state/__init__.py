@@ -27,6 +27,7 @@ __all__ = [
     "clear_event",
     "check_event",
     "acheck_event",
+    "clear_keys",
 ]
 
 
@@ -214,3 +215,16 @@ def acheck_event(name: str, id: str) -> Coroutine[None, None, bool]:
         return await backend.aget(backend.format_key(*KEY_EVENT, name, id)) is not None
 
     return _check()
+
+
+def clear_keys() -> int:
+    """Clear all state keys managed by this application.
+
+    Removes all keys matching the configured prefix and the task queue.
+    This is useful during shutdown to prevent stale tasks from being
+    picked up on restart.
+
+    Returns:
+        Total number of keys deleted
+    """
+    return backend.clear_keys()

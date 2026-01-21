@@ -250,6 +250,20 @@ class StateBackend(Protocol):
         """
         ...
 
+    # Cleanup operations
+    @staticmethod
+    def clear_keys() -> int:
+        """Clear all keys managed by this application.
+
+        Only deletes keys that match the configured prefix and queue name.
+        This is useful during shutdown to prevent stale tasks from being
+        picked up on restart.
+
+        Returns:
+            Total number of keys deleted
+        """
+        ...
+
 
 def load_backend(module: ModuleType) -> StateBackend:
     """Load and validate a backend module conforms to StateBackend protocol.
