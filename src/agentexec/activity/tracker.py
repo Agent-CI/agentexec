@@ -9,7 +9,6 @@ from agentexec.activity.schemas import (
     ActivityListSchema,
 )
 from agentexec.core.db import get_global_session
-from agentexec import state
 
 
 def generate_agent_id() -> uuid.UUID:
@@ -181,16 +180,10 @@ def error(
 
 def cancel_pending(
     session: Session | None = None,
-    clear_redis: bool = True,
 ) -> int:
     """Mark all queued and running agents as canceled.
 
     Useful during application shutdown to clean up pending tasks.
-
-    Args:
-        session: Optional SQLAlchemy session. If not provided, uses global session.
-        clear_redis: If True, also clear Redis keys managed by this application
-            (task queue, results, events, trackers). Defaults to True.
 
     Returns:
         Number of agents that were canceled
@@ -208,10 +201,6 @@ def cancel_pending(
         )
 
     db.commit()
-
-    if clear_redis:
-        state.clear_keys()
-
     return len(pending_agent_ids)
 
 
