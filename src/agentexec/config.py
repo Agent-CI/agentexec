@@ -86,5 +86,17 @@ class Config(BaseSettings):
         validation_alias="AGENTEXEC_KEY_PREFIX",
     )
 
+    lock_ttl: int = Field(
+        default=1800,
+        description=(
+            "TTL in seconds for task lock keys in Redis. "
+            "This is a safety net for worker process death (OOM, SIGKILL) — "
+            "locks are always explicitly released on task completion or error. "
+            "Set this higher than your longest expected task duration to avoid "
+            "premature lock expiry while a task is still running."
+        ),
+        validation_alias="AGENTEXEC_LOCK_TTL",
+    )
+
 
 CONF = Config()

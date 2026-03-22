@@ -340,6 +340,35 @@ def decr(key: str) -> int:
     return client.decr(key)  # type: ignore[return-value]
 
 
+async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
+    """Attempt to acquire a distributed lock using SET NX EX.
+
+    Args:
+        key: Lock key
+        value: Lock value (typically agent_id for debugging)
+        ttl_seconds: Lock expiry in seconds (safety net for dead processes)
+
+    Returns:
+        True if lock was acquired, False if already held
+    """
+    client = _get_async_client()
+    result = await client.set(key, value, nx=True, ex=ttl_seconds)
+    return result is not None
+
+
+async def release_lock(key: str) -> int:
+    """Release a distributed lock.
+
+    Args:
+        key: Lock key to release
+
+    Returns:
+        Number of keys deleted (0 or 1)
+    """
+    client = _get_async_client()
+    return await client.delete(key)  # type: ignore[return-value]
+
+
 def publish(channel: str, message: str) -> None:
     """Publish message to a channel.
 

@@ -189,6 +189,23 @@ Update progress explicitly from your task:
 ax.activity.update(agent_id, "Processing batch 3 of 10", percentage=30)
 ```
 
+### Task Locking
+
+When multiple tasks of the same type are queued for the same user, they may need to run sequentially because each task reads and writes shared state. Use `lock_key` to ensure only one task with the same evaluated key runs at a time:
+
+```python
+@pool.task("associate_observation", lock_key="user:{user_id}")
+async def associate(agent_id: UUID, context: ObservationContext):
+    ...
+
+# Or with add_task()
+pool.add_task("associate_observation", handler, lock_key="user:{user_id}")
+```
+
+The `lock_key` is a string template evaluated against the task context fields. When a worker dequeues a task whose lock is held, it puts the task back at the end of the queue and moves on. The lock is released automatically when the task completes or errors.
+
+The lock TTL (`AGENTEXEC_LOCK_TTL`, default 1800s) is a safety net for worker process death — locks are always explicitly released on task completion or error. Set this higher than your longest expected task duration.
+
 ### Priority Queue
 
 Control task execution order:
@@ -595,6 +612,9 @@ pool = ax.Pool(database_url="postgresql://...")
 @pool.task("name")
 async def handler(agent_id: UUID, context: MyContext) -> None: ...
 
+@pool.task("name", lock_key="user:{user_id}")  # Sequential per user
+async def locked(agent_id: UUID, context: MyContext) -> None: ...
+
 pool.run()       # Blocking - runs workers
 pool.start()     # Non-blocking - starts workers in background
 pool.shutdown()  # Graceful shutdown
@@ -694,6 +714,9 @@ AGENTEXEC_TABLE_PREFIX=agentexec_
 
 # Results
 AGENTEXEC_RESULT_TTL=3600
+
+# Task locking
+AGENTEXEC_LOCK_TTL=1800
 
 # State backend
 AGENTEXEC_STATE_BACKEND=agentexec.state.redis_backend

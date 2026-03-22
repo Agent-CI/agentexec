@@ -13,7 +13,7 @@ from sqlalchemy import Engine, create_engine
 from agentexec import state
 from agentexec.config import CONF
 from agentexec.core.db import remove_global_session, set_global_session
-from agentexec.core.queue import dequeue
+from agentexec.core.queue import dequeue, requeue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec.worker.event import StateEvent
 from agentexec.worker.logging import (
@@ -95,9 +95,25 @@ class Worker:
             # No sleep needed - dequeue() uses brpop which blocks waiting for tasks
             while not await self._context.shutdown_event.is_set():
                 if (task := await self._dequeue_task()) is not None:
-                    self._logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                    await task.execute()
-                    self._logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
+                    lock_key = task.get_lock_key()
+
+                    if lock_key is not None:
+                        acquired = await state.acquire_lock(lock_key, str(task.agent_id))
+                        if not acquired:
+                            self._logger.debug(
+                                f"Worker {self._worker_id} lock held for {task.task_name} "
+                                f"(lock_key={lock_key}), requeuing"
+                            )
+                            requeue(task, queue_name=self._context.queue_name)
+                            continue
+
+                    try:
+                        self._logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
+                        await task.execute()
+                        self._logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
+                    finally:
+                        if lock_key is not None:
+                            await state.release_lock(lock_key)
         except Exception as e:
             self._logger.exception(f"Worker {self._worker_id} error: {e}")
             # Continue processing other tasks
@@ -182,7 +198,12 @@ class Pool:
         self._processes = []
         self._log_handler = None
 
-    def task(self, name: str) -> Callable[[TaskHandler], TaskHandler]:
+    def task(
+        self,
+        name: str,
+        *,
+        lock_key: str | None = None,
+    ) -> Callable[[TaskHandler], TaskHandler]:
         """Decorator to register a task handler with this pool.
 
         Creates a TaskDefinition that captures the handler and its context class
@@ -190,6 +211,9 @@ class Pool:
 
         Args:
             name: Task name used when enqueueing and for worker routing.
+            lock_key: Optional string template for distributed locking. Evaluated
+                against context fields (e.g., "user:{user_id}"). When set, only
+                one task with the same evaluated lock key can run at a time.
 
         Returns:
             Decorator function that returns the handler.
@@ -198,10 +222,14 @@ class Pool:
             @pool.task("research_company")
             async def research(agent_id: UUID, context: ResearchContext) -> ResearchResult:
                 ...
+
+            @pool.task("associate_observation", lock_key="user:{user_id}")
+            async def associate(agent_id: UUID, context: ObservationContext):
+                ...
         """
 
         def decorator(func: TaskHandler) -> TaskHandler:
-            self.add_task(name, func)
+            self.add_task(name, func, lock_key=lock_key)
             return func
 
         return decorator
@@ -213,6 +241,7 @@ class Pool:
         *,
         context_type: type[BaseModel] | None = None,
         result_type: type[BaseModel] | None = None,
+        lock_key: str | None = None,
     ) -> None:
         """Register a task handler with this pool.
 
@@ -223,12 +252,16 @@ class Pool:
             func: Task handler function (sync or async).
             context_type: Optional explicit context type (inferred from annotations if not provided).
             result_type: Optional explicit result type (inferred from annotations if not provided).
+            lock_key: Optional string template for distributed locking. Evaluated
+                against context fields (e.g., "user:{user_id}"). When set, only
+                one task with the same evaluated lock key can run at a time.
 
         Raises:
             ValueError: If a task with the same name is already registered.
 
         Example:
             pool.add_task("research_company", research_handler)
+            pool.add_task("associate_observation", handler, lock_key="user:{user_id}")
         """
         if name in self._context.tasks:
             raise ValueError(f"Task '{name}' is already registered in this pool")
@@ -238,6 +271,7 @@ class Pool:
             handler=func,
             context_type=context_type,
             result_type=result_type,
+            lock_key=lock_key,
         )
         self._context.tasks[name] = definition
 

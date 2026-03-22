@@ -72,6 +72,8 @@ class TaskDefinition:
     context_type: type[BaseModel]
     # Optional: only set if handler returns a BaseModel subclass
     result_type: type[BaseModel] | None
+    # Optional: string template evaluated against context for distributed locking
+    lock_key: str | None
 
     def __init__(
         self,
@@ -80,12 +82,18 @@ class TaskDefinition:
         *,
         context_type: type[BaseModel] | None = None,
         result_type: type[BaseModel] | None = None,
+        lock_key: str | None = None,
     ) -> None:
         """Initialize task definition.
 
         Args:
             name: Task type name
             handler: Handler function (sync or async)
+            context_type: Optional explicit context type (inferred from annotations if not provided).
+            result_type: Optional explicit result type (inferred from annotations if not provided).
+            lock_key: Optional string template for distributed locking. Evaluated against
+                context fields (e.g., "user:{user_id}"). When set, only one task with
+                the same evaluated lock key can run at a time.
 
         Raises:
             TypeError: If handler doesn't have a typed 'context' parameter with BaseModel subclass
@@ -94,6 +102,7 @@ class TaskDefinition:
         self.handler = handler
         self.context_type = context_type or self._infer_context_type(handler)
         self.result_type = result_type or self._infer_result_type(handler)
+        self.lock_key = lock_key
 
     async def __call__(self, agent_id: UUID, context: BaseModel) -> TaskResult:
         """Delegate calls to the handler function."""
@@ -258,6 +267,24 @@ class Task(BaseModel):
             context=context,
             agent_id=agent_id,
         )
+
+    def get_lock_key(self) -> str | None:
+        """Evaluate the lock key template against the task context.
+
+        Returns:
+            Evaluated lock key string, or None if no lock_key is configured.
+
+        Raises:
+            RuntimeError: If task has not been bound to a definition.
+            KeyError: If the template references a field not present in the context.
+        """
+        if self._definition is None:
+            raise RuntimeError("Task must be bound to a definition before getting lock key")
+
+        if self._definition.lock_key is None:
+            return None
+
+        return self._definition.lock_key.format(**self.context.model_dump())
 
     async def execute(self) -> TaskResult | None:
         """Execute the task using its bound definition's handler.

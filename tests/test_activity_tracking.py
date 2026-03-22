@@ -105,6 +105,7 @@ def test_update_activity(db_session: Session):
 
     # Verify the update
     activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert activity_record is not None
     assert len(activity_record.logs) == 2
     assert activity_record.logs[1].message == "Processing..."
     assert activity_record.logs[1].status == Status.RUNNING
@@ -128,6 +129,7 @@ def test_update_activity_with_custom_status(db_session: Session):
     )
 
     activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert activity_record is not None
     latest_log = activity_record.logs[-1]
     assert latest_log.status == Status.RUNNING
 
@@ -149,6 +151,7 @@ def test_complete_activity(db_session: Session):
     assert result is True
 
     activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert activity_record is not None
     latest_log = activity_record.logs[-1]
     assert latest_log.message == "Successfully completed"
     assert latest_log.status == Status.COMPLETE
@@ -171,6 +174,7 @@ def test_complete_activity_custom_percentage(db_session: Session):
     )
 
     activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert activity_record is not None
     latest_log = activity_record.logs[-1]
     assert latest_log.percentage == 95
 
@@ -192,6 +196,7 @@ def test_error_activity(db_session: Session):
     assert result is True
 
     activity_record = Activity.get_by_agent_id(db_session, agent_id)
+    assert activity_record is not None
     latest_log = activity_record.logs[-1]
     assert latest_log.message == "Task failed: connection timeout"
     assert latest_log.status == Status.ERROR
@@ -237,6 +242,9 @@ def test_cancel_pending_activities(db_session: Session):
     running_record = Activity.get_by_agent_id(db_session, running_id)
     complete_record = Activity.get_by_agent_id(db_session, complete_id)
 
+    assert queued_record is not None
+    assert running_record is not None
+    assert complete_record is not None
     assert queued_record.logs[-1].status == Status.CANCELED
     assert running_record.logs[-1].status == Status.CANCELED
     assert complete_record.logs[-1].status == Status.COMPLETE  # Not changed
@@ -415,6 +423,7 @@ def test_list_activities_with_metadata_filter(db_session: Session):
     assert result.total == 2
     assert len(result.items) == 2
     for item in result.items:
+        assert item.metadata is not None
         assert item.metadata["organization_id"] == "org-A"
 
     # Filter by org-B
@@ -423,6 +432,7 @@ def test_list_activities_with_metadata_filter(db_session: Session):
         metadata_filter={"organization_id": "org-B"},
     )
     assert result.total == 1
+    assert result.items[0].metadata is not None
     assert result.items[0].metadata["organization_id"] == "org-B"
 
     # Filter by non-existent org
@@ -557,6 +567,7 @@ def test_metadata_excluded_from_serialization(db_session: Session):
 
     # Detail view - metadata excluded from serialization
     detail = activity.detail(db_session, agent_id)
+    assert detail is not None
     detail_dict = detail.model_dump()
     assert "metadata" not in detail_dict
 

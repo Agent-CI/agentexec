@@ -250,6 +250,37 @@ class StateBackend(Protocol):
         """
         ...
 
+    # Lock operations
+    @staticmethod
+    async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
+        """Attempt to acquire a distributed lock.
+
+        Uses atomic set-if-not-exists with TTL. The TTL is a safety net
+        for process death — locks should always be explicitly released
+        via release_lock() on task completion or error.
+
+        Args:
+            key: Lock key
+            value: Lock value (typically agent_id for debugging)
+            ttl_seconds: Lock expiry in seconds (safety net for dead processes)
+
+        Returns:
+            True if lock was acquired, False if already held
+        """
+        ...
+
+    @staticmethod
+    async def release_lock(key: str) -> int:
+        """Release a distributed lock.
+
+        Args:
+            key: Lock key to release
+
+        Returns:
+            Number of keys deleted (0 or 1)
+        """
+        ...
+
     # Cleanup operations
     @staticmethod
     def clear_keys() -> int:

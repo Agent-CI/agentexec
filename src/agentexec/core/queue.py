@@ -80,6 +80,29 @@ async def enqueue(
     return task
 
 
+def requeue(
+    task: Task,
+    *,
+    queue_name: str | None = None,
+) -> int:
+    """Push a task back to the end of the queue.
+
+    Used when a task's lock cannot be acquired — the task is returned to the
+    queue so it can be retried after the lock is released.
+
+    Args:
+        task: Task to requeue.
+        queue_name: Queue name. Defaults to CONF.queue_name.
+
+    Returns:
+        Length of the queue after the push.
+    """
+    return state.backend.lpush(
+        queue_name or CONF.queue_name,
+        task.model_dump_json(),
+    )
+
+
 async def dequeue(
     *,
     queue_name: str | None = None,

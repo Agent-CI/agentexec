@@ -11,6 +11,7 @@ from agentexec.state.backend import StateBackend
 
 KEY_RESULT = (CONF.key_prefix, "result")
 KEY_EVENT = (CONF.key_prefix, "event")
+KEY_LOCK = (CONF.key_prefix, "lock")
 CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
 __all__ = [
@@ -27,6 +28,8 @@ __all__ = [
     "clear_event",
     "check_event",
     "acheck_event",
+    "acquire_lock",
+    "release_lock",
     "clear_keys",
 ]
 
@@ -215,6 +218,37 @@ def acheck_event(name: str, id: str) -> Coroutine[None, None, bool]:
         return await backend.aget(backend.format_key(*KEY_EVENT, name, id)) is not None
 
     return _check()
+
+
+async def acquire_lock(lock_key: str, agent_id: str) -> bool:
+    """Attempt to acquire a task lock.
+
+    Args:
+        lock_key: The evaluated lock key (e.g., "user:42")
+        agent_id: The agent_id holding the lock (for debugging)
+
+    Returns:
+        True if lock was acquired, False if already held
+    """
+    return await backend.acquire_lock(
+        backend.format_key(*KEY_LOCK, lock_key),
+        agent_id,
+        CONF.lock_ttl,
+    )
+
+
+async def release_lock(lock_key: str) -> int:
+    """Release a task lock.
+
+    Args:
+        lock_key: The evaluated lock key (e.g., "user:42")
+
+    Returns:
+        Number of keys deleted (0 or 1)
+    """
+    return await backend.release_lock(
+        backend.format_key(*KEY_LOCK, lock_key),
+    )
 
 
 def clear_keys() -> int:
