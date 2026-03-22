@@ -25,6 +25,7 @@ dependencies = [
     "pydantic-settings>=2.5.0",
     "sqlalchemy>=2.0.44",
     "openai-agents>=0.1.0",
+    "croniter>=6.0.0",
 ]
 
 

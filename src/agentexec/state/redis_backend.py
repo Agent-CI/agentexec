@@ -27,6 +27,9 @@ __all__ = [
     "publish",
     "subscribe",
     "close",
+    "zadd",
+    "zrangebyscore",
+    "zrem",
     "clear_keys",
 ]
 
@@ -408,6 +411,51 @@ async def subscribe(channel: str) -> AsyncGenerator[str, None]:
         await _pubsub.unsubscribe(channel)
         await _pubsub.close()
         _pubsub = None
+
+
+def zadd(key: str, mapping: dict[str, float]) -> int:
+    """Add members to a sorted set with scores.
+
+    Args:
+        key: Sorted set key
+        mapping: Dict of {member: score}
+
+    Returns:
+        Number of new members added
+    """
+    client = _get_sync_client()
+    return client.zadd(key, mapping)  # type: ignore[return-value]
+
+
+async def zrangebyscore(
+    key: str, min_score: float, max_score: float
+) -> list[bytes]:
+    """Get members with scores between min and max.
+
+    Args:
+        key: Sorted set key
+        min_score: Minimum score (inclusive)
+        max_score: Maximum score (inclusive)
+
+    Returns:
+        List of members as bytes
+    """
+    client = _get_async_client()
+    return await client.zrangebyscore(key, min_score, max_score)  # type: ignore[return-value]
+
+
+def zrem(key: str, *members: str) -> int:
+    """Remove members from a sorted set.
+
+    Args:
+        key: Sorted set key
+        *members: Members to remove
+
+    Returns:
+        Number of members removed
+    """
+    client = _get_sync_client()
+    return client.zrem(key, *members)  # type: ignore[return-value]
 
 
 def clear_keys() -> int:
