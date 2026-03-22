@@ -1,5 +1,37 @@
 # Changelog
 
+## v0.1.6
+
+### New Features
+
+**Task-level distributed locking**
+- New `lock_key` parameter on `@pool.task()` and `pool.add_task()` for sequential execution of tasks sharing state
+- String template evaluated against context fields (e.g., `lock_key="user:{user_id}"`)
+- Workers acquire a Redis lock before execution; tasks requeue automatically on contention
+- Lock released in `finally` block on completion or error
+- Configurable TTL via `AGENTEXEC_LOCK_TTL` (default 1800s) as safety net for worker process death
+- Note: strict FIFO ordering is not guaranteed between tasks sharing the same lock key
+
+**Activity metadata for multi-tenancy**
+- Attach arbitrary metadata when creating activities (e.g., `metadata={"organization_id": "org-123"}`)
+- Filter activities by metadata in `activity.list()` and `activity.detail()`
+- Metadata accessible as attribute for programmatic use but excluded from API serialization by default to prevent accidental tenant info leakage
+
+### Improvements
+
+**Redis cleanup on shutdown**
+- `state.clear_keys()` removes all agentexec-prefixed keys and the task queue on shutdown
+- Prevents stale tasks from being picked up on restart
+
+**State backend lock primitives**
+- Added `acquire_lock()` and `release_lock()` to `StateBackend` protocol
+- Redis implementation uses atomic `SET NX EX` / `DELETE`
+
+### Testing
+
+- Added `test_task_locking.py` with 16 tests covering lock acquisition, release, requeue, and template evaluation
+- Fixed `ty` type checker errors in `test_activity_tracking.py` (added narrowing guards for `Activity | None`)
+
 ## v0.1.5
 
 ### New Features
