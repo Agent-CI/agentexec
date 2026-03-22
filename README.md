@@ -206,6 +206,8 @@ The `lock_key` is a string template evaluated against the task context fields. W
 
 The lock TTL (`AGENTEXEC_LOCK_TTL`, default 1800s) is a safety net for worker process death — locks are always explicitly released on task completion or error. Set this higher than your longest expected task duration.
 
+**Note:** When a task is requeued due to a held lock, it goes to the back of the queue. This means strict FIFO ordering is not guaranteed between tasks sharing the same lock key — if tasks T2 and T3 are both waiting on T1's lock, either could run next after T1 completes.
+
 ### Priority Queue
 
 Control task execution order:
