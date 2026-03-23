@@ -208,6 +208,31 @@ The lock TTL (`AGENTEXEC_LOCK_TTL`, default 1800s) is a safety net for worker pr
 
 **Note:** When a task is requeued due to a held lock, it goes to the back of the queue. This means strict FIFO ordering is not guaranteed between tasks sharing the same lock key — if tasks T2 and T3 are both waiting on T1's lock, either could run next after T1 completes.
 
+### Scheduled Tasks
+
+Run tasks on a recurring interval using cron expressions:
+
+```python
+# Decorator — registers the task and schedules it in one step
+@pool.schedule("refresh_cache", "*/5 * * * *")
+async def refresh(agent_id: UUID, context: RefreshContext):
+    ...
+
+# With context and repeat limit
+@pool.schedule("sync_users", "0 * * * *", context=SyncContext(full=True), repeat=3)
+async def sync(agent_id: UUID, context: SyncContext):
+    ...
+```
+
+For tasks registered separately, use `pool.add_schedule()`:
+
+```python
+pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
+pool.add_schedule("refresh_cache", "0 * * * *", RefreshContext(scope="users"), repeat=3)
+```
+
+The scheduler runs automatically inside `pool.run()`. Cron expressions are evaluated in the configured timezone (`AGENTEXEC_SCHEDULER_TIMEZONE`, default UTC) so schedules read naturally regardless of server timezone. Next-run times are computed from the intended anchor time, not wall clock, to prevent cumulative drift.
+
 ### Priority Queue
 
 Control task execution order:
@@ -617,7 +642,12 @@ async def handler(agent_id: UUID, context: MyContext) -> None: ...
 @pool.task("name", lock_key="user:{user_id}")  # Sequential per user
 async def locked(agent_id: UUID, context: MyContext) -> None: ...
 
-pool.run()       # Blocking - runs workers
+@pool.schedule("name", "*/5 * * * *")  # Register + schedule in one step
+async def scheduled(agent_id: UUID, context: MyContext) -> None: ...
+
+pool.add_schedule("name", "0 * * * *", MyContext(), repeat=3)  # Schedule separately
+
+pool.run()       # Blocking - runs workers + scheduler
 pool.start()     # Non-blocking - starts workers in background
 pool.shutdown()  # Graceful shutdown
 ```
@@ -719,6 +749,9 @@ AGENTEXEC_RESULT_TTL=3600
 
 # Task locking
 AGENTEXEC_LOCK_TTL=1800
+
+# Scheduling
+AGENTEXEC_SCHEDULER_TIMEZONE=UTC
 
 # State backend
 AGENTEXEC_STATE_BACKEND=agentexec.state.redis_backend
