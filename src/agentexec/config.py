@@ -1,30 +1,7 @@
-import os
-import pathlib
 from zoneinfo import ZoneInfo
 
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-
-
-def _detect_local_timezone() -> str:
-    """Detect the server's IANA timezone (e.g. 'America/New_York').
-
-    Checks TZ env var, /etc/timezone, and /etc/localtime symlink.
-    Falls back to 'UTC' if detection fails.
-    """
-    tz = os.environ.get("TZ")
-    if tz:
-        return tz
-    try:
-        return pathlib.Path("/etc/timezone").read_text().strip()
-    except (FileNotFoundError, PermissionError):
-        pass
-    try:
-        link = os.readlink("/etc/localtime")
-        return link.split("zoneinfo/")[-1]
-    except (OSError, ValueError):
-        pass
-    return "UTC"
 
 
 class Config(BaseSettings):
@@ -112,10 +89,10 @@ class Config(BaseSettings):
     )
 
     scheduler_timezone: str = Field(
-        default_factory=_detect_local_timezone,
+        default="UTC",
         description=(
             "IANA timezone for cron schedule evaluation (e.g. 'America/New_York', 'UTC'). "
-            "Defaults to the server's local timezone."
+            "Set this so cron expressions read naturally in your local time."
         ),
         validation_alias="AGENTEXEC_SCHEDULER_TIMEZONE",
     )

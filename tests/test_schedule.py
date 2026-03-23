@@ -346,11 +346,11 @@ class TestTick:
 
 
 class TestTimezone:
-    def test_default_timezone_is_server_local(self):
-        """Default should be the server's local timezone, not hardcoded UTC."""
-        from agentexec.config import CONF, _detect_local_timezone
+    def test_default_timezone_is_utc(self):
+        """Default should be UTC."""
+        from agentexec.config import CONF
 
-        assert CONF.scheduler_timezone == _detect_local_timezone()
+        assert CONF.scheduler_timezone == "UTC"
 
     def test_scheduler_tz_returns_zoneinfo(self):
         from agentexec.config import CONF
