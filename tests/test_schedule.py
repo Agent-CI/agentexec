@@ -2,7 +2,9 @@
 
 import time
 import uuid
+from datetime import datetime
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
 import pytest
 from fakeredis import aioredis as fake_aioredis
@@ -336,3 +338,47 @@ class TestTick:
         st = ScheduledTask.model_validate_json(data)
         assert st.context["scope"] == "users"
         assert st.context["ttl"] == 999
+
+
+# ---------------------------------------------------------------------------
+# Timezone configuration
+# ---------------------------------------------------------------------------
+
+
+class TestTimezone:
+    def test_default_timezone_is_server_local(self):
+        """Default should be the server's local timezone, not hardcoded UTC."""
+        from agentexec.config import CONF, _detect_local_timezone
+
+        assert CONF.scheduler_timezone == _detect_local_timezone()
+
+    def test_scheduler_tz_returns_zoneinfo(self):
+        from agentexec.config import CONF
+
+        tz = CONF.scheduler_tz
+        assert isinstance(tz, ZoneInfo)
+
+    def test_cron_respects_configured_timezone(self, monkeypatch):
+        """Cron evaluation should use the configured timezone."""
+        from agentexec.config import CONF
+
+        monkeypatch.setattr(CONF, "scheduler_timezone", "America/New_York")
+
+        s = Schedule(cron="0 9 * * *")  # 9 AM
+        # Use a known timestamp: 2024-01-15 14:00:00 UTC = 9:00 AM ET
+        anchor = datetime(2024, 1, 15, 9, 0, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
+        nxt = s.next_after(anchor)
+
+        # Next 9 AM ET should be ~24h later
+        next_dt = datetime.fromtimestamp(nxt, tz=ZoneInfo("America/New_York"))
+        assert next_dt.hour == 9
+        assert next_dt.day == 16
+
+    def test_timezone_env_override(self, monkeypatch):
+        """AGENTEXEC_SCHEDULER_TIMEZONE env var should override default."""
+        monkeypatch.setenv("AGENTEXEC_SCHEDULER_TIMEZONE", "Asia/Tokyo")
+        from agentexec.config import Config
+
+        conf = Config()
+        assert conf.scheduler_timezone == "Asia/Tokyo"
+        assert conf.scheduler_tz == ZoneInfo("Asia/Tokyo")

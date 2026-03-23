@@ -37,7 +37,7 @@ from __future__ import annotations
 
 import asyncio
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
@@ -85,7 +85,7 @@ class Schedule(BaseModel):
         Returns:
             Unix timestamp of the next scheduled run.
         """
-        dt = datetime.fromtimestamp(anchor, tz=timezone.utc)
+        dt = datetime.fromtimestamp(anchor, tz=CONF.scheduler_tz)
         return float(croniter(self.cron, dt).get_next(float))
 
 
@@ -171,7 +171,7 @@ def register(
 
     logger.info(
         f"Scheduled {task_name} as {st.schedule_id}, "
-        f"next_run={datetime.fromtimestamp(next_run, tz=timezone.utc).isoformat()}"
+        f"next_run={datetime.fromtimestamp(next_run, tz=CONF.scheduler_tz).isoformat()}"
     )
 
     return st.schedule_id
@@ -249,7 +249,7 @@ async def tick() -> int:
 
             logger.debug(
                 f"Rescheduled {schedule_id}, next_run="
-                f"{datetime.fromtimestamp(next_run, tz=timezone.utc).isoformat()}, "
+                f"{datetime.fromtimestamp(next_run, tz=CONF.scheduler_tz).isoformat()}, "
                 f"repeat={new_repeat}"
             )
 
