@@ -4,7 +4,7 @@ import asyncio
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from agentexec.config import CONF
 from agentexec.core.db import remove_global_session, set_global_session
 from agentexec.core.queue import dequeue, requeue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
+from agentexec.schedule import Schedule, register as schedule_register, run_loop as scheduler_run_loop
 from agentexec.worker.event import StateEvent
 from agentexec.worker.logging import (
     DEFAULT_FORMAT,
@@ -275,6 +276,64 @@ class Pool:
         )
         self._context.tasks[name] = definition
 
+    def schedule(
+        self,
+        task_name: str,
+        context: BaseModel,
+        schedule: Schedule,
+        *,
+        metadata: dict[str, Any] | None = None,
+    ) -> str:
+        """Schedule a registered task to run on a cron interval.
+
+        The task must already be registered via ``@pool.task()`` or
+        ``pool.add_task()``.  The scheduler loop runs automatically
+        inside ``pool.run()`` — no extra setup needed.
+
+        Args:
+            task_name: Name of a registered task.
+            context: Pydantic context payload passed to the handler each time.
+            schedule: ``Schedule`` with cron expression and repeat budget.
+            metadata: Optional metadata dict (e.g. for multi-tenancy).
+
+        Returns:
+            The ``schedule_id`` for this scheduled entry.
+
+        Raises:
+            ValueError: If the task name is not registered with this pool.
+
+        Example:
+            @pool.task("refresh_cache")
+            async def refresh(agent_id: UUID, context: RefreshContext):
+                ...
+
+            # Every 5 minutes, forever
+            pool.schedule(
+                "refresh_cache",
+                RefreshContext(scope="all"),
+                Schedule(cron="*/5 * * * *"),
+            )
+
+            # 3 more times then stop
+            pool.schedule(
+                "refresh_cache",
+                RefreshContext(scope="users"),
+                Schedule(cron="0 * * * *", repeat=3),
+            )
+        """
+        if task_name not in self._context.tasks:
+            raise ValueError(
+                f"Task '{task_name}' is not registered. "
+                f"Use @pool.task() or pool.add_task() first."
+            )
+
+        return schedule_register(
+            task_name=task_name,
+            context=context,
+            schedule=schedule,
+            metadata=metadata,
+        )
+
     def start(self) -> None:
         """Start worker processes (non-blocking).
 
@@ -301,16 +360,25 @@ class Pool:
 
         Spawns worker processes and runs an async event loop in the main
         process that collects logs from workers via Redis pubsub.
+        The scheduler loop also runs automatically alongside the workers,
+        polling for due scheduled tasks and enqueuing them.
+
         Blocks until all workers exit or KeyboardInterrupt, then shuts
         down gracefully.
         """
 
         async def _loop() -> None:
+            scheduler_task = asyncio.create_task(scheduler_run_loop())
             try:
                 await self._collect_logs()
             except asyncio.CancelledError:
                 pass
             finally:
+                scheduler_task.cancel()
+                try:
+                    await scheduler_task
+                except asyncio.CancelledError:
+                    pass
                 self.shutdown()
                 await state.backend.close()
 

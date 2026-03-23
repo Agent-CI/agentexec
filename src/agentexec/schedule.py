@@ -1,7 +1,8 @@
 """Scheduled task support for agentexec.
 
-Uses Redis sorted sets to track when tasks are due. A scheduler loop
-polls for due tasks, enqueues them into the normal task queue, and
+Uses Redis sorted sets to track when tasks are due. The scheduler loop
+runs automatically inside ``Pool.run()`` — no extra configuration needed.
+It polls for due tasks, enqueues them into the normal task queue, and
 reschedules repeating tasks based on their cron expression.
 
 Clock-drift resilience: the next run time is always computed from the
@@ -12,30 +13,29 @@ occurrence is still computed relative to 12:00.
 
 Example:
     import agentexec as ax
-    from agentexec.schedule import Schedule, add, remove, tick, run_scheduler
+    from agentexec.schedule import Schedule
 
-    # Register a task that runs every 5 minutes, forever
-    schedule_id = add(
-        task_name="refresh_cache",
-        context=RefreshContext(scope="all"),
-        schedule=Schedule(cron="*/5 * * * *"),
-    )
+    pool = ax.Pool(database_url="sqlite:///tasks.db")
 
-    # Or a one-shot task 30 minutes from now
-    add(
-        task_name="send_reminder",
-        context=ReminderContext(user_id=42),
-        schedule=Schedule(cron="*/30 * * * *", repeat=0),
-    )
+    class RefreshContext(BaseModel):
+        scope: str
 
-    # Run the scheduler loop (blocking)
-    await run_scheduler()
+    @pool.task("refresh_cache")
+    async def refresh(agent_id: UUID, context: RefreshContext):
+        ...
+
+    # Run every 5 minutes, forever
+    pool.schedule("refresh_cache", RefreshContext(scope="all"), Schedule(cron="*/5 * * * *"))
+
+    # Run 3 more times then stop
+    pool.schedule("refresh_cache", RefreshContext(scope="users"), Schedule(cron="0 * * * *", repeat=3))
+
+    pool.run()  # scheduler loop runs automatically alongside workers
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import time
 from datetime import datetime, timezone
 from typing import Any
@@ -95,8 +95,7 @@ class ScheduledTask(BaseModel):
     The ``schedule_id`` is the stable identity of this recurring job.
     Each time it fires, a fresh ``Task`` (with its own ``agent_id``) is
     enqueued for the worker pool.  The scheduled task itself stays in
-    Redis until its repeat budget is exhausted or it is explicitly
-    removed.
+    Redis until its repeat budget is exhausted.
     """
 
     schedule_id: str = Field(default_factory=lambda: str(uuid4()))
@@ -109,7 +108,7 @@ class ScheduledTask(BaseModel):
 
 
 # ---------------------------------------------------------------------------
-# Public helpers
+# Redis key helpers
 # ---------------------------------------------------------------------------
 
 
@@ -123,14 +122,19 @@ def _queue_key() -> str:
     return state.backend.format_key(*state.KEY_SCHEDULE_QUEUE)
 
 
-def add(
+# ---------------------------------------------------------------------------
+# Registration (called by Pool.schedule)
+# ---------------------------------------------------------------------------
+
+
+def register(
     task_name: str,
     context: BaseModel,
     schedule: Schedule,
     *,
     metadata: dict[str, Any] | None = None,
 ) -> str:
-    """Register a new scheduled task.
+    """Register a new scheduled task in Redis.
 
     The task will first fire at the next cron occurrence from *now*.
 
@@ -142,7 +146,7 @@ def add(
         metadata: Optional metadata dict (e.g. for multi-tenancy).
 
     Returns:
-        The ``schedule_id`` that can be used to ``remove()`` the schedule.
+        The ``schedule_id`` for this scheduled task.
     """
     now = time.time()
     next_run = schedule.next_after(now)
@@ -171,35 +175,6 @@ def add(
     )
 
     return st.schedule_id
-
-
-def remove(schedule_id: str) -> bool:
-    """Remove a scheduled task.
-
-    Args:
-        schedule_id: The ID returned by ``add()``.
-
-    Returns:
-        ``True`` if the schedule existed and was removed.
-    """
-    removed = state.backend.zrem(_queue_key(), schedule_id)
-    state.backend.delete(_schedule_key(schedule_id))
-    return removed > 0
-
-
-def get(schedule_id: str) -> ScheduledTask | None:
-    """Retrieve a scheduled task by ID.
-
-    Args:
-        schedule_id: The ID returned by ``add()``.
-
-    Returns:
-        The ``ScheduledTask`` or ``None`` if not found.
-    """
-    data = state.backend.get(_schedule_key(schedule_id))
-    if data is None:
-        return None
-    return ScheduledTask.model_validate_json(data)
 
 
 # ---------------------------------------------------------------------------
@@ -281,13 +256,12 @@ async def tick() -> int:
     return enqueued
 
 
-async def run_scheduler() -> None:
+async def run_loop() -> None:
     """Run the scheduler loop indefinitely.
 
     Calls ``tick()`` at the configured poll interval
-    (``CONF.scheduler_poll_interval``).  Designed to run as an
-    ``asyncio.create_task`` alongside the worker pool, or as a
-    standalone process.
+    (``CONF.scheduler_poll_interval``).  Called automatically by
+    ``Pool.run()`` — you don't need to call this directly.
 
     Exits cleanly on ``asyncio.CancelledError``.
     """
