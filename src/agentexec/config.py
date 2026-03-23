@@ -96,15 +96,6 @@ class Config(BaseSettings):
         ),
         validation_alias="AGENTEXEC_SCHEDULER_TIMEZONE",
     )
-    scheduler_poll_interval: float = Field(
-        default=1.0,
-        description=(
-            "How often (in seconds) the scheduler checks for due tasks. "
-            "Lower values mean less latency but more Redis traffic."
-        ),
-        validation_alias="AGENTEXEC_SCHEDULER_POLL_INTERVAL",
-    )
-
     lock_ttl: int = Field(
         default=1800,
         description=(

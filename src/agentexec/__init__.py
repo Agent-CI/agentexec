@@ -31,7 +31,6 @@ from agentexec.core.queue import Priority, enqueue
 from agentexec.core.results import gather, get_result
 from agentexec.core.task import Task
 from agentexec import activity
-from agentexec.schedule import Schedule
 from agentexec.worker import Pool
 from agentexec.pipeline import Pipeline
 from agentexec.runners import BaseAgentRunner
@@ -47,7 +46,6 @@ __all__ = [
     "Base",
     "BaseAgentRunner",
     "Pipeline",
-    "Schedule",
     "Tracker",
     "Pool",
     "Task",

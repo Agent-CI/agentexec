@@ -11,9 +11,9 @@ from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
 
 import agentexec as ax
+from agentexec import state
 from agentexec.schedule import (
     REPEAT_FOREVER,
-    Schedule,
     ScheduledTask,
     tick,
     _queue_key,
@@ -70,52 +70,71 @@ def pool():
 
 
 # ---------------------------------------------------------------------------
-# Schedule model
-# ---------------------------------------------------------------------------
-
-
-class TestScheduleModel:
-    def test_default_repeat_is_forever(self):
-        s = Schedule(cron="*/5 * * * *")
-        assert s.repeat == REPEAT_FOREVER
-        assert s.repeat == -1
-
-    def test_next_after_returns_future_timestamp(self):
-        s = Schedule(cron="*/5 * * * *")
-        now = time.time()
-        nxt = s.next_after(now)
-        assert nxt > now
-
-    def test_next_after_respects_anchor(self):
-        """Two calls with different anchors produce different results."""
-        s = Schedule(cron="0 * * * *")  # top of every hour
-        anchor_a = 1_700_000_000.0
-        anchor_b = anchor_a + 3600
-
-        next_a = s.next_after(anchor_a)
-        next_b = s.next_after(anchor_b)
-
-        assert next_b > next_a
-        assert next_b - next_a == pytest.approx(3600, abs=1)
-
-    def test_cron_every_minute(self):
-        s = Schedule(cron="* * * * *")
-        now = time.time()
-        nxt = s.next_after(now)
-        assert 0 < nxt - now <= 60
-
-
-# ---------------------------------------------------------------------------
 # ScheduledTask model
 # ---------------------------------------------------------------------------
 
 
 class TestScheduledTaskModel:
+    def test_default_repeat_is_forever(self):
+        ctx = RefreshContext(scope="test")
+        st = ScheduledTask(
+            task_name="test",
+            context=state.backend.serialize(ctx),
+            cron="*/5 * * * *",
+
+        )
+        assert st.repeat == REPEAT_FOREVER
+        assert st.repeat == -1
+
+    def test_next_run_returns_future_timestamp(self):
+        ctx = RefreshContext(scope="test")
+        st = ScheduledTask(
+            task_name="test",
+            context=state.backend.serialize(ctx),
+            cron="*/5 * * * *",
+
+        )
+        now = time.time()
+        nxt = st._next_after(now)
+        assert nxt > now
+
+    def test_next_run_respects_anchor(self):
+        """Two calls with different anchors produce different results."""
+        ctx = RefreshContext(scope="test")
+        st = ScheduledTask(
+            task_name="test",
+            context=state.backend.serialize(ctx),
+            cron="0 * * * *",  # top of every hour
+
+        )
+        anchor_a = 1_700_000_000.0
+        anchor_b = anchor_a + 3600
+
+        next_a = st._next_after(anchor_a)
+        next_b = st._next_after(anchor_b)
+
+        assert next_b > next_a
+        assert next_b - next_a == pytest.approx(3600, abs=1)
+
+    def test_cron_every_minute(self):
+        ctx = RefreshContext(scope="test")
+        st = ScheduledTask(
+            task_name="test",
+            context=state.backend.serialize(ctx),
+            cron="* * * * *",
+
+        )
+        now = time.time()
+        nxt = st._next_after(now)
+        assert 0 < nxt - now <= 60
+
     def test_roundtrip_serialization(self):
+        ctx = RefreshContext(scope="all", ttl=300)
         st = ScheduledTask(
             task_name="refresh",
-            context={"scope": "all", "ttl": 300},
-            schedule=Schedule(cron="*/10 * * * *", repeat=5),
+            context=state.backend.serialize(ctx),
+            cron="*/10 * * * *",
+            repeat=5,
             next_run=time.time() + 600,
         )
 
@@ -124,99 +143,153 @@ class TestScheduledTaskModel:
 
         assert restored.schedule_id == st.schedule_id
         assert restored.task_name == "refresh"
-        assert restored.context == {"scope": "all", "ttl": 300}
-        assert restored.schedule.cron == "*/10 * * * *"
-        assert restored.schedule.repeat == 5
+        restored_ctx = state.backend.deserialize(restored.context)
+        assert isinstance(restored_ctx, RefreshContext)
+        assert restored_ctx.scope == "all"
+        assert restored_ctx.ttl == 300
+        assert restored.cron == "*/10 * * * *"
+        assert restored.repeat == 5
 
     def test_auto_generated_fields(self):
+        ctx = RefreshContext(scope="test")
         st = ScheduledTask(
             task_name="test",
-            context={},
-            schedule=Schedule(cron="* * * * *"),
-            next_run=0,
+            context=state.backend.serialize(ctx),
+            cron="* * * * *",
+
         )
         assert st.schedule_id
         assert st.created_at > 0
 
 
 # ---------------------------------------------------------------------------
-# pool.schedule()
+# pool.add_schedule()
 # ---------------------------------------------------------------------------
 
 
-class TestPoolSchedule:
-    def test_schedule_returns_schedule_id(self, fake_redis, pool):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *"),
-        )
-        assert isinstance(sid, str)
-        assert len(sid) > 0
-
+class TestPoolAddSchedule:
     def test_schedule_stores_in_redis(self, fake_redis, pool):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *"),
-        )
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
 
+        sid = _get_schedule_id(fake_redis)
         data = fake_redis.get(_schedule_key(sid))
         assert data is not None
 
         st = ScheduledTask.model_validate_json(data)
         assert st.task_name == "refresh_cache"
-        assert st.context["scope"] == "all"
+        ctx = state.backend.deserialize(st.context)
+        assert isinstance(ctx, RefreshContext)
+        assert ctx.scope == "all"
 
     def test_schedule_indexes_in_sorted_set(self, fake_redis, pool):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *"),
-        )
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
 
         members = fake_redis.zrange(_queue_key(), 0, -1, withscores=True)
         assert len(members) == 1
-        assert members[0][0].decode() == sid
 
     def test_schedule_rejects_unregistered_task(self, fake_redis, pool):
         with pytest.raises(ValueError, match="not registered"):
-            pool.schedule(
-                "nonexistent_task",
-                RefreshContext(scope="all"),
-                Schedule(cron="*/5 * * * *"),
-            )
+            pool.add_schedule("nonexistent_task", "*/5 * * * *", RefreshContext(scope="all"))
 
     def test_schedule_with_metadata(self, fake_redis, pool):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *"),
+        pool.add_schedule(
+            "refresh_cache", "*/5 * * * *", RefreshContext(scope="all"),
             metadata={"org_id": "org-123"},
         )
+        sid = _get_schedule_id(fake_redis)
         data = fake_redis.get(_schedule_key(sid))
         st = ScheduledTask.model_validate_json(data)
         assert st.metadata == {"org_id": "org-123"}
 
     def test_schedule_with_repeat(self, fake_redis, pool):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *", repeat=3),
+        pool.add_schedule(
+            "refresh_cache", "*/5 * * * *", RefreshContext(scope="all"), repeat=3,
         )
+        sid = _get_schedule_id(fake_redis)
         data = fake_redis.get(_schedule_key(sid))
         st = ScheduledTask.model_validate_json(data)
-        assert st.schedule.repeat == 3
+        assert st.repeat == 3
 
-    def test_schedule_available_via_ax(self):
-        """Schedule class should be importable from the top-level package."""
-        assert hasattr(ax, "Schedule")
-        assert ax.Schedule is Schedule
+
+# ---------------------------------------------------------------------------
+# @pool.schedule() decorator
+# ---------------------------------------------------------------------------
+
+
+class TestPoolScheduleDecorator:
+    def test_decorator_registers_task_and_schedule(self, fake_redis):
+        """@pool.schedule registers the task and schedules it."""
+        p = ax.Pool(database_url="sqlite:///")
+
+        @p.schedule("refresh_cache", "*/5 * * * *", context=RefreshContext(scope="all"))
+        async def refresh(agent_id: uuid.UUID, context: RefreshContext):
+            pass
+
+        # Task is registered
+        assert "refresh_cache" in p._context.tasks
+
+        # Schedule is in Redis
+        members = fake_redis.zrange(_queue_key(), 0, -1)
+        assert len(members) == 1
+
+    def test_decorator_without_context(self, fake_redis):
+        """@pool.schedule works without explicit context (defaults to empty BaseModel)."""
+        p = ax.Pool(database_url="sqlite:///")
+
+        @p.schedule("simple_task", "0 * * * *")
+        async def simple(agent_id: uuid.UUID, context: BaseModel):
+            pass
+
+        assert "simple_task" in p._context.tasks
+        members = fake_redis.zrange(_queue_key(), 0, -1)
+        assert len(members) == 1
+
+    def test_decorator_with_repeat(self, fake_redis):
+        """@pool.schedule passes repeat through."""
+        p = ax.Pool(database_url="sqlite:///")
+
+        @p.schedule("limited_task", "*/10 * * * *", context=RefreshContext(scope="all"), repeat=5)
+        async def limited(agent_id: uuid.UUID, context: RefreshContext):
+            pass
+
+        members = fake_redis.zrange(_queue_key(), 0, -1)
+        sid = members[0].decode()
+        data = fake_redis.get(_schedule_key(sid))
+        st = ScheduledTask.model_validate_json(data)
+        assert st.repeat == 5
+
+    def test_decorator_with_lock_key(self, fake_redis):
+        """@pool.schedule passes lock_key to the task registration."""
+        p = ax.Pool(database_url="sqlite:///")
+
+        @p.schedule("locked_task", "*/5 * * * *", lock_key="user:{user_id}")
+        async def locked(agent_id: uuid.UUID, context: RefreshContext):
+            pass
+
+        defn = p._context.tasks["locked_task"]
+        assert defn.lock_key == "user:{user_id}"
+
+    def test_decorator_returns_handler(self, fake_redis):
+        """@pool.schedule returns the original handler function."""
+        p = ax.Pool(database_url="sqlite:///")
+
+        @p.schedule("my_task", "*/5 * * * *")
+        async def my_handler(agent_id: uuid.UUID, context: BaseModel):
+            pass
+
+        assert callable(my_handler)
+        assert my_handler.__name__ == "my_handler"
 
 
 # ---------------------------------------------------------------------------
 # tick — the scheduler heartbeat
 # ---------------------------------------------------------------------------
+
+
+def _get_schedule_id(fake_redis, index=0):
+    """Get the schedule_id from the sorted set at the given index."""
+    members = fake_redis.zrange(_queue_key(), 0, -1)
+    return members[index].decode()
 
 
 def _force_due(fake_redis, sid):
@@ -231,32 +304,24 @@ def _force_due(fake_redis, sid):
 
 class TestTick:
     async def test_tick_enqueues_due_task(self, fake_redis, pool, mock_activity_create):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *"),
-        )
-        _force_due(fake_redis, sid)
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
+        _force_due(fake_redis, _get_schedule_id(fake_redis))
 
-        count = await tick()
-        assert count == 1
+        await tick()
+
+        # Task was enqueued to the task queue
+        assert fake_redis.llen(ax.CONF.queue_name) == 1
 
     async def test_tick_skips_future_tasks(self, fake_redis, pool, mock_activity_create):
-        pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *"),
-        )
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
         # Default next_run is in the future
-        count = await tick()
-        assert count == 0
+        await tick()
+
+        assert fake_redis.llen(ax.CONF.queue_name) == 0
 
     async def test_tick_removes_one_shot_schedule(self, fake_redis, pool, mock_activity_create):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="* * * * *", repeat=0),
-        )
+        pool.add_schedule("refresh_cache", "* * * * *", RefreshContext(scope="all"), repeat=0)
+        sid = _get_schedule_id(fake_redis)
         _force_due(fake_redis, sid)
 
         await tick()
@@ -265,40 +330,31 @@ class TestTick:
         assert fake_redis.zcard(_queue_key()) == 0
 
     async def test_tick_decrements_repeat_count(self, fake_redis, pool, mock_activity_create):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *", repeat=3),
-        )
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"), repeat=3)
+        sid = _get_schedule_id(fake_redis)
         old_st = _force_due(fake_redis, sid)
 
         await tick()
 
         data = fake_redis.get(_schedule_key(sid))
         updated = ScheduledTask.model_validate_json(data)
-        assert updated.schedule.repeat == 2
+        assert updated.repeat == 2
         assert updated.next_run > old_st.next_run
 
     async def test_tick_infinite_repeat_stays_negative(self, fake_redis, pool, mock_activity_create):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *", repeat=-1),
-        )
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
+        sid = _get_schedule_id(fake_redis)
         _force_due(fake_redis, sid)
 
         await tick()
 
         data = fake_redis.get(_schedule_key(sid))
         updated = ScheduledTask.model_validate_json(data)
-        assert updated.schedule.repeat == -1
+        assert updated.repeat == -1
 
     async def test_tick_anchor_based_rescheduling(self, fake_redis, pool, mock_activity_create):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="all"),
-            Schedule(cron="*/5 * * * *"),
-        )
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
+        sid = _get_schedule_id(fake_redis)
         old_st = _force_due(fake_redis, sid)
 
         await tick()
@@ -308,36 +364,36 @@ class TestTick:
         # Next run computed from the anchor (old next_run), not from now
         assert updated.next_run > old_st.next_run
 
-    async def test_tick_handles_stale_sorted_set_entries(self, fake_redis, pool, mock_activity_create):
+    async def test_tick_skips_orphaned_entries(self, fake_redis, pool, mock_activity_create):
+        """Orphaned queue entries are skipped (not deleted) with a warning."""
         fake_redis.zadd(_queue_key(), {"orphan-id": time.time() - 100})
 
-        count = await tick()
-        assert count == 0
-        assert fake_redis.zcard(_queue_key()) == 0
+        await tick()
+
+        # Orphan is still in the sorted set (not silently removed)
+        assert fake_redis.zcard(_queue_key()) == 1
+        # Nothing was enqueued
+        assert fake_redis.llen(ax.CONF.queue_name) == 0
 
     async def test_tick_multiple_due_tasks(self, fake_redis, pool, mock_activity_create):
         for i in range(3):
-            sid = pool.schedule(
-                "refresh_cache",
-                RefreshContext(scope=f"scope_{i}"),
-                Schedule(cron="*/5 * * * *"),
-            )
-            _force_due(fake_redis, sid)
+            pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope=f"scope_{i}"))
+            _force_due(fake_redis, _get_schedule_id(fake_redis, index=i))
 
-        count = await tick()
-        assert count == 3
+        await tick()
+
+        assert fake_redis.llen(ax.CONF.queue_name) == 3
 
     async def test_context_payload_preserved(self, fake_redis, pool, mock_activity_create):
-        sid = pool.schedule(
-            "refresh_cache",
-            RefreshContext(scope="users", ttl=999),
-            Schedule(cron="*/5 * * * *"),
-        )
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="users", ttl=999))
 
+        sid = _get_schedule_id(fake_redis)
         data = fake_redis.get(_schedule_key(sid))
         st = ScheduledTask.model_validate_json(data)
-        assert st.context["scope"] == "users"
-        assert st.context["ttl"] == 999
+        ctx = state.backend.deserialize(st.context)
+        assert isinstance(ctx, RefreshContext)
+        assert ctx.scope == "users"
+        assert ctx.ttl == 999
 
 
 # ---------------------------------------------------------------------------
@@ -364,10 +420,16 @@ class TestTimezone:
 
         monkeypatch.setattr(CONF, "scheduler_timezone", "America/New_York")
 
-        s = Schedule(cron="0 9 * * *")  # 9 AM
-        # Use a known timestamp: 2024-01-15 14:00:00 UTC = 9:00 AM ET
+        ctx = RefreshContext(scope="test")
+        st = ScheduledTask(
+            task_name="test",
+            context=state.backend.serialize(ctx),
+            cron="0 9 * * *",  # 9 AM
+
+        )
+        # Use a known timestamp: 2024-01-15 9:00 AM ET
         anchor = datetime(2024, 1, 15, 9, 0, 0, tzinfo=ZoneInfo("America/New_York")).timestamp()
-        nxt = s.next_after(anchor)
+        nxt = st._next_after(anchor)
 
         # Next 9 AM ET should be ~24h later
         next_dt = datetime.fromtimestamp(nxt, tz=ZoneInfo("America/New_York"))

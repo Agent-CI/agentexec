@@ -281,7 +281,7 @@ class StateBackend(Protocol):
         """
         ...
 
-    # Sorted set operations (for scheduling)
+    # Sorted set operations
     @staticmethod
     def zadd(key: str, mapping: dict[str, float]) -> int:
         """Add members to a sorted set with scores.

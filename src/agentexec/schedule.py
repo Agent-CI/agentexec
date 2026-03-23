@@ -1,48 +1,12 @@
-"""Scheduled task support for agentexec.
-
-Uses Redis sorted sets to track when tasks are due. The scheduler loop
-runs automatically inside ``Pool.run()`` — no extra configuration needed.
-It polls for due tasks, enqueues them into the normal task queue, and
-reschedules repeating tasks based on their cron expression.
-
-Clock-drift resilience: the next run time is always computed from the
-*intended* run time (the anchor), not from wall-clock time at the moment
-of rescheduling.  This prevents cumulative drift — if a task was supposed
-to fire at 12:00 but the scheduler only picks it up at 12:02, the next
-occurrence is still computed relative to 12:00.
-
-Example:
-    import agentexec as ax
-    from agentexec.schedule import Schedule
-
-    pool = ax.Pool(database_url="sqlite:///tasks.db")
-
-    class RefreshContext(BaseModel):
-        scope: str
-
-    @pool.task("refresh_cache")
-    async def refresh(agent_id: UUID, context: RefreshContext):
-        ...
-
-    # Run every 5 minutes, forever
-    pool.schedule("refresh_cache", RefreshContext(scope="all"), Schedule(cron="*/5 * * * *"))
-
-    # Run 3 more times then stop
-    pool.schedule("refresh_cache", RefreshContext(scope="users"), Schedule(cron="0 * * * *", repeat=3))
-
-    pool.run()  # scheduler loop runs automatically alongside workers
-"""
-
 from __future__ import annotations
 
-import asyncio
 import time
 from datetime import datetime
 from typing import Any
 from uuid import uuid4
 
 from croniter import croniter
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from agentexec import state
 from agentexec.config import CONF
@@ -51,65 +15,51 @@ from agentexec.core.queue import enqueue
 
 logger = get_logger(__name__)
 
-# ---------------------------------------------------------------------------
-# Models
-# ---------------------------------------------------------------------------
+__all__ = [
+    "register",
+    "tick",
+]
 
 REPEAT_FOREVER: int = -1
 
 
-class Schedule(BaseModel):
-    """How and when a task should repeat.
-
-    Attributes:
-        cron: Standard cron expression (5 fields: min hour dom mon dow).
-            Examples: ``"*/5 * * * *"`` (every 5 min), ``"0 9 * * 1"`` (Mon 9 AM).
-        repeat: How many *additional* executions remain after the current one.
-            * ``-1`` — repeat forever (default).
-            * ``0``  — one-shot; task is removed after a single execution.
-            * ``N``  — run N more times, then remove.
-    """
-
-    cron: str
-    repeat: int = REPEAT_FOREVER
-
-    def next_after(self, anchor: float) -> float:
-        """Compute the next run timestamp after *anchor*.
-
-        Uses the cron expression to find the first occurrence strictly
-        after the anchor, preventing clock-drift accumulation.
-
-        Args:
-            anchor: Unix timestamp to compute the next occurrence from.
-
-        Returns:
-            Unix timestamp of the next scheduled run.
-        """
-        dt = datetime.fromtimestamp(anchor, tz=CONF.scheduler_tz)
-        return float(croniter(self.cron, dt).get_next(float))
-
-
 class ScheduledTask(BaseModel):
-    """Persistent representation of a scheduled task stored in Redis.
+    """A task scheduled to run on a recurring interval.
 
-    The ``schedule_id`` is the stable identity of this recurring job.
-    Each time it fires, a fresh ``Task`` (with its own ``agent_id``) is
-    enqueued for the worker pool.  The scheduled task itself stays in
-    Redis until its repeat budget is exhausted.
+    Stored in Redis with a sorted-set index for efficient due-time polling.
+    Each time it fires, a fresh Task (with its own agent_id) is enqueued
+    for the worker pool. Stays in Redis until its repeat budget is exhausted.
     """
 
     schedule_id: str = Field(default_factory=lambda: str(uuid4()))
     task_name: str
-    context: dict[str, Any]
-    schedule: Schedule
-    next_run: float
+    context: bytes
+    cron: str
+    repeat: int = REPEAT_FOREVER
+    next_run: float = 0
     created_at: float = Field(default_factory=lambda: time.time())
     metadata: dict[str, Any] | None = None
 
+    def model_post_init(self, __context: Any) -> None:
+        """Compute next_run from cron if not explicitly set."""
+        if self.next_run == 0:
+            self.next_run = self._next_after(self.created_at)
 
-# ---------------------------------------------------------------------------
-# Redis key helpers
-# ---------------------------------------------------------------------------
+    def advance(self) -> None:
+        """Advance to the next scheduled run and decrement the repeat count.
+
+        Computes the next run time from the current anchor (not wall clock)
+        to prevent clock-drift accumulation. Decrements repeat for finite
+        schedules; infinite (-1) stays unchanged.
+        """
+        self.next_run = self._next_after(self.next_run)
+        if self.repeat >= 0:
+            self.repeat -= 1
+
+    def _next_after(self, anchor: float) -> float:
+        """Compute the next cron occurrence after anchor."""
+        dt = datetime.fromtimestamp(anchor, tz=CONF.scheduler_tz)
+        return float(croniter(self.cron, dt).get_next(float))
 
 
 def _schedule_key(schedule_id: str) -> str:
@@ -122,171 +72,75 @@ def _queue_key() -> str:
     return state.backend.format_key(*state.KEY_SCHEDULE_QUEUE)
 
 
-# ---------------------------------------------------------------------------
-# Registration (called by Pool.schedule)
-# ---------------------------------------------------------------------------
-
-
 def register(
     task_name: str,
+    every: str,
     context: BaseModel,
-    schedule: Schedule,
     *,
+    repeat: int = REPEAT_FOREVER,
     metadata: dict[str, Any] | None = None,
-) -> str:
+) -> None:
     """Register a new scheduled task in Redis.
 
-    The task will first fire at the next cron occurrence from *now*.
+    The task will first fire at the next cron occurrence from now.
 
     Args:
         task_name: Name of the registered task to enqueue on each tick.
-        context: Pydantic context payload — serialized and stored alongside
-            the schedule so it is available every time the task fires.
-        schedule: ``Schedule`` describing cron expression and repeat budget.
+        every: Schedule expression (cron syntax: min hour dom mon dow).
+        context: Pydantic context payload passed to the handler each time.
+        repeat: How many additional executions after the first.
+            -1 = forever (default), 0 = one-shot, N = N more times.
         metadata: Optional metadata dict (e.g. for multi-tenancy).
-
-    Returns:
-        The ``schedule_id`` for this scheduled task.
     """
-    now = time.time()
-    next_run = schedule.next_after(now)
-
-    st = ScheduledTask(
+    task = ScheduledTask(
         task_name=task_name,
-        context=context.model_dump(mode="json"),
-        schedule=schedule,
-        next_run=next_run,
-        created_at=now,
+        context=state.backend.serialize(context),
+        cron=every,
+        repeat=repeat,
         metadata=metadata,
     )
 
-    # Store the full definition
     state.backend.set(
-        _schedule_key(st.schedule_id),
-        st.model_dump_json().encode(),
+        _schedule_key(task.schedule_id),
+        task.model_dump_json().encode(),
     )
-
-    # Index by next_run for efficient polling
-    state.backend.zadd(_queue_key(), {st.schedule_id: next_run})
-
-    logger.info(
-        f"Scheduled {task_name} as {st.schedule_id}, "
-        f"next_run={datetime.fromtimestamp(next_run, tz=CONF.scheduler_tz).isoformat()}"
-    )
-
-    return st.schedule_id
+    state.backend.zadd(_queue_key(), {task.schedule_id: task.next_run})
+    logger.info(f"Scheduled {task_name} ({task.schedule_id})")
 
 
-# ---------------------------------------------------------------------------
-# Scheduler loop
-# ---------------------------------------------------------------------------
+async def tick() -> None:
+    """Process all scheduled tasks that are due right now.
 
-
-async def tick() -> int:
-    """Process all tasks that are due right now.
-
-    For each due task:
-    1. Deserialise the ``ScheduledTask`` from Redis.
-    2. Enqueue it into the normal task queue (creating a fresh ``Task``).
-    3. If repeats remain, compute the next anchor-based run time and
-       update Redis.  Otherwise, remove the schedule.
-
-    Returns:
-        Number of tasks that were enqueued during this tick.
+    For each due task, enqueues it into the normal task queue. If repeats
+    remain, advances to the next run time. Otherwise removes the schedule.
     """
-    now = time.time()
-    due_members = await state.backend.zrangebyscore(_queue_key(), 0, now)
+    schedule_ids = await state.backend.zrangebyscore(_queue_key(), 0, time.time())
+    for _schedule_id in schedule_ids:
+        schedule_id = _schedule_id.decode("utf-8")
 
-    if not due_members:
-        return 0
-
-    enqueued = 0
-
-    for raw_id in due_members:
-        schedule_id = raw_id.decode("utf-8") if isinstance(raw_id, bytes) else raw_id
-
-        data = state.backend.get(_schedule_key(schedule_id))
-        if data is None:
-            # Stale entry — clean it up
-            state.backend.zrem(_queue_key(), schedule_id)
+        try:
+            data = state.backend.get(_schedule_key(schedule_id))
+            task = ScheduledTask.model_validate_json(data)
+        except ValidationError:
+            logger.warning(f"Failed to load schedule {schedule_id}, skipping")
             continue
 
-        st = ScheduledTask.model_validate_json(data)
+        await enqueue(
+            task.task_name,
+            context=state.backend.deserialize(task.context),
+            metadata=task.metadata,
+        )
 
-        # Reconstruct the context as a plain BaseModel for enqueue().
-        # The context is already a dict; wrap it in a generic model so
-        # the downstream handler's TaskDefinition can re-validate it
-        # into the correct concrete type.
-        context_model = _dict_to_model(st.context)
-
-        await enqueue(st.task_name, context_model, metadata=st.metadata)
-        enqueued += 1
-
-        logger.info(f"Scheduled task {st.task_name} ({schedule_id}) fired")
-
-        # Decide whether to reschedule or remove
-        if st.schedule.repeat == 0:
-            # One-shot — done
+        if task.repeat == 0:
             state.backend.zrem(_queue_key(), schedule_id)
             state.backend.delete(_schedule_key(schedule_id))
-            logger.info(f"Schedule {schedule_id} exhausted, removed")
+            logger.info(f"Task '{task.task_name}' schedule exhausted")
         else:
-            # Compute next run from the *intended* time (clock-drift resilience)
-            anchor = st.next_run
-            next_run = st.schedule.next_after(anchor)
-
-            # Update repeat count (-1 stays -1, positive values decrement)
-            new_repeat = st.schedule.repeat if st.schedule.repeat < 0 else st.schedule.repeat - 1
-
-            st.next_run = next_run
-            st.schedule.repeat = new_repeat
-
+            task.advance()
             state.backend.set(
                 _schedule_key(schedule_id),
-                st.model_dump_json().encode(),
+                task.model_dump_json().encode(),
             )
-            state.backend.zadd(_queue_key(), {schedule_id: next_run})
-
-            logger.debug(
-                f"Rescheduled {schedule_id}, next_run="
-                f"{datetime.fromtimestamp(next_run, tz=CONF.scheduler_tz).isoformat()}, "
-                f"repeat={new_repeat}"
-            )
-
-    return enqueued
-
-
-async def run_loop() -> None:
-    """Run the scheduler loop indefinitely.
-
-    Calls ``tick()`` at the configured poll interval
-    (``CONF.scheduler_poll_interval``).  Called automatically by
-    ``Pool.run()`` — you don't need to call this directly.
-
-    Exits cleanly on ``asyncio.CancelledError``.
-    """
-    logger.info(
-        f"Scheduler started, poll_interval={CONF.scheduler_poll_interval}s"
-    )
-    try:
-        while True:
-            await tick()
-            await asyncio.sleep(CONF.scheduler_poll_interval)
-    except asyncio.CancelledError:
-        logger.info("Scheduler stopped")
-
-
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
-
-
-class _Payload(BaseModel):
-    """Thin wrapper so a plain dict can travel through ``enqueue()``."""
-
-    model_config = {"extra": "allow"}
-
-
-def _dict_to_model(d: dict[str, Any]) -> BaseModel:
-    """Wrap a dict in a BaseModel for enqueue compatibility."""
-    return _Payload.model_validate(d)
+            state.backend.zadd(_queue_key(), {
+                schedule_id: task.next_run,
+            })
