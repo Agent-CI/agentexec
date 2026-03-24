@@ -1,5 +1,26 @@
 # Changelog
 
+## v0.1.7
+
+### New Features
+
+**Scheduled tasks with cron expressions**
+- `@pool.schedule("task_name", "*/5 * * * *")` decorator registers and schedules a task in one step
+- `pool.add_schedule()` for imperative scheduling of already-registered tasks
+- Cron expressions evaluated in configurable timezone (`AGENTEXEC_SCHEDULER_TIMEZONE`, default UTC)
+- Repeat budget: `-1` for forever (default), `0` for one-shot, `N` for N more executions
+- Scheduler runs automatically inside `pool.run()` — no extra setup needed
+- Idempotent registration: keyed by task name, so restarts and multiple pool instances overwrite instead of duplicating
+- Clock-drift resilient: next run computed from intended anchor time, not wall clock
+- Skips missed intervals after downtime instead of enqueuing a burst of catch-up tasks
+- New `croniter` dependency for cron expression parsing
+
+### Improvements
+
+**State backend sorted set operations**
+- Added `zadd()`, `zrangebyscore()`, `zrem()` to `StateBackend` protocol and Redis implementation
+- Used internally by the scheduler for efficient due-task polling
+
 ## v0.1.6
 
 ### New Features
