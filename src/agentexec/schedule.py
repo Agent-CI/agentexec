@@ -3,8 +3,6 @@ from __future__ import annotations
 import time
 from datetime import datetime
 from typing import Any
-from uuid import uuid4
-
 from croniter import croniter
 from pydantic import BaseModel, Field, ValidationError
 
@@ -31,7 +29,6 @@ class ScheduledTask(BaseModel):
     for the worker pool. Stays in Redis until its repeat budget is exhausted.
     """
 
-    schedule_id: str = Field(default_factory=lambda: str(uuid4()))
     task_name: str
     context: bytes
     cron: str
@@ -46,15 +43,19 @@ class ScheduledTask(BaseModel):
             self.next_run = self._next_after(self.created_at)
 
     def advance(self) -> None:
-        """Advance to the next scheduled run and decrement the repeat count.
+        """Advance next_run to the next future cron occurrence.
 
-        Computes the next run time from the current anchor (not wall clock)
-        to prevent clock-drift accumulation. Decrements repeat for finite
-        schedules; infinite (-1) stays unchanged.
+        Skips past any missed intervals so we don't enqueue a burst of
+        catch-up tasks after downtime. Decrements repeat for each skipped
+        interval (finite schedules only; -1 stays unchanged).
         """
-        self.next_run = self._next_after(self.next_run)
-        if self.repeat >= 0:
-            self.repeat -= 1
+        now = time.time()
+        while True:
+            self.next_run = self._next_after(self.next_run)
+            if self.repeat >= 0:
+                self.repeat -= 1
+            if self.next_run > now or self.repeat == 0:
+                break
 
     def _next_after(self, anchor: float) -> float:
         """Compute the next cron occurrence after anchor."""
@@ -101,11 +102,11 @@ def register(
     )
 
     state.backend.set(
-        _schedule_key(task.schedule_id),
+        _schedule_key(task_name),
         task.model_dump_json().encode(),
     )
-    state.backend.zadd(_queue_key(), {task.schedule_id: task.next_run})
-    logger.info(f"Scheduled {task_name} ({task.schedule_id})")
+    state.backend.zadd(_queue_key(), {task_name: task.next_run})
+    logger.info(f"Scheduled {task_name}")
 
 
 async def tick() -> None:
@@ -114,15 +115,14 @@ async def tick() -> None:
     For each due task, enqueues it into the normal task queue. If repeats
     remain, advances to the next run time. Otherwise removes the schedule.
     """
-    schedule_ids = await state.backend.zrangebyscore(_queue_key(), 0, time.time())
-    for _schedule_id in schedule_ids:
-        schedule_id = _schedule_id.decode("utf-8")
+    for _task_name in await state.backend.zrangebyscore(_queue_key(), 0, time.time()):
+        task_name = _task_name.decode("utf-8")
 
         try:
-            data = state.backend.get(_schedule_key(schedule_id))
+            data = state.backend.get(_schedule_key(task_name))
             task = ScheduledTask.model_validate_json(data)
         except ValidationError:
-            logger.warning(f"Failed to load schedule {schedule_id}, skipping")
+            logger.warning(f"Failed to load schedule {task_name}, skipping")
             continue
 
         await enqueue(
@@ -132,15 +132,13 @@ async def tick() -> None:
         )
 
         if task.repeat == 0:
-            state.backend.zrem(_queue_key(), schedule_id)
-            state.backend.delete(_schedule_key(schedule_id))
-            logger.info(f"Task '{task.task_name}' schedule exhausted")
+            state.backend.zrem(_queue_key(), task_name)
+            state.backend.delete(_schedule_key(task_name))
+            logger.info(f"Schedule for '{task_name}' exhausted")
         else:
             task.advance()
             state.backend.set(
-                _schedule_key(schedule_id),
+                _schedule_key(task_name),
                 task.model_dump_json().encode(),
             )
-            state.backend.zadd(_queue_key(), {
-                schedule_id: task.next_run,
-            })
+            state.backend.zadd(_queue_key(), {task_name: task.next_run})

@@ -141,7 +141,6 @@ class TestScheduledTaskModel:
         json_str = st.model_dump_json()
         restored = ScheduledTask.model_validate_json(json_str)
 
-        assert restored.schedule_id == st.schedule_id
         assert restored.task_name == "refresh"
         restored_ctx = state.backend.deserialize(restored.context)
         assert isinstance(restored_ctx, RefreshContext)
@@ -156,10 +155,9 @@ class TestScheduledTaskModel:
             task_name="test",
             context=state.backend.serialize(ctx),
             cron="* * * * *",
-
         )
-        assert st.schedule_id
         assert st.created_at > 0
+        assert st.next_run > 0
 
 
 # ---------------------------------------------------------------------------
@@ -171,8 +169,7 @@ class TestPoolAddSchedule:
     def test_schedule_stores_in_redis(self, fake_redis, pool):
         pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
 
-        sid = _get_schedule_id(fake_redis)
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("refresh_cache"))
         assert data is not None
 
         st = ScheduledTask.model_validate_json(data)
@@ -196,8 +193,7 @@ class TestPoolAddSchedule:
             "refresh_cache", "*/5 * * * *", RefreshContext(scope="all"),
             metadata={"org_id": "org-123"},
         )
-        sid = _get_schedule_id(fake_redis)
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("refresh_cache"))
         st = ScheduledTask.model_validate_json(data)
         assert st.metadata == {"org_id": "org-123"}
 
@@ -205,10 +201,24 @@ class TestPoolAddSchedule:
         pool.add_schedule(
             "refresh_cache", "*/5 * * * *", RefreshContext(scope="all"), repeat=3,
         )
-        sid = _get_schedule_id(fake_redis)
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("refresh_cache"))
         st = ScheduledTask.model_validate_json(data)
         assert st.repeat == 3
+
+    def test_schedule_is_idempotent(self, fake_redis, pool):
+        """Calling add_schedule twice for the same task overwrites, not duplicates."""
+        pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="v1"))
+        pool.add_schedule("refresh_cache", "*/10 * * * *", RefreshContext(scope="v2"))
+
+        members = fake_redis.zrange(_queue_key(), 0, -1)
+        assert len(members) == 1
+
+        data = fake_redis.get(_schedule_key("refresh_cache"))
+        st = ScheduledTask.model_validate_json(data)
+        assert st.cron == "*/10 * * * *"
+        ctx = state.backend.deserialize(st.context)
+        assert isinstance(ctx, RefreshContext)
+        assert ctx.scope == "v2"
 
 
 # ---------------------------------------------------------------------------
@@ -252,9 +262,7 @@ class TestPoolScheduleDecorator:
         async def limited(agent_id: uuid.UUID, context: RefreshContext):
             pass
 
-        members = fake_redis.zrange(_queue_key(), 0, -1)
-        sid = members[0].decode()
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("limited_task"))
         st = ScheduledTask.model_validate_json(data)
         assert st.repeat == 5
 
@@ -286,82 +294,69 @@ class TestPoolScheduleDecorator:
 # ---------------------------------------------------------------------------
 
 
-def _get_schedule_id(fake_redis, index=0):
-    """Get the schedule_id from the sorted set at the given index."""
-    members = fake_redis.zrange(_queue_key(), 0, -1)
-    return members[index].decode()
-
-
-def _force_due(fake_redis, sid):
+def _force_due(fake_redis, task_name):
     """Helper: set a schedule's next_run to the past so tick() picks it up."""
-    data = fake_redis.get(_schedule_key(sid))
+    data = fake_redis.get(_schedule_key(task_name))
     st = ScheduledTask.model_validate_json(data)
     st.next_run = time.time() - 10
-    fake_redis.set(_schedule_key(sid), st.model_dump_json().encode())
-    fake_redis.zadd(_queue_key(), {sid: st.next_run})
+    fake_redis.set(_schedule_key(task_name), st.model_dump_json().encode())
+    fake_redis.zadd(_queue_key(), {task_name: st.next_run})
     return st
 
 
 class TestTick:
     async def test_tick_enqueues_due_task(self, fake_redis, pool, mock_activity_create):
         pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
-        _force_due(fake_redis, _get_schedule_id(fake_redis))
+        _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        # Task was enqueued to the task queue
         assert fake_redis.llen(ax.CONF.queue_name) == 1
 
     async def test_tick_skips_future_tasks(self, fake_redis, pool, mock_activity_create):
         pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
-        # Default next_run is in the future
         await tick()
 
         assert fake_redis.llen(ax.CONF.queue_name) == 0
 
     async def test_tick_removes_one_shot_schedule(self, fake_redis, pool, mock_activity_create):
         pool.add_schedule("refresh_cache", "* * * * *", RefreshContext(scope="all"), repeat=0)
-        sid = _get_schedule_id(fake_redis)
-        _force_due(fake_redis, sid)
+        _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        assert fake_redis.get(_schedule_key(sid)) is None
+        assert fake_redis.get(_schedule_key("refresh_cache")) is None
         assert fake_redis.zcard(_queue_key()) == 0
 
     async def test_tick_decrements_repeat_count(self, fake_redis, pool, mock_activity_create):
         pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"), repeat=3)
-        sid = _get_schedule_id(fake_redis)
-        old_st = _force_due(fake_redis, sid)
+        old_st = _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("refresh_cache"))
         updated = ScheduledTask.model_validate_json(data)
         assert updated.repeat == 2
         assert updated.next_run > old_st.next_run
 
     async def test_tick_infinite_repeat_stays_negative(self, fake_redis, pool, mock_activity_create):
         pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
-        sid = _get_schedule_id(fake_redis)
-        _force_due(fake_redis, sid)
+        _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("refresh_cache"))
         updated = ScheduledTask.model_validate_json(data)
         assert updated.repeat == -1
 
     async def test_tick_anchor_based_rescheduling(self, fake_redis, pool, mock_activity_create):
         pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
-        sid = _get_schedule_id(fake_redis)
-        old_st = _force_due(fake_redis, sid)
+        old_st = _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("refresh_cache"))
         updated = ScheduledTask.model_validate_json(data)
-        # Next run computed from the anchor (old next_run), not from now
         assert updated.next_run > old_st.next_run
 
     async def test_tick_skips_orphaned_entries(self, fake_redis, pool, mock_activity_create):
@@ -370,25 +365,31 @@ class TestTick:
 
         await tick()
 
-        # Orphan is still in the sorted set (not silently removed)
         assert fake_redis.zcard(_queue_key()) == 1
-        # Nothing was enqueued
         assert fake_redis.llen(ax.CONF.queue_name) == 0
 
-    async def test_tick_multiple_due_tasks(self, fake_redis, pool, mock_activity_create):
-        for i in range(3):
-            pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope=f"scope_{i}"))
-            _force_due(fake_redis, _get_schedule_id(fake_redis, index=i))
+    async def test_tick_skips_missed_intervals(self, fake_redis, pool, mock_activity_create):
+        """After downtime, advance() skips to the next future run — no burst of catch-up tasks."""
+        pool.add_schedule("refresh_cache", "*/1 * * * *", RefreshContext(scope="all"))
+
+        # Simulate 10 minutes of downtime
+        data = fake_redis.get(_schedule_key("refresh_cache"))
+        st = ScheduledTask.model_validate_json(data)
+        st.next_run = time.time() - 600
+        fake_redis.set(_schedule_key("refresh_cache"), st.model_dump_json().encode())
+        fake_redis.zadd(_queue_key(), {"refresh_cache": st.next_run})
 
         await tick()
+        assert fake_redis.llen(ax.CONF.queue_name) == 1
 
-        assert fake_redis.llen(ax.CONF.queue_name) == 3
+        # Second tick should not enqueue again (next_run is in the future now)
+        await tick()
+        assert fake_redis.llen(ax.CONF.queue_name) == 1
 
     async def test_context_payload_preserved(self, fake_redis, pool, mock_activity_create):
         pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="users", ttl=999))
 
-        sid = _get_schedule_id(fake_redis)
-        data = fake_redis.get(_schedule_key(sid))
+        data = fake_redis.get(_schedule_key("refresh_cache"))
         st = ScheduledTask.model_validate_json(data)
         ctx = state.backend.deserialize(st.context)
         assert isinstance(ctx, RefreshContext)
