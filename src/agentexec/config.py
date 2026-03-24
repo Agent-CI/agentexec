@@ -1,3 +1,5 @@
+from zoneinfo import ZoneInfo
+
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -86,6 +88,14 @@ class Config(BaseSettings):
         validation_alias="AGENTEXEC_KEY_PREFIX",
     )
 
+    scheduler_timezone: str = Field(
+        default="UTC",
+        description=(
+            "IANA timezone for cron schedule evaluation (e.g. 'America/New_York', 'UTC'). "
+            "Set this so cron expressions read naturally in your local time."
+        ),
+        validation_alias="AGENTEXEC_SCHEDULER_TIMEZONE",
+    )
     lock_ttl: int = Field(
         default=1800,
         description=(
@@ -97,6 +107,12 @@ class Config(BaseSettings):
         ),
         validation_alias="AGENTEXEC_LOCK_TTL",
     )
+
+
+    @property
+    def scheduler_tz(self) -> ZoneInfo:
+        """Resolved ZoneInfo for the configured scheduler timezone."""
+        return ZoneInfo(self.scheduler_timezone)
 
 
 CONF = Config()

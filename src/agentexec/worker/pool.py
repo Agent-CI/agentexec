@@ -4,7 +4,7 @@ import asyncio
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
-from typing import Callable
+from typing import Any, Callable
 from uuid import uuid4
 
 from pydantic import BaseModel
@@ -15,6 +15,7 @@ from agentexec.config import CONF
 from agentexec.core.db import remove_global_session, set_global_session
 from agentexec.core.queue import dequeue, requeue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
+from agentexec import schedule
 from agentexec.worker.event import StateEvent
 from agentexec.worker.logging import (
     DEFAULT_FORMAT,
@@ -26,6 +27,12 @@ __all__ = [
     "Worker",
     "Pool",
 ]
+
+
+class _EmptyContext(BaseModel):
+    """Default context for scheduled tasks that don't need one."""
+
+    pass
 
 
 def _get_pool_id() -> str:
@@ -275,6 +282,98 @@ class Pool:
         )
         self._context.tasks[name] = definition
 
+    def schedule(
+        self,
+        name: str,
+        every: str,
+        *,
+        context: BaseModel | None = None,
+        repeat: int = -1,
+        lock_key: str | None = None,
+        metadata: dict[str, Any] | None = None,
+    ) -> Callable[[TaskHandler], TaskHandler]:
+        """Decorator to register and schedule a task in one step.
+
+        Combines ``@pool.task()`` and ``pool.add_schedule()`` — registers the
+        handler as a task and schedules it to run on the given interval.
+
+        Args:
+            name: Task name used when enqueueing and for worker routing.
+            every: Schedule expression (cron syntax: min hour dom mon dow).
+            context: Pydantic context payload passed to the handler each time.
+                Defaults to an empty BaseModel if not provided.
+            repeat: How many additional executions after the first.
+                -1 = forever (default), 0 = one-shot, N = N more times.
+            lock_key: Optional string template for distributed locking.
+            metadata: Optional metadata dict (e.g. for multi-tenancy).
+
+        Returns:
+            Decorator function that returns the handler.
+
+        Example:
+            @pool.schedule("refresh_cache", "*/5 * * * *")
+            async def refresh(agent_id: UUID, context: RefreshContext):
+                ...
+
+            @pool.schedule("sync_users", "0 * * * *", context=SyncContext(full=True), repeat=3)
+            async def sync(agent_id: UUID, context: SyncContext):
+                ...
+        """
+
+        def decorator(func: TaskHandler) -> TaskHandler:
+            self.add_task(name, func, lock_key=lock_key)
+            self.add_schedule(
+                name, every, context or _EmptyContext(),
+                repeat=repeat, metadata=metadata,
+            )
+            return func
+
+        return decorator
+
+    def add_schedule(
+        self,
+        task_name: str,
+        every: str,
+        context: BaseModel,
+        *,
+        repeat: int = -1,
+        metadata: dict[str, Any] | None = None,
+    ) -> None:
+        """Schedule a registered task to run on a recurring interval.
+
+        The task must already be registered via ``@pool.task()`` or
+        ``pool.add_task()``.  The scheduler loop runs automatically
+        inside ``pool.run()`` — no extra setup needed.
+
+        Args:
+            task_name: Name of a registered task.
+            every: Schedule expression (cron syntax: min hour dom mon dow).
+            context: Pydantic context payload passed to the handler each time.
+            repeat: How many additional executions after the first.
+                -1 = forever (default), 0 = one-shot, N = N more times.
+            metadata: Optional metadata dict (e.g. for multi-tenancy).
+
+        Raises:
+            ValueError: If the task name is not registered with this pool.
+
+        Example:
+            pool.add_schedule("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
+            pool.add_schedule("refresh_cache", "0 * * * *", RefreshContext(scope="users"), repeat=3)
+        """
+        if task_name not in self._context.tasks:
+            raise ValueError(
+                f"Task '{task_name}' is not registered. "
+                f"Use @pool.task() or pool.add_task() first."
+            )
+
+        schedule.register(
+            task_name=task_name,
+            every=every,
+            context=context,
+            repeat=repeat,
+            metadata=metadata,
+        )
+
     def start(self) -> None:
         """Start worker processes (non-blocking).
 
@@ -301,6 +400,9 @@ class Pool:
 
         Spawns worker processes and runs an async event loop in the main
         process that collects logs from workers via Redis pubsub.
+        The scheduler loop also runs automatically alongside the workers,
+        polling for due scheduled tasks and enqueuing them.
+
         Blocks until all workers exit or KeyboardInterrupt, then shuts
         down gracefully.
         """
@@ -335,16 +437,17 @@ class Pool:
             print(f"Started worker {worker_id} (PID: {process.pid})")
 
     async def _collect_logs(self) -> None:
-        """Listen for log messages from workers via state backend pubsub."""
+        """Listen for log messages from workers and run scheduler ticks."""
         assert self._log_handler, "Log handler not initialized"
 
         # Create task to subscribe to logs
         log_task = asyncio.create_task(self._process_log_stream())
 
         try:
-            # Poll worker processes
+            # Poll worker processes and run scheduler
             while any(p.is_alive() for p in self._processes):
                 await asyncio.sleep(0.1)
+                await schedule.tick()
         finally:
             log_task.cancel()
             try:

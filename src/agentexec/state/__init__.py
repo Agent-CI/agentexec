@@ -12,6 +12,8 @@ from agentexec.state.backend import StateBackend
 KEY_RESULT = (CONF.key_prefix, "result")
 KEY_EVENT = (CONF.key_prefix, "event")
 KEY_LOCK = (CONF.key_prefix, "lock")
+KEY_SCHEDULE = (CONF.key_prefix, "schedule")
+KEY_SCHEDULE_QUEUE = (CONF.key_prefix, "schedule_queue")
 CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
 __all__ = [

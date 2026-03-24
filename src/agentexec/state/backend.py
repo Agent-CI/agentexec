@@ -281,6 +281,49 @@ class StateBackend(Protocol):
         """
         ...
 
+    # Sorted set operations
+    @staticmethod
+    def zadd(key: str, mapping: dict[str, float]) -> int:
+        """Add members to a sorted set with scores.
+
+        Args:
+            key: Sorted set key
+            mapping: Dict of {member: score}
+
+        Returns:
+            Number of new members added
+        """
+        ...
+
+    @staticmethod
+    async def zrangebyscore(
+        key: str, min_score: float, max_score: float
+    ) -> list[bytes]:
+        """Get members with scores between min and max.
+
+        Args:
+            key: Sorted set key
+            min_score: Minimum score (inclusive)
+            max_score: Maximum score (inclusive)
+
+        Returns:
+            List of members as bytes
+        """
+        ...
+
+    @staticmethod
+    def zrem(key: str, *members: str) -> int:
+        """Remove members from a sorted set.
+
+        Args:
+            key: Sorted set key
+            *members: Members to remove
+
+        Returns:
+            Number of members removed
+        """
+        ...
+
     # Cleanup operations
     @staticmethod
     def clear_keys() -> int:
