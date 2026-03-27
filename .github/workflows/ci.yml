@@ -47,11 +47,11 @@ jobs:
 
     services:
       kafka:
-        image: apache/kafka:latest
+        image: confluentinc/cp-kafka:7.7.1
         ports:
           - 9092:9092
         env:
-          # KRaft mode (default for apache/kafka)
+          # KRaft mode
           KAFKA_NODE_ID: "1"
           KAFKA_PROCESS_ROLES: broker,controller
           KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
@@ -74,8 +74,9 @@ jobs:
           KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
           # Cluster ID for KRaft
           CLUSTER_ID: "ciTestCluster0001"
+          KAFKA_KRAFT_CLUSTER_ID: "ciTestCluster0001"
         options: >-
-          --health-cmd "/opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list"
+          --health-cmd "kafka-topics --bootstrap-server localhost:9092 --list"
           --health-interval 5s
           --health-timeout 10s
           --health-retries 15
