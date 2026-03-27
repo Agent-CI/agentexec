@@ -132,7 +132,7 @@ jobs:
       - name: Create failure check annotation with output
         if: failure()
         run: |
-          # Write last 50 lines as warning annotations so they appear in the PR
-          tail -50 /tmp/kafka_test_output.txt | while IFS= read -r line; do
+          # Emit key debug lines and failures as annotations
+          grep -E '\[queue_|PASSED|FAILED|ERROR|assert|TIMEOUT' /tmp/kafka_test_output.txt | tail -40 | while IFS= read -r line; do
             echo "::warning::$line"
           done

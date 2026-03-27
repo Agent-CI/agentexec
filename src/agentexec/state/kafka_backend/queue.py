@@ -29,11 +29,13 @@ async def queue_push(
     the same partition_key are guaranteed to be processed in order by a
     single consumer — this replaces distributed locking.
     """
+    topic = tasks_topic(queue_name)
     await produce(
-        tasks_topic(queue_name),
+        topic,
         value.encode("utf-8"),
         key=partition_key,
     )
+    print(f"[queue_push] produced to topic={topic}")
 
 
 async def queue_pop(
@@ -81,14 +83,20 @@ async def queue_pop(
     elapsed = 0
     while elapsed < deadline:
         result = await consumer.getmany(timeout_ms=interval)
-        if result:
-            print(f"[queue_pop] getmany returned {len(result)} topic-partitions")
         for tp, messages in result.items():
-            print(f"[queue_pop]   tp={tp} msgs={len(messages)}")
             for msg in messages:
                 return json.loads(msg.value.decode("utf-8"))
         elapsed += interval
-        print(f"[queue_pop] empty poll, elapsed={elapsed}/{deadline}")
+
+    # Debug: print consumer state when no messages found
+    assignment = consumer.assignment()
+    positions = {}
+    for tp in assignment:
+        try:
+            positions[str(tp)] = await consumer.position(tp)
+        except Exception as e:
+            positions[str(tp)] = f"error: {e}"
+    print(f"[queue_pop] TIMEOUT topic={topic} assignment={assignment} positions={positions}")
 
     return None
 
