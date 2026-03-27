@@ -97,111 +97,62 @@ class Worker:
             raise
 
     async def _run(self) -> None:
-        """Async main loop - polls queue and processes tasks concurrently.
-
-        Uses a semaphore to limit concurrent tasks per worker. When
-        tasks_per_worker > 1, the worker keeps polling for new tasks while
-        existing tasks are running (up to the concurrency limit). This is
-        ideal for I/O-bound workloads where tasks spend most time waiting
-        for network responses.
-
-        With the Kafka backend, this means a single consumer can process
-        tasks from multiple partitions concurrently, and the consumer keeps
-        heartbeating because the poll loop stays active.
-        """
+        """Async main loop - polls queue and processes tasks."""
         queue = self._context.queue_name
-        semaphore = asyncio.Semaphore(CONF.tasks_per_worker)
-        in_flight: set[asyncio.Task] = set()
-
         try:
             while not await self._context.shutdown_event.is_set():
-                # Wait for a slot to open up before polling
-                await semaphore.acquire()
+                if (task := await self._dequeue_task()) is not None:
+                    lock_key = task.get_lock_key()
 
-                task = await self._dequeue_task()
-                if task is None:
-                    semaphore.release()
-                    continue
+                    if lock_key is not None:
+                        acquired = await ops.acquire_lock(lock_key, str(task.agent_id))
+                        if not acquired:
+                            self._logger.debug(
+                                f"Worker {self._worker_id} lock held for {task.task_name} "
+                                f"(lock_key={lock_key}), requeuing"
+                            )
+                            requeue(task, queue_name=queue)
+                            await ops.queue_commit(queue)
+                            continue
 
-                # Spawn task processing as a concurrent coroutine
-                coro = self._process_task(task, queue, semaphore)
-                async_task = asyncio.create_task(coro)
-                in_flight.add(async_task)
-                async_task.add_done_callback(in_flight.discard)
+                    try:
+                        self._logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
+                        result = await task.execute()
+
+                        if result is not None:
+                            # Task succeeded — commit the offset
+                            await ops.queue_commit(queue)
+                            self._logger.info(
+                                f"Worker {self._worker_id} completed: {task.task_name}"
+                            )
+                        else:
+                            # task.execute() returned None — task errored.
+                            # Check retry count to decide commit vs nack.
+                            retry_count = task.retry_count
+                            if retry_count < CONF.max_task_retries:
+                                # Don't commit — let the message be redelivered
+                                await ops.queue_nack(queue)
+                                self._logger.warning(
+                                    f"Worker {self._worker_id} task {task.task_name} failed "
+                                    f"(attempt {retry_count + 1}/{CONF.max_task_retries}), "
+                                    f"will retry"
+                                )
+                            else:
+                                # Retries exhausted — commit to move past this message
+                                await ops.queue_commit(queue)
+                                self._logger.error(
+                                    f"Worker {self._worker_id} task {task.task_name} failed "
+                                    f"after {retry_count + 1} attempts, giving up"
+                                )
+                    finally:
+                        if lock_key is not None:
+                            await ops.release_lock(lock_key)
         except Exception as e:
             self._logger.exception(f"Worker {self._worker_id} error: {e}")
         finally:
-            # Wait for in-flight tasks to complete before shutting down
-            if in_flight:
-                self._logger.info(
-                    f"Worker {self._worker_id} waiting for {len(in_flight)} "
-                    f"in-flight tasks to complete"
-                )
-                await asyncio.gather(*in_flight, return_exceptions=True)
-
             await ops.close()
             remove_global_session()
             self._logger.info(f"Worker {self._worker_id} shutting down")
-
-    async def _process_task(
-        self,
-        task: Task,
-        queue: str,
-        semaphore: asyncio.Semaphore,
-    ) -> None:
-        """Process a single task — handles locking, execution, commit/nack.
-
-        Releases the semaphore when done so the poll loop can dequeue
-        another task.
-        """
-        lock_key = task.get_lock_key()
-
-        try:
-            if lock_key is not None:
-                acquired = await ops.acquire_lock(lock_key, str(task.agent_id))
-                if not acquired:
-                    self._logger.debug(
-                        f"Worker {self._worker_id} lock held for {task.task_name} "
-                        f"(lock_key={lock_key}), requeuing"
-                    )
-                    requeue(task, queue_name=queue)
-                    await ops.queue_commit(queue)
-                    return
-
-            self._logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-            result = await task.execute()
-
-            if result is not None:
-                await ops.queue_commit(queue)
-                self._logger.info(
-                    f"Worker {self._worker_id} completed: {task.task_name}"
-                )
-            else:
-                # task.execute() returned None — task errored.
-                retry_count = task.retry_count
-                if retry_count < CONF.max_task_retries:
-                    await ops.queue_nack(queue)
-                    self._logger.warning(
-                        f"Worker {self._worker_id} task {task.task_name} failed "
-                        f"(attempt {retry_count + 1}/{CONF.max_task_retries}), "
-                        f"will retry"
-                    )
-                else:
-                    await ops.queue_commit(queue)
-                    self._logger.error(
-                        f"Worker {self._worker_id} task {task.task_name} failed "
-                        f"after {retry_count + 1} attempts, giving up"
-                    )
-        except Exception as e:
-            self._logger.exception(
-                f"Worker {self._worker_id} unexpected error processing "
-                f"{task.task_name}: {e}"
-            )
-            await ops.queue_nack(queue)
-        finally:
-            if lock_key is not None:
-                await ops.release_lock(lock_key)
-            semaphore.release()
 
     async def _dequeue_task(self) -> Task | None:
         """Dequeue and hydrate a task from the Redis queue.

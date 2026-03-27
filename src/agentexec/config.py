@@ -27,18 +27,6 @@ class Config(BaseSettings):
         description="Number of worker processes to spawn",
         validation_alias="AGENTEXEC_NUM_WORKERS",
     )
-    tasks_per_worker: int = Field(
-        default=1,
-        description=(
-            "Maximum concurrent tasks per worker process. With the Kafka "
-            "backend, increase this to process tasks from multiple partitions "
-            "concurrently within a single consumer. Ideal for I/O-bound "
-            "workloads like AI agent tasks where workers spend most time "
-            "waiting for network responses. Total concurrency = "
-            "num_workers * tasks_per_worker."
-        ),
-        validation_alias="AGENTEXEC_TASKS_PER_WORKER",
-    )
     graceful_shutdown_timeout: int = Field(
         default=300,
         description="Maximum seconds to wait for workers to finish on shutdown",
