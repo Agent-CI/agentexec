@@ -24,8 +24,8 @@ Example:
         await ax.enqueue("aggregate", AggregateContext(batch_id=context.batch_id))
 """
 
-from agentexec import state
 from agentexec.config import CONF
+from agentexec.state import ops
 
 
 class Tracker:
@@ -37,7 +37,7 @@ class Tracker:
     """
 
     def __init__(self, *args: str):
-        self._key = state.backend.format_key(CONF.key_prefix, "tracker", *args)
+        self._key = ops.format_key(CONF.key_prefix, "tracker", *args)
 
     def incr(self) -> int:
         """Increment the counter.
@@ -45,7 +45,7 @@ class Tracker:
         Returns:
             Counter value after increment.
         """
-        return state.backend.incr(self._key)
+        return ops.counter_incr(self._key)
 
     def decr(self) -> int:
         """Decrement the counter.
@@ -53,12 +53,12 @@ class Tracker:
         Returns:
             Counter value after decrement.
         """
-        return state.backend.decr(self._key)
+        return ops.counter_decr(self._key)
 
     @property
     def count(self) -> int:
         """Get current counter value."""
-        result = state.backend.get(self._key)
+        result = ops.counter_get(self._key)
         return int(result) if result else 0
 
     @property

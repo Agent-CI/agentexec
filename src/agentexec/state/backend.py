@@ -1,359 +1,231 @@
+"""Unified backend protocol for agentexec state operations.
+
+Defines the semantic operations that agentexec needs — not Redis primitives,
+not Kafka primitives. Each backend (Redis, Kafka) implements these in its
+own way.
+
+Pick one backend via AGENTEXEC_STATE_BACKEND:
+  - 'agentexec.state.redis_backend'  (default)
+  - 'agentexec.state.kafka_backend'
+"""
+
+from __future__ import annotations
+
 from types import ModuleType
-from typing import AsyncGenerator, Coroutine, Optional, Protocol, runtime_checkable
+from typing import Any, AsyncGenerator, Coroutine, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
 
 @runtime_checkable
 class StateBackend(Protocol):
-    """Protocol defining the state backend interface.
+    """Protocol for agentexec state backends.
 
-    This protocol defines all the operations needed for:
-    - Task queue management (priority queue operations)
-    - Result storage (with TTL support)
-    - Event coordination (shutdown flags, etc.)
-    - Pub/sub messaging (worker logging)
-
-    Any module that implements these functions can serve as a state backend.
-    Methods are defined as @staticmethod to match module-level functions.
-
-    Connection management is handled internally - connections are established
-    lazily when first accessed. Only cleanup needs to be explicit.
+    A backend is a module that exposes these functions. Any module conforming
+    to this protocol can serve as the state backend.
     """
 
-    # Connection management
+    # -- Connection management ------------------------------------------------
+
     @staticmethod
     async def close() -> None:
-        """Close all connections to the backend.
-
-        This should close both async and sync connections and clean up
-        any resources.
-        """
+        """Close all connections and release resources."""
         ...
 
-    # Queue operations (Redis list commands)
-    @staticmethod
-    def rpush(key: str, value: str) -> int:
-        """Push value to the right (front) of the list - for high priority tasks.
-
-        Args:
-            key: Redis list key
-            value: Serialized task data
-
-        Returns:
-            Length of the list after the push
-        """
-        ...
+    # -- Queue operations -----------------------------------------------------
 
     @staticmethod
-    def lpush(key: str, value: str) -> int:
-        """Push value to the left (back) of the list - for low priority tasks.
+    def queue_push(
+        queue_name: str,
+        value: str,
+        *,
+        high_priority: bool = False,
+        partition_key: str | None = None,
+    ) -> None:
+        """Push a serialized task onto the queue.
 
         Args:
-            key: Redis list key
-            value: Serialized task data
-
-        Returns:
-            Length of the list after the push
+            queue_name: Queue/topic name.
+            value: Serialized task JSON string.
+            high_priority: Push to front of queue (Redis) or set priority
+                header (Kafka). Ignored when ordering is per-partition.
+            partition_key: For stream backends, determines the partition.
+                Typically the evaluated lock_key (e.g. 'user:42').
+                Ignored by KV backends.
         """
         ...
 
     @staticmethod
-    async def brpop(key: str, timeout: int = 0) -> Optional[tuple[str, str]]:
-        """Pop value from the right of the list with blocking.
+    async def queue_pop(
+        queue_name: str,
+        *,
+        timeout: int = 1,
+    ) -> dict[str, Any] | None:
+        """Pop the next task from the queue.
 
         Args:
-            key: Redis list key
-            timeout: Timeout in seconds (0 = block forever)
+            queue_name: Queue/topic name.
+            timeout: Seconds to wait before returning None.
 
         Returns:
-            Tuple of (key, value) or None if timeout
+            Parsed task data dict, or None if nothing available.
         """
         ...
 
-    # Key-value operations
-    @staticmethod
-    def aget(key: str) -> Coroutine[None, None, Optional[bytes]]:
-        """Get value for key asynchronously.
-
-        Args:
-            key: Key to retrieve
-
-        Returns:
-            Coroutine that resolves to value as bytes or None if not found
-        """
-        ...
+    # -- Key-value operations -------------------------------------------------
 
     @staticmethod
     def get(key: str) -> Optional[bytes]:
-        """Get value for key synchronously.
+        """Get value for key (sync)."""
+        ...
 
-        Args:
-            key: Key to retrieve
+    @staticmethod
+    def aget(key: str) -> Coroutine[None, None, Optional[bytes]]:
+        """Get value for key (async)."""
+        ...
 
-        Returns:
-            Value as bytes or None if not found
-        """
+    @staticmethod
+    def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
+        """Set value for key with optional TTL (sync)."""
         ...
 
     @staticmethod
     def aset(
         key: str, value: bytes, ttl_seconds: Optional[int] = None
     ) -> Coroutine[None, None, bool]:
-        """Set value for key asynchronously with optional TTL.
-
-        Args:
-            key: Key to set
-            value: Value as bytes
-            ttl_seconds: Optional time-to-live in seconds
-
-        Returns:
-            Coroutine that resolves to True if successful
-        """
-        ...
-
-    @staticmethod
-    def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
-        """Set value for key synchronously with optional TTL.
-
-        Args:
-            key: Key to set
-            value: Value as bytes
-            ttl_seconds: Optional time-to-live in seconds
-
-        Returns:
-            True if successful
-        """
-        ...
-
-    @staticmethod
-    def adelete(key: str) -> Coroutine[None, None, int]:
-        """Delete key asynchronously.
-
-        Args:
-            key: Key to delete
-
-        Returns:
-            Coroutine that resolves to number of keys deleted (0 or 1)
-        """
+        """Set value for key with optional TTL (async)."""
         ...
 
     @staticmethod
     def delete(key: str) -> int:
-        """Delete key synchronously.
-
-        Args:
-            key: Key to delete
-
-        Returns:
-            Number of keys deleted (0 or 1)
-        """
+        """Delete key (sync). Returns number of keys deleted (0 or 1)."""
         ...
 
-    # Counter operations
+    @staticmethod
+    def adelete(key: str) -> Coroutine[None, None, int]:
+        """Delete key (async). Returns number of keys deleted (0 or 1)."""
+        ...
+
+    # -- Atomic counters ------------------------------------------------------
+
     @staticmethod
     def incr(key: str) -> int:
-        """Increment a counter atomically.
-
-        Args:
-            key: Counter key
-
-        Returns:
-            Value after increment
-        """
+        """Atomically increment counter. Returns value after increment."""
         ...
 
     @staticmethod
     def decr(key: str) -> int:
-        """Decrement a counter atomically.
-
-        Args:
-            key: Counter key
-
-        Returns:
-            Value after decrement
-        """
+        """Atomically decrement counter. Returns value after decrement."""
         ...
 
-    # Pub/sub operations
+    # -- Pub/sub --------------------------------------------------------------
+
     @staticmethod
     def publish(channel: str, message: str) -> None:
-        """Publish message to a channel.
-
-        Args:
-            channel: Channel name
-            message: Message to publish
-        """
+        """Publish a message to a channel (sync)."""
         ...
 
     @staticmethod
     def subscribe(channel: str) -> AsyncGenerator[str, None]:
-        """Subscribe to a channel and yield messages.
-
-        Args:
-            channel: Channel name
-
-        Yields:
-            Messages from the channel
-        """
+        """Subscribe to a channel, yielding messages (async generator)."""
         ...
 
-    # Key formatting
-    @staticmethod
-    def format_key(*args: str) -> str:
-        """Format a key by joining parts in a backend-specific way.
+    # -- Distributed locks ----------------------------------------------------
 
-        Args:
-            *args: Parts of the key to join
-
-        Returns:
-            Formatted key string
-        """
-        ...
-
-    # Serialization
-    @staticmethod
-    def serialize(obj: BaseModel) -> bytes:
-        """Serialize a Pydantic BaseModel to bytes.
-
-        Stores the fully qualified class name alongside the data to enable
-        automatic type reconstruction during deserialization.
-
-        Args:
-            obj: Pydantic BaseModel instance to serialize
-
-        Returns:
-            Serialized bytes
-
-        Raises:
-            TypeError: If obj is not a BaseModel instance
-        """
-        ...
-
-    @staticmethod
-    def deserialize(data: bytes) -> BaseModel:
-        """Deserialize bytes back to a Pydantic BaseModel instance.
-
-        Uses the stored class information to dynamically import and reconstruct
-        the original type.
-
-        Args:
-            data: Serialized bytes
-
-        Returns:
-            Deserialized BaseModel instance
-
-        Raises:
-            ImportError: If the class module cannot be imported
-            AttributeError: If the class does not exist in the module
-            ValueError: If the data is invalid
-        """
-        ...
-
-    # Lock operations
     @staticmethod
     async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
-        """Attempt to acquire a distributed lock.
+        """Attempt to acquire a lock atomically.
 
-        Uses atomic set-if-not-exists with TTL. The TTL is a safety net
-        for process death — locks should always be explicitly released
-        via release_lock() on task completion or error.
+        Stream-based backends (Kafka) may return True unconditionally
+        since partition assignment provides natural task isolation.
 
         Args:
-            key: Lock key
-            value: Lock value (typically agent_id for debugging)
-            ttl_seconds: Lock expiry in seconds (safety net for dead processes)
+            key: Lock key.
+            value: Lock holder identifier (for debugging).
+            ttl_seconds: Safety-net expiry for dead processes.
 
         Returns:
-            True if lock was acquired, False if already held
+            True if acquired, False if already held.
         """
         ...
 
     @staticmethod
     async def release_lock(key: str) -> int:
-        """Release a distributed lock.
+        """Release a lock. Returns number of keys deleted (0 or 1).
 
-        Args:
-            key: Lock key to release
-
-        Returns:
-            Number of keys deleted (0 or 1)
+        Stream-based backends may no-op (return 0).
         """
         ...
 
-    # Sorted set operations
+    # -- Sorted sets (schedule index) -----------------------------------------
+
     @staticmethod
     def zadd(key: str, mapping: dict[str, float]) -> int:
-        """Add members to a sorted set with scores.
-
-        Args:
-            key: Sorted set key
-            mapping: Dict of {member: score}
-
-        Returns:
-            Number of new members added
-        """
+        """Add members with scores to a sorted set. Returns count of new members."""
         ...
 
     @staticmethod
     async def zrangebyscore(
         key: str, min_score: float, max_score: float
     ) -> list[bytes]:
-        """Get members with scores between min and max.
-
-        Args:
-            key: Sorted set key
-            min_score: Minimum score (inclusive)
-            max_score: Maximum score (inclusive)
-
-        Returns:
-            List of members as bytes
-        """
+        """Get members with scores in [min_score, max_score]."""
         ...
 
     @staticmethod
     def zrem(key: str, *members: str) -> int:
-        """Remove members from a sorted set.
-
-        Args:
-            key: Sorted set key
-            *members: Members to remove
-
-        Returns:
-            Number of members removed
-        """
+        """Remove members from a sorted set. Returns count removed."""
         ...
 
-    # Cleanup operations
+    # -- Serialization --------------------------------------------------------
+
+    @staticmethod
+    def serialize(obj: BaseModel) -> bytes:
+        """Serialize a Pydantic BaseModel to bytes with type information."""
+        ...
+
+    @staticmethod
+    def deserialize(data: bytes) -> BaseModel:
+        """Deserialize bytes back to a typed Pydantic BaseModel instance."""
+        ...
+
+    # -- Key formatting -------------------------------------------------------
+
+    @staticmethod
+    def format_key(*args: str) -> str:
+        """Join key parts using the backend's separator convention."""
+        ...
+
+    # -- Cleanup --------------------------------------------------------------
+
     @staticmethod
     def clear_keys() -> int:
-        """Clear all keys managed by this application.
-
-        Only deletes keys that match the configured prefix and queue name.
-        This is useful during shutdown to prevent stale tasks from being
-        picked up on restart.
-
-        Returns:
-            Total number of keys deleted
-        """
+        """Delete all keys/state managed by this application."""
         ...
 
 
 def load_backend(module: ModuleType) -> StateBackend:
     """Load and validate a backend module conforms to StateBackend protocol.
 
-    Uses the Protocol's __protocol_attrs__ to determine required methods.
-
     Args:
-        module: Backend module to validate
+        module: Backend module to validate.
 
     Returns:
-        The module typed as StateBackend
+        The module typed as StateBackend.
 
     Raises:
-        TypeError: If the module is missing required functions
+        TypeError: If the module is missing required functions.
     """
-    required: frozenset[str] = getattr(StateBackend, "__protocol_attrs__")
+    # Collect required methods from the Protocol class annotations.
+    # __protocol_attrs__ is available in Python 3.12+; fall back to
+    # inspecting __annotations__ and dir() for older versions.
+    required = getattr(StateBackend, "__protocol_attrs__", None)
+    if required is None:
+        required = {
+            name
+            for name in dir(StateBackend)
+            if not name.startswith("_") and callable(getattr(StateBackend, name, None))
+        }
+
     missing = [name for name in required if not hasattr(module, name)]
     if missing:
         raise TypeError(

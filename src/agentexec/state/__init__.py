@@ -2,21 +2,16 @@
 
 """State management layer.
 
-Initializes the backend(s) and exposes high-level operations for the rest
-of agentexec. Supports two modes:
+Initializes the configured backend and exposes high-level operations for
+the rest of agentexec. Pick one backend via AGENTEXEC_STATE_BACKEND:
 
-1. **Legacy (single backend)**: A single ``StateBackend`` module handles
-   everything (queue, KV, pub/sub). Set via ``AGENTEXEC_STATE_BACKEND``.
-   This is the default for backward compatibility with the Redis backend.
+  - 'agentexec.state.redis_backend'  (default)
+  - 'agentexec.state.kafka_backend'
 
-2. **Split backends**: Separate KV and stream backends.
-   - ``AGENTEXEC_KV_BACKEND``: Key-value operations (Redis, etc.)
-   - ``AGENTEXEC_STREAM_BACKEND``: Stream operations (Kafka, etc.)
-   When a stream backend is configured, queue and pub/sub operations go
-   through it. Lock operations become no-ops (partitioning handles isolation).
-
-The operations layer (``ops``) provides a unified API that modules like
-``queue.py``, ``schedule.py``, and ``tracker.py`` call into.
+All state operations go through the ops layer (``state.ops``), which
+delegates to whichever backend is loaded. Modules like queue.py,
+schedule.py, and tracker.py should call ops functions rather than
+touching backend primitives directly.
 """
 
 from typing import AsyncGenerator, Coroutine
@@ -29,51 +24,27 @@ from agentexec.state import ops
 from agentexec.state.backend import StateBackend, load_backend
 
 # ---------------------------------------------------------------------------
-# Key constants (used by other modules via state.KEY_*)
-# ---------------------------------------------------------------------------
-
-KEY_RESULT = (CONF.key_prefix, "result")
-KEY_EVENT = (CONF.key_prefix, "event")
-KEY_LOCK = (CONF.key_prefix, "lock")
-KEY_SCHEDULE = (CONF.key_prefix, "schedule")
-KEY_SCHEDULE_QUEUE = (CONF.key_prefix, "schedule_queue")
-CHANNEL_LOGS = (CONF.key_prefix, "logs")
-
-# ---------------------------------------------------------------------------
 # Backend initialization
 # ---------------------------------------------------------------------------
 
-# Legacy backend — always loaded for backward compatibility.
-# Modules that still reference `state.backend` directly will work.
-_legacy_backend: StateBackend | None = None
+# Initialize the ops layer with the configured backend.
+ops.init(CONF.state_backend)
 
-try:
-    import importlib
-    from typing import cast
+# Also load the backend module directly for backward compatibility.
+# Modules that still reference ``state.backend`` will work during migration.
+import importlib as _importlib
 
-    _mod = importlib.import_module(CONF.state_backend)
-    _legacy_backend = load_backend(_mod)
-except Exception:
-    # If the legacy backend can't load (e.g. Redis not installed but Kafka
-    # is configured), that's fine — the ops layer will use the new backends.
-    pass
-
-# Expose legacy backend for modules that import `state.backend` directly.
-# This keeps existing code working during the migration.
-backend: StateBackend = _legacy_backend  # type: ignore[assignment]
-
-# Initialize the operations layer with configured backends.
-# The KV backend defaults to the legacy state_backend module path — but only
-# if the legacy backend actually loaded (i.e. it conforms to the KV protocol).
-# If someone sets state_backend to the kafka module, we don't use it as KV.
-_kv_module = CONF.kv_backend
-if not _kv_module and _legacy_backend is not None:
-    _kv_module = CONF.state_backend
-
-ops.init(
-    kv_backend=_kv_module,
-    stream_backend=CONF.stream_backend,
+backend: StateBackend = load_backend(
+    _importlib.import_module(CONF.state_backend)
 )
+
+# Re-export key constants from ops for backward compatibility.
+KEY_RESULT = ops.KEY_RESULT
+KEY_EVENT = ops.KEY_EVENT
+KEY_LOCK = ops.KEY_LOCK
+KEY_SCHEDULE = ops.KEY_SCHEDULE
+KEY_SCHEDULE_QUEUE = ops.KEY_SCHEDULE_QUEUE
+CHANNEL_LOGS = ops.CHANNEL_LOGS
 
 
 # ---------------------------------------------------------------------------
@@ -189,8 +160,8 @@ def acheck_event(name: str, id: str) -> Coroutine[None, None, bool]:
 async def acquire_lock(lock_key: str, agent_id: str) -> bool:
     """Attempt to acquire a task lock.
 
-    With a stream backend, this is a no-op (always returns True)
-    because Kafka partitioning provides natural task isolation.
+    Kafka backend: always True (partition isolation).
+    Redis backend: SET NX EX with TTL safety net.
     """
     return await ops.acquire_lock(lock_key, agent_id)
 
@@ -198,7 +169,8 @@ async def acquire_lock(lock_key: str, agent_id: str) -> bool:
 async def release_lock(lock_key: str) -> int:
     """Release a task lock.
 
-    With a stream backend, this is a no-op (returns 0).
+    Kafka backend: no-op (returns 0).
+    Redis backend: deletes the lock key.
     """
     return await ops.release_lock(lock_key)
 

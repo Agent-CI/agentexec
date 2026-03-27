@@ -4,10 +4,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from agentexec import state
 from agentexec.config import CONF
 from agentexec.core.logging import get_logger
 from agentexec.core.task import Task
+from agentexec.state import ops
 
 logger = get_logger(__name__)
 
@@ -61,19 +61,24 @@ async def enqueue(
             metadata={"organization_id": "org-123"}
         )
     """
-    push_func = {
-        Priority.HIGH: state.backend.rpush,
-        Priority.LOW: state.backend.lpush,
-    }[priority]
-
     task = Task.create(
         task_name=task_name,
         context=context,
         metadata=metadata,
     )
-    push_func(
+
+    # For stream backends, the partition_key is derived from the task's
+    # lock_key template if the task has one. This ensures all tasks for
+    # the same lock scope land on the same partition.
+    partition_key = None
+    if task._definition is not None:
+        partition_key = task.get_lock_key()
+
+    ops.queue_push(
         queue_name or CONF.queue_name,
         task.model_dump_json(),
+        high_priority=(priority == Priority.HIGH),
+        partition_key=partition_key,
     )
 
     logger.info(f"Enqueued task {task.task_name} with agent_id {task.agent_id}")
@@ -84,7 +89,7 @@ def requeue(
     task: Task,
     *,
     queue_name: str | None = None,
-) -> int:
+) -> None:
     """Push a task back to the end of the queue.
 
     Used when a task's lock cannot be acquired — the task is returned to the
@@ -93,13 +98,11 @@ def requeue(
     Args:
         task: Task to requeue.
         queue_name: Queue name. Defaults to CONF.queue_name.
-
-    Returns:
-        Length of the queue after the push.
     """
-    return state.backend.lpush(
+    ops.queue_push(
         queue_name or CONF.queue_name,
         task.model_dump_json(),
+        high_priority=False,
     )
 
 
@@ -119,14 +122,7 @@ async def dequeue(
     Returns:
         Parsed task data if available, None otherwise.
     """
-    result = await state.backend.brpop(
+    return await ops.queue_pop(
         queue_name or CONF.queue_name,
         timeout=timeout,
     )
-
-    if result is None:
-        return None
-
-    _, task_data = result
-    data: dict[str, Any] = json.loads(task_data)
-    return data

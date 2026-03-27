@@ -1,5 +1,5 @@
 from __future__ import annotations
-from agentexec import state
+from agentexec.state import ops
 
 
 class StateEvent:
@@ -37,12 +37,12 @@ class StateEvent:
 
     def set(self) -> None:
         """Set the event flag to True."""
-        state.set_event(self.name, self.id)
+        ops.set_event(self.name, self.id)
 
     def clear(self) -> None:
         """Reset the event flag to False."""
-        state.clear_event(self.name, self.id)
+        ops.clear_event(self.name, self.id)
 
     async def is_set(self) -> bool:
         """Check if the event flag is True."""
-        return await state.acheck_event(self.name, self.id)
+        return await ops.acheck_event(self.name, self.id)

@@ -19,7 +19,7 @@ class Config(BaseSettings):
     )
     queue_name: str = Field(
         default="agentexec_tasks",
-        description="Name of the Redis list to use as task queue",
+        description="Name of the task queue (Redis list key or Kafka topic base name)",
         validation_alias="AGENTEXEC_QUEUE_NAME",
     )
     num_workers: int = Field(
@@ -79,28 +79,11 @@ class Config(BaseSettings):
     state_backend: str = Field(
         default="agentexec.state.redis_backend",
         description=(
-            "Legacy state backend (fully-qualified module path). "
-            "Prefer kv_backend / stream_backend for new deployments."
+            "State backend module path. Pick one:\n"
+            "  - 'agentexec.state.redis_backend' (default)\n"
+            "  - 'agentexec.state.kafka_backend'"
         ),
         validation_alias="AGENTEXEC_STATE_BACKEND",
-    )
-
-    kv_backend: str | None = Field(
-        default=None,
-        description=(
-            "KV backend module path (e.g. 'agentexec.state.redis_kv_backend'). "
-            "When set, takes precedence over state_backend for KV operations."
-        ),
-        validation_alias="AGENTEXEC_KV_BACKEND",
-    )
-
-    stream_backend: str | None = Field(
-        default=None,
-        description=(
-            "Stream backend module path (e.g. 'agentexec.state.kafka_stream_backend'). "
-            "When set, queue and pub/sub operations use this backend."
-        ),
-        validation_alias="AGENTEXEC_STREAM_BACKEND",
     )
 
     # -- Kafka settings -------------------------------------------------------
@@ -150,11 +133,10 @@ class Config(BaseSettings):
     lock_ttl: int = Field(
         default=1800,
         description=(
-            "TTL in seconds for task lock keys in Redis. "
-            "This is a safety net for worker process death (OOM, SIGKILL) — "
+            "TTL in seconds for task lock keys (Redis backend only). "
+            "Safety net for worker process death (OOM, SIGKILL) — "
             "locks are always explicitly released on task completion or error. "
-            "Set this higher than your longest expected task duration to avoid "
-            "premature lock expiry while a task is still running."
+            "Ignored by the Kafka backend (partition assignment handles isolation)."
         ),
         validation_alias="AGENTEXEC_LOCK_TTL",
     )

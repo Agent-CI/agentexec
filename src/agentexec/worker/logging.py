@@ -1,7 +1,7 @@
 from __future__ import annotations
 import logging
 from pydantic import BaseModel
-from agentexec import state
+from agentexec.state import ops
 
 LOGGER_NAME = "agentexec"
 LOG_CHANNEL = "agentexec:logs"
@@ -65,7 +65,7 @@ class StateLogHandler(logging.Handler):
         """Publish log record to log channel."""
         try:
             message = LogMessage.from_log_record(record)
-            state.publish_log(message.model_dump_json())
+            ops.publish_log(message.model_dump_json())
         except Exception:
             self.handleError(record)
 

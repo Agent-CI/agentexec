@@ -10,7 +10,7 @@ from uuid import uuid4
 from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
 
-from agentexec import state
+from agentexec.state import ops
 from agentexec.config import CONF
 from agentexec.core.db import remove_global_session, set_global_session
 from agentexec.core.queue import dequeue, requeue
@@ -105,7 +105,7 @@ class Worker:
                     lock_key = task.get_lock_key()
 
                     if lock_key is not None:
-                        acquired = await state.acquire_lock(lock_key, str(task.agent_id))
+                        acquired = await ops.acquire_lock(lock_key, str(task.agent_id))
                         if not acquired:
                             self._logger.debug(
                                 f"Worker {self._worker_id} lock held for {task.task_name} "
@@ -120,14 +120,14 @@ class Worker:
                         self._logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
                     finally:
                         if lock_key is not None:
-                            await state.release_lock(lock_key)
+                            await ops.release_lock(lock_key)
         except Exception as e:
             self._logger.exception(f"Worker {self._worker_id} error: {e}")
             # Continue processing other tasks
             # TODO allow configurable behavior here (retry, backoff, fail)
             # TODO all of the actual logic is handled in task.execute(), so I don't know why we ever end up here.
         finally:
-            await state.backend.close()
+            await ops.close()
             remove_global_session()
             self._logger.info(f"Worker {self._worker_id} shutting down")
 
@@ -414,7 +414,7 @@ class Pool:
                 pass
             finally:
                 self.shutdown()
-                await state.backend.close()
+                await ops.close()
 
         try:
             self.start()
@@ -459,7 +459,7 @@ class Pool:
         """Process log messages from the state backend."""
         assert self._log_handler, "Log handler not initialized"
 
-        async for message in state.subscribe_logs():
+        async for message in ops.subscribe_logs():
             log_message = LogMessage.model_validate_json(message)
             self._log_handler.emit(log_message.to_log_record())
 

@@ -1,7 +1,20 @@
 # cspell:ignore rpush lpush brpop RPUSH LPUSH BRPOP
-from typing import TypedDict, AsyncGenerator, Coroutine, Optional
+"""Redis implementation of the agentexec state backend.
+
+Provides all state operations via Redis:
+- Queue: Redis lists with rpush/lpush/brpop
+- KV: Redis strings with optional TTL
+- Counters: Redis INCR/DECR
+- Pub/sub: Redis pub/sub channels
+- Locks: SET NX EX (atomic set-if-not-exists with expiry)
+- Sorted sets: Redis ZADD/ZRANGEBYSCORE/ZREM
+"""
+
+from __future__ import annotations
+
 import importlib
 import json
+from typing import Any, AsyncGenerator, Coroutine, Optional, TypedDict
 
 import redis
 import redis.asyncio
@@ -10,26 +23,27 @@ from pydantic import BaseModel
 from agentexec.config import CONF
 
 __all__ = [
-    "format_key",
-    "serialize",
-    "deserialize",
-    "rpush",
-    "lpush",
-    "brpop",
-    "aget",
+    "close",
+    "queue_push",
+    "queue_pop",
     "get",
-    "aset",
+    "aget",
     "set",
-    "adelete",
+    "aset",
     "delete",
+    "adelete",
     "incr",
     "decr",
     "publish",
     "subscribe",
-    "close",
+    "acquire_lock",
+    "release_lock",
     "zadd",
     "zrangebyscore",
     "zrem",
+    "serialize",
+    "deserialize",
+    "format_key",
     "clear_keys",
 ]
 
@@ -38,89 +52,11 @@ _redis_sync_client: redis.Redis | None = None
 _pubsub: redis.asyncio.client.PubSub | None = None
 
 
-def format_key(*args: str) -> str:
-    """Format a Redis key by joining parts with colons.
-
-    Args:
-        *args: Parts of the key
-
-    Returns:
-        Formatted key string
-    """
-    return ":".join(args)
-
-
-class SerializeWrapper(TypedDict):
-    __class__: str
-    __data__: str
-
-
-def serialize(obj: BaseModel) -> bytes:
-    """Serialize a Pydantic BaseModel to JSON bytes with type information.
-
-    Stores the fully qualified class name alongside the data, similar to pickle.
-    This allows deserialization without needing an external type registry.
-
-    Args:
-        obj: Pydantic BaseModel instance to serialize
-
-    Returns:
-        JSON-encoded bytes containing class info and data
-
-    Raises:
-        TypeError: If obj is not a BaseModel instance
-    """
-    if not isinstance(obj, BaseModel):
-        raise TypeError(f"Expected BaseModel, got {type(obj)}")
-
-    cls = type(obj)
-    wrapper: SerializeWrapper = {
-        "__class__": f"{cls.__module__}.{cls.__qualname__}",
-        "__data__": obj.model_dump_json(),
-    }
-
-    return json.dumps(wrapper).encode("utf-8")
-
-
-def deserialize(data: bytes) -> BaseModel:
-    """Deserialize JSON bytes back to a Pydantic BaseModel instance.
-
-    Uses the stored class information to dynamically import and reconstruct
-    the original type, similar to pickle.
-
-    Args:
-        data: JSON-encoded bytes containing class info and data
-
-    Returns:
-        Deserialized BaseModel instance
-
-    Raises:
-        ImportError: If the class module cannot be imported
-        AttributeError: If the class does not exist in the module
-        ValueError: If the data is invalid JSON or missing required fields
-    """
-    wrapper: SerializeWrapper = json.loads(data.decode("utf-8"))
-    class_path = wrapper["__class__"]
-    json_data = wrapper["__data__"]
-
-    # Import the class dynamically (e.g., "myapp.models.Result" → myapp.models module)
-    module_path, class_name = class_path.rsplit(".", 1)
-    module = importlib.import_module(module_path)
-    cls = getattr(module, class_name)
-
-    result: BaseModel = cls.model_validate_json(json_data)
-    return result
+# -- Connection management ----------------------------------------------------
 
 
 def _get_async_client() -> redis.asyncio.Redis:
-    """Get async Redis client, initializing lazily if needed.
-
-    Returns:
-        Async Redis client instance
-
-    Raises:
-        ValueError: If REDIS_URL is not configured
-    """
+    """Get async Redis client, initializing lazily if needed."""
     global _redis_client
 
     if _redis_client is None:
@@ -131,21 +67,14 @@ def _get_async_client() -> redis.asyncio.Redis:
             CONF.redis_url,
             max_connections=CONF.redis_pool_size,
             socket_connect_timeout=CONF.redis_pool_timeout,
-            decode_responses=False,  # Handle binary data (pickled results)
+            decode_responses=False,
         )
 
     return _redis_client
 
 
 def _get_sync_client() -> redis.Redis:
-    """Get sync Redis client, initializing lazily if needed.
-
-    Returns:
-        Sync Redis client instance
-
-    Raises:
-        ValueError: If REDIS_URL is not configured
-    """
+    """Get sync Redis client, initializing lazily if needed."""
     global _redis_sync_client
 
     if _redis_sync_client is None:
@@ -166,124 +95,73 @@ async def close() -> None:
     """Close all Redis connections and clean up resources."""
     global _redis_client, _redis_sync_client, _pubsub
 
-    # Close pubsub if active
     if _pubsub is not None:
         await _pubsub.close()
         _pubsub = None
 
-    # Close async client
     if _redis_client is not None:
         await _redis_client.aclose()
         _redis_client = None
 
-    # Close sync client
     if _redis_sync_client is not None:
         _redis_sync_client.close()
         _redis_sync_client = None
 
 
-def rpush(key: str, value: str) -> int:
-    """Push value to the right (front) of the list - for high priority tasks.
+# -- Queue operations ---------------------------------------------------------
 
-    Args:
-        key: Redis list key
-        value: Serialized task data
 
-    Returns:
-        Length of the list after the push
+def queue_push(
+    queue_name: str,
+    value: str,
+    *,
+    high_priority: bool = False,
+    partition_key: str | None = None,
+) -> None:
+    """Push a task onto the Redis list queue.
+
+    HIGH priority: rpush (right/front, dequeued first).
+    LOW priority: lpush (left/back, dequeued later).
+    partition_key is ignored (Redis uses locks for isolation).
     """
     client = _get_sync_client()
-    return client.rpush(key, value)  # type: ignore[return-value]
+    if high_priority:
+        client.rpush(queue_name, value)
+    else:
+        client.lpush(queue_name, value)
 
 
-def lpush(key: str, value: str) -> int:
-    """Push value to the left (back) of the list - for low priority tasks.
-
-    Args:
-        key: Redis list key
-        value: Serialized task data
-
-    Returns:
-        Length of the list after the push
-    """
-    client = _get_sync_client()
-    return client.lpush(key, value)  # type: ignore[return-value]
-
-
-async def brpop(key: str, timeout: int = 0) -> Optional[tuple[str, str]]:
-    """Pop value from the right of the list with blocking.
-
-    Args:
-        key: Redis list key
-        timeout: Timeout in seconds (0 = block forever)
-
-    Returns:
-        Tuple of (key, value) or None if timeout
-    """
+async def queue_pop(
+    queue_name: str,
+    *,
+    timeout: int = 1,
+) -> dict[str, Any] | None:
+    """Pop the next task from the Redis list queue (blocking)."""
     client = _get_async_client()
-    result = await client.brpop([key], timeout=timeout)  # type: ignore[misc]
+    result = await client.brpop([queue_name], timeout=timeout)  # type: ignore[misc]
     if result is None:
         return None
-    # Redis returns bytes, decode to string
-    list_key, value = result
-    return (list_key.decode("utf-8"), value.decode("utf-8"))
+    _, value = result
+    return json.loads(value.decode("utf-8"))
 
 
-def aget(key: str) -> Coroutine[None, None, Optional[bytes]]:
-    """Get value for key asynchronously.
-
-    Args:
-        key: Key to retrieve
-
-    Returns:
-        Coroutine that resolves to value as bytes or None if not found
-    """
-    client = _get_async_client()
-    return client.get(key)  # type: ignore[return-value]
+# -- Key-value operations -----------------------------------------------------
 
 
 def get(key: str) -> Optional[bytes]:
-    """Get value for key synchronously.
-
-    Args:
-        key: Key to retrieve
-
-    Returns:
-        Value as bytes or None if not found
-    """
+    """Get value for key synchronously."""
     client = _get_sync_client()
     return client.get(key)  # type: ignore[return-value]
 
 
-def aset(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> Coroutine[None, None, bool]:
-    """Set value for key asynchronously with optional TTL.
-
-    Args:
-        key: Key to set
-        value: Value as bytes
-        ttl_seconds: Optional time-to-live in seconds
-
-    Returns:
-        Coroutine that resolves to True if successful
-    """
+def aget(key: str) -> Coroutine[None, None, Optional[bytes]]:
+    """Get value for key asynchronously."""
     client = _get_async_client()
-    if ttl_seconds is not None:
-        return client.set(key, value, ex=ttl_seconds)  # type: ignore[return-value]
-    else:
-        return client.set(key, value)  # type: ignore[return-value]
+    return client.get(key)  # type: ignore[return-value]
 
 
 def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
-    """Set value for key synchronously with optional TTL.
-
-    Args:
-        key: Key to set
-        value: Value as bytes
-        ttl_seconds: Optional time-to-live in seconds
-
-    Returns:
-        True if successful
-    """
+    """Set value for key synchronously with optional TTL."""
     client = _get_sync_client()
     if ttl_seconds is not None:
         return client.set(key, value, ex=ttl_seconds)  # type: ignore[return-value]
@@ -291,107 +169,53 @@ def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
         return client.set(key, value)  # type: ignore[return-value]
 
 
-def adelete(key: str) -> Coroutine[None, None, int]:
-    """Delete key asynchronously.
-
-    Args:
-        key: Key to delete
-
-    Returns:
-        Coroutine that resolves to number of keys deleted (0 or 1)
-    """
+def aset(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> Coroutine[None, None, bool]:
+    """Set value for key asynchronously with optional TTL."""
     client = _get_async_client()
-    return client.delete(key)  # type: ignore[return-value]
+    if ttl_seconds is not None:
+        return client.set(key, value, ex=ttl_seconds)  # type: ignore[return-value]
+    else:
+        return client.set(key, value)  # type: ignore[return-value]
 
 
 def delete(key: str) -> int:
-    """Delete key synchronously.
-
-    Args:
-        key: Key to delete
-
-    Returns:
-        Number of keys deleted (0 or 1)
-    """
+    """Delete key synchronously."""
     client = _get_sync_client()
     return client.delete(key)  # type: ignore[return-value]
 
 
+def adelete(key: str) -> Coroutine[None, None, int]:
+    """Delete key asynchronously."""
+    client = _get_async_client()
+    return client.delete(key)  # type: ignore[return-value]
+
+
+# -- Atomic counters ----------------------------------------------------------
+
+
 def incr(key: str) -> int:
-    """Increment a counter atomically.
-
-    Args:
-        key: Counter key
-
-    Returns:
-        Value after increment
-    """
+    """Atomically increment counter."""
     client = _get_sync_client()
     return client.incr(key)  # type: ignore[return-value]
 
 
 def decr(key: str) -> int:
-    """Decrement a counter atomically.
-
-    Args:
-        key: Counter key
-
-    Returns:
-        Value after decrement
-    """
+    """Atomically decrement counter."""
     client = _get_sync_client()
     return client.decr(key)  # type: ignore[return-value]
 
 
-async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
-    """Attempt to acquire a distributed lock using SET NX EX.
-
-    Args:
-        key: Lock key
-        value: Lock value (typically agent_id for debugging)
-        ttl_seconds: Lock expiry in seconds (safety net for dead processes)
-
-    Returns:
-        True if lock was acquired, False if already held
-    """
-    client = _get_async_client()
-    result = await client.set(key, value, nx=True, ex=ttl_seconds)
-    return result is not None
-
-
-async def release_lock(key: str) -> int:
-    """Release a distributed lock.
-
-    Args:
-        key: Lock key to release
-
-    Returns:
-        Number of keys deleted (0 or 1)
-    """
-    client = _get_async_client()
-    return await client.delete(key)  # type: ignore[return-value]
+# -- Pub/sub ------------------------------------------------------------------
 
 
 def publish(channel: str, message: str) -> None:
-    """Publish message to a channel.
-
-    Args:
-        channel: Channel name
-        message: Message to publish
-    """
+    """Publish message to a channel."""
     client = _get_sync_client()
     client.publish(channel, message)
 
 
 async def subscribe(channel: str) -> AsyncGenerator[str, None]:
-    """Subscribe to a channel and yield messages.
-
-    Args:
-        channel: Channel name
-
-    Yields:
-        Messages from the channel as strings
-    """
+    """Subscribe to a channel and yield messages."""
     global _pubsub
 
     client = _get_async_client()
@@ -401,7 +225,6 @@ async def subscribe(channel: str) -> AsyncGenerator[str, None]:
     try:
         async for message in _pubsub.listen():
             if message["type"] == "message":
-                # Decode bytes to string
                 data = message["data"]
                 if isinstance(data, bytes):
                     yield data.decode("utf-8")
@@ -413,16 +236,27 @@ async def subscribe(channel: str) -> AsyncGenerator[str, None]:
         _pubsub = None
 
 
+# -- Distributed locks --------------------------------------------------------
+
+
+async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
+    """Attempt to acquire a distributed lock using SET NX EX."""
+    client = _get_async_client()
+    result = await client.set(key, value, nx=True, ex=ttl_seconds)
+    return result is not None
+
+
+async def release_lock(key: str) -> int:
+    """Release a distributed lock."""
+    client = _get_async_client()
+    return await client.delete(key)  # type: ignore[return-value]
+
+
+# -- Sorted sets --------------------------------------------------------------
+
+
 def zadd(key: str, mapping: dict[str, float]) -> int:
-    """Add members to a sorted set with scores.
-
-    Args:
-        key: Sorted set key
-        mapping: Dict of {member: score}
-
-    Returns:
-        Number of new members added
-    """
+    """Add members to a sorted set with scores."""
     client = _get_sync_client()
     return client.zadd(key, mapping)  # type: ignore[return-value]
 
@@ -430,54 +264,73 @@ def zadd(key: str, mapping: dict[str, float]) -> int:
 async def zrangebyscore(
     key: str, min_score: float, max_score: float
 ) -> list[bytes]:
-    """Get members with scores between min and max.
-
-    Args:
-        key: Sorted set key
-        min_score: Minimum score (inclusive)
-        max_score: Maximum score (inclusive)
-
-    Returns:
-        List of members as bytes
-    """
+    """Get members with scores between min and max."""
     client = _get_async_client()
     return await client.zrangebyscore(key, min_score, max_score)  # type: ignore[return-value]
 
 
 def zrem(key: str, *members: str) -> int:
-    """Remove members from a sorted set.
-
-    Args:
-        key: Sorted set key
-        *members: Members to remove
-
-    Returns:
-        Number of members removed
-    """
+    """Remove members from a sorted set."""
     client = _get_sync_client()
     return client.zrem(key, *members)  # type: ignore[return-value]
 
 
+# -- Serialization ------------------------------------------------------------
+
+
+class _SerializeWrapper(TypedDict):
+    __class__: str
+    __data__: str
+
+
+def serialize(obj: BaseModel) -> bytes:
+    """Serialize a Pydantic BaseModel to JSON bytes with type information."""
+    if not isinstance(obj, BaseModel):
+        raise TypeError(f"Expected BaseModel, got {type(obj)}")
+
+    cls = type(obj)
+    wrapper: _SerializeWrapper = {
+        "__class__": f"{cls.__module__}.{cls.__qualname__}",
+        "__data__": obj.model_dump_json(),
+    }
+    return json.dumps(wrapper).encode("utf-8")
+
+
+def deserialize(data: bytes) -> BaseModel:
+    """Deserialize JSON bytes back to a typed Pydantic BaseModel instance."""
+    wrapper: _SerializeWrapper = json.loads(data.decode("utf-8"))
+    class_path = wrapper["__class__"]
+    json_data = wrapper["__data__"]
+
+    module_path, class_name = class_path.rsplit(".", 1)
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
+
+    result: BaseModel = cls.model_validate_json(json_data)
+    return result
+
+
+# -- Key formatting -----------------------------------------------------------
+
+
+def format_key(*args: str) -> str:
+    """Format a Redis key by joining parts with colons."""
+    return ":".join(args)
+
+
+# -- Cleanup ------------------------------------------------------------------
+
+
 def clear_keys() -> int:
-    """Clear all Redis keys managed by this application.
-
-    Uses SCAN to safely iterate through keys without blocking Redis.
-    Only deletes keys that match the configured prefix and queue name.
-
-    Returns:
-        Total number of keys deleted, or 0 if Redis is not configured
-    """
+    """Clear all Redis keys managed by this application."""
     if CONF.redis_url is None:
         return 0
 
     client = _get_sync_client()
     deleted = 0
 
-    # Delete the task queue
     deleted += client.delete(CONF.queue_name)
 
-    # Scan and delete all keys matching the configured prefix
-    # Pattern: "agentexec:*" (or whatever key_prefix is configured)
     pattern = f"{CONF.key_prefix}:*"
     cursor = 0
 
