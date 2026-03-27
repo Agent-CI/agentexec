@@ -266,7 +266,7 @@ class TestQueue:
         }
         await queue_push(q, json.dumps(task_data))
 
-        result = await queue_pop(q, timeout=5)
+        result = await queue_pop(q, timeout=10)
         assert result is not None
         assert result["task_name"] == "test_task"
         assert result["context"]["query"] == "hello"
@@ -292,7 +292,7 @@ class TestQueue:
         }
         await queue_push(q, json.dumps(task_data), partition_key="user-123")
 
-        result = await queue_pop(q, timeout=5)
+        result = await queue_pop(q, timeout=10)
         assert result is not None
         assert result["task_name"] == "keyed_task"
         await queue_commit(q)
@@ -312,7 +312,7 @@ class TestQueue:
 
         received = []
         for _ in range(3):
-            result = await queue_pop(q, timeout=5)
+            result = await queue_pop(q, timeout=10)
             assert result is not None
             received.append(result["agent_id"])
             await queue_commit(q)

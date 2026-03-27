@@ -101,10 +101,12 @@ async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
     consumer = AIOKafkaConsumer(
         topic,
         bootstrap_servers=get_bootstrap_servers(),
-        group_id=f"{CONF.key_prefix}-log-collector",
+        group_id=f"{CONF.key_prefix}-log-{topic}",
         client_id=client_id("log-collector"),
         auto_offset_reset="latest",
         enable_auto_commit=True,
+        session_timeout_ms=10_000,
+        heartbeat_interval_ms=1_000,
     )
     await consumer.start()  # type: ignore[union-attr]
 

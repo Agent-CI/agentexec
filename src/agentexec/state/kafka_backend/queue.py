@@ -57,19 +57,28 @@ async def queue_pop(
         consumer = AIOKafkaConsumer(
             topic,
             bootstrap_servers=get_bootstrap_servers(),
-            group_id=f"{CONF.key_prefix}-workers",
+            group_id=f"{CONF.key_prefix}-workers-{topic}",
             client_id=client_id("worker"),
             auto_offset_reset="earliest",
             enable_auto_commit=False,
+            session_timeout_ms=10_000,
+            heartbeat_interval_ms=1_000,
         )
         await consumer.start()  # type: ignore[union-attr]
         consumers[consumer_key] = consumer
 
     consumer = consumers[consumer_key]
-    result = await consumer.getmany(timeout_ms=timeout * 1000)  # type: ignore[union-attr]
-    for tp, messages in result.items():
-        for msg in messages:
-            return json.loads(msg.value.decode("utf-8"))
+
+    # Retry getmany in case partition assignment is still in progress
+    deadline = timeout * 1000
+    interval = min(1000, deadline)
+    elapsed = 0
+    while elapsed < deadline:
+        result = await consumer.getmany(timeout_ms=interval)  # type: ignore[union-attr]
+        for tp, messages in result.items():
+            for msg in messages:
+                return json.loads(msg.value.decode("utf-8"))
+        elapsed += interval
 
     return None
 
