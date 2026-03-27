@@ -17,6 +17,7 @@ from agentexec.state.kafka_backend.connection import (
     client_id,
     ensure_topic,
     get_bootstrap_servers,
+    get_topic_partitions,
     kv_topic,
     logs_topic,
     produce,
@@ -93,23 +94,24 @@ def log_publish(channel: str, message: str) -> None:
 
 async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
     """Consume log messages from the logs topic."""
-    import uuid
-
-    from aiokafka import AIOKafkaConsumer
+    from aiokafka import AIOKafkaConsumer, TopicPartition
 
     topic = logs_topic()
     await ensure_topic(topic)
 
-    # Unique group_id per subscriber so each gets its own copy of messages
+    # Get partition info from admin metadata
+    partition_ids = await get_topic_partitions(topic)
+    tps = [TopicPartition(topic, p) for p in partition_ids]
+
+    # Manual partition assignment — no consumer group overhead
     consumer = AIOKafkaConsumer(
-        topic,
         bootstrap_servers=get_bootstrap_servers(),
-        group_id=f"{CONF.key_prefix}-log-{uuid.uuid4().hex[:8]}",
         client_id=client_id("log-collector"),
-        auto_offset_reset="latest",
-        enable_auto_commit=True,
+        enable_auto_commit=False,
     )
     await consumer.start()
+    consumer.assign(tps)
+    await consumer.seek_to_end(*tps)
 
     try:
         async for msg in consumer:

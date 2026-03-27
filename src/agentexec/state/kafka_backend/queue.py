@@ -1,16 +1,16 @@
-"""Kafka queue operations using per-topic consumer groups."""
+"""Kafka queue operations using manual partition assignment (no consumer groups)."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
 
-from agentexec.config import CONF
 from agentexec.state.kafka_backend.connection import (
     client_id,
     ensure_topic,
     get_bootstrap_servers,
     get_consumers,
+    get_topic_partitions,
     produce,
     tasks_topic,
 )
@@ -43,10 +43,11 @@ async def queue_pop(
 ) -> dict[str, Any] | None:
     """Consume the next task from the tasks topic.
 
-    Uses a per-topic consumer group so each queue has independent
-    consumer coordination with no cross-topic rebalancing.
+    Uses manual partition assignment without consumer groups to avoid
+    group-join/rebalance overhead entirely.  Partition info comes from
+    the admin client metadata.
     """
-    from aiokafka import AIOKafkaConsumer
+    from aiokafka import AIOKafkaConsumer, TopicPartition
 
     topic = tasks_topic(queue_name)
     consumer_key = f"worker:{topic}"
@@ -54,21 +55,25 @@ async def queue_pop(
 
     if consumer_key not in consumers:
         await ensure_topic(topic)
+
+        # Get partition info from admin metadata (not consumer metadata)
+        partition_ids = await get_topic_partitions(topic)
+        tps = [TopicPartition(topic, p) for p in partition_ids]
+
         consumer = AIOKafkaConsumer(
-            topic,
             bootstrap_servers=get_bootstrap_servers(),
-            group_id=f"{CONF.key_prefix}-workers-{topic}",
             client_id=client_id("worker"),
-            auto_offset_reset="earliest",
             enable_auto_commit=False,
-            max_poll_interval_ms=30_000,
         )
         await consumer.start()
+        consumer.assign(tps)
+        await consumer.seek_to_beginning(*tps)
+
         consumers[consumer_key] = consumer
 
     consumer = consumers[consumer_key]
 
-    # Poll with retries — first call after group-join may return empty
+    # Poll with retries — first call may return empty while position settles
     deadline = timeout * 1000
     interval = min(1000, deadline)
     elapsed = 0
@@ -83,12 +88,8 @@ async def queue_pop(
 
 
 async def queue_commit(queue_name: str) -> None:
-    """Commit the consumer offset — acknowledges successful processing."""
-    topic = tasks_topic(queue_name)
-    consumer_key = f"worker:{topic}"
-    consumers = get_consumers()
-    if consumer_key in consumers:
-        await consumers[consumer_key].commit()
+    """No-op — offset tracking is implicit via consumer position."""
+    pass
 
 
 async def queue_nack(queue_name: str) -> None:

@@ -154,6 +154,18 @@ async def ensure_topic(topic: str, *, compact: bool = False) -> None:
     _initialized_topics.add(topic)
 
 
+async def get_topic_partitions(topic: str) -> list[int]:
+    """Get partition IDs for a topic via the admin client's metadata."""
+    admin = await get_admin()
+    topics_meta = await admin.describe_topics([topic])  # type: ignore[union-attr]
+    for t in topics_meta:
+        if t.get("topic") == topic:
+            parts = t.get("partitions", [])
+            if parts:
+                return sorted(p["partition"] for p in parts)
+    return [0]
+
+
 def get_consumers() -> dict[str, object]:
     """Access the consumers dict (used by queue module)."""
     return _consumers
