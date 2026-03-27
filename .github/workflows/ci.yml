@@ -34,6 +34,7 @@ jobs:
         run: |
           uv run pytest tests/ \
             --ignore=tests/test_kafka_integration.py \
+            -o "addopts=" \
             -q --tb=short
         env:
           REDIS_URL: "redis://localhost:6379"
@@ -46,7 +47,7 @@ jobs:
 
     services:
       kafka:
-        image: bitnami/kafka:3.9
+        image: bitnami/kafka:3.7
         ports:
           - 9092:9092
         env:
@@ -92,10 +93,11 @@ jobs:
 
       - name: Wait for Kafka to be ready
         run: |
-          echo "Waiting for Kafka health check to pass..."
+          echo "Waiting for Kafka..."
           for i in $(seq 1 30); do
-            if docker exec $(docker ps -q --filter "ancestor=bitnami/kafka:3.9") \
-              kafka-topics.sh --bootstrap-server localhost:9092 --list 2>/dev/null; then
+            if nc -z localhost 9092 2>/dev/null; then
+              echo "Kafka port is open"
+              sleep 5
               echo "Kafka is ready"
               exit 0
             fi
@@ -108,6 +110,7 @@ jobs:
       - name: Run Kafka integration tests
         run: |
           uv run pytest tests/test_kafka_integration.py \
+            -o "addopts=" \
             -v --tb=short
         env:
           AGENTEXEC_STATE_BACKEND: agentexec.state.kafka_backend
