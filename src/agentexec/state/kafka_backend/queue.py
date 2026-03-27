@@ -1,4 +1,4 @@
-"""Kafka queue operations using manual partition assignment."""
+"""Kafka queue operations using manual partition assignment (no consumer groups)."""
 
 from __future__ import annotations
 
@@ -57,8 +57,8 @@ async def queue_pop(
 ) -> dict[str, Any] | None:
     """Consume the next task from the tasks topic.
 
-    Uses manual partition assignment (no consumer group) so there is no
-    group-join/rebalance overhead.  Offset tracking is manual via commit().
+    Uses manual partition assignment without consumer groups to avoid
+    group-join/rebalance overhead entirely.
     """
     from aiokafka import AIOKafkaConsumer
 
@@ -72,21 +72,13 @@ async def queue_pop(
             bootstrap_servers=get_bootstrap_servers(),
             client_id=client_id("worker"),
             enable_auto_commit=False,
-            group_id=f"{CONF.key_prefix}-workers-{topic}",
         )
         await consumer.start()
 
-        # Manually assign all partitions for this topic
+        # Manually assign all partitions and seek to beginning
         tps = await _discover_partitions(consumer, topic)
         consumer.assign(tps)
-
-        # Seek to committed offsets (or beginning if none committed)
-        for tp in tps:
-            committed = await consumer.committed(tp)
-            if committed is not None:
-                consumer.seek(tp, committed)
-            else:
-                await consumer.seek_to_beginning(tp)
+        await consumer.seek_to_beginning(*tps)
 
         consumers[consumer_key] = consumer
 
@@ -107,12 +99,12 @@ async def queue_pop(
 
 
 async def queue_commit(queue_name: str) -> None:
-    """Commit the consumer offset — acknowledges successful processing."""
-    topic = tasks_topic(queue_name)
-    consumer_key = f"worker:{topic}"
-    consumers = get_consumers()
-    if consumer_key in consumers:
-        await consumers[consumer_key].commit()
+    """No-op for manual assignment without consumer groups.
+
+    Offset tracking is implicit — the consumer position advances
+    after each getmany() call.
+    """
+    pass
 
 
 async def queue_nack(queue_name: str) -> None:
