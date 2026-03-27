@@ -63,12 +63,35 @@ class StateBackend(Protocol):
     ) -> dict[str, Any] | None:
         """Pop the next task from the queue.
 
+        The task is NOT considered acknowledged until queue_commit() is called.
+        If the worker crashes before committing, the task will be redelivered
+        (Kafka) or is already removed (Redis — at-most-once by nature).
+
         Args:
             queue_name: Queue/topic name.
             timeout: Seconds to wait before returning None.
 
         Returns:
             Parsed task data dict, or None if nothing available.
+        """
+        ...
+
+    @staticmethod
+    async def queue_commit(queue_name: str) -> None:
+        """Acknowledge successful processing of the last popped task.
+
+        Kafka: commits the consumer offset so the message won't be redelivered.
+        Redis: no-op (BRPOP already removed the message).
+        """
+        ...
+
+    @staticmethod
+    async def queue_nack(queue_name: str) -> None:
+        """Signal that the last popped task should be retried.
+
+        Kafka: does NOT commit the offset — on the next poll or rebalance,
+        the message will be redelivered to this or another consumer.
+        Redis: no-op (the message is already gone from the list).
         """
         ...
 

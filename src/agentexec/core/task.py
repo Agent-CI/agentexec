@@ -6,8 +6,9 @@ from uuid import UUID
 
 from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
 
-from agentexec import activity, state
+from agentexec import activity
 from agentexec.config import CONF
+from agentexec.state import ops
 
 
 TaskResult: TypeAlias = BaseModel
@@ -197,6 +198,7 @@ class Task(BaseModel):
     task_name: str
     context: BaseModel
     agent_id: UUID
+    retry_count: int = 0
     _definition: TaskDefinition | None = PrivateAttr(default=None)
 
     @field_serializer("context")
@@ -314,7 +316,7 @@ class Task(BaseModel):
 
             # TODO ensure we are properly supporting None return values
             if isinstance(result, BaseModel):
-                await state.aset_result(
+                await ops.aset_result(
                     self.agent_id,
                     result,
                     ttl_seconds=CONF.result_ttl,

@@ -98,8 +98,8 @@ class Worker:
 
     async def _run(self) -> None:
         """Async main loop - polls queue and processes tasks."""
+        queue = self._context.queue_name
         try:
-            # No sleep needed - dequeue() uses brpop which blocks waiting for tasks
             while not await self._context.shutdown_event.is_set():
                 if (task := await self._dequeue_task()) is not None:
                     lock_key = task.get_lock_key()
@@ -111,21 +111,44 @@ class Worker:
                                 f"Worker {self._worker_id} lock held for {task.task_name} "
                                 f"(lock_key={lock_key}), requeuing"
                             )
-                            requeue(task, queue_name=self._context.queue_name)
+                            requeue(task, queue_name=queue)
+                            await ops.queue_commit(queue)
                             continue
 
                     try:
                         self._logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                        await task.execute()
-                        self._logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
+                        result = await task.execute()
+
+                        if result is not None:
+                            # Task succeeded — commit the offset
+                            await ops.queue_commit(queue)
+                            self._logger.info(
+                                f"Worker {self._worker_id} completed: {task.task_name}"
+                            )
+                        else:
+                            # task.execute() returned None — task errored.
+                            # Check retry count to decide commit vs nack.
+                            retry_count = task.retry_count
+                            if retry_count < CONF.max_task_retries:
+                                # Don't commit — let the message be redelivered
+                                await ops.queue_nack(queue)
+                                self._logger.warning(
+                                    f"Worker {self._worker_id} task {task.task_name} failed "
+                                    f"(attempt {retry_count + 1}/{CONF.max_task_retries}), "
+                                    f"will retry"
+                                )
+                            else:
+                                # Retries exhausted — commit to move past this message
+                                await ops.queue_commit(queue)
+                                self._logger.error(
+                                    f"Worker {self._worker_id} task {task.task_name} failed "
+                                    f"after {retry_count + 1} attempts, giving up"
+                                )
                     finally:
                         if lock_key is not None:
                             await ops.release_lock(lock_key)
         except Exception as e:
             self._logger.exception(f"Worker {self._worker_id} error: {e}")
-            # Continue processing other tasks
-            # TODO allow configurable behavior here (retry, backoff, fail)
-            # TODO all of the actual logic is handled in task.execute(), so I don't know why we ever end up here.
         finally:
             await ops.close()
             remove_global_session()

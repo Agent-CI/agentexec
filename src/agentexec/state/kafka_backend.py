@@ -234,7 +234,14 @@ async def queue_pop(
     *,
     timeout: int = 1,
 ) -> dict[str, Any] | None:
-    """Consume the next task from the tasks topic."""
+    """Consume the next task from the tasks topic.
+
+    The message offset is NOT committed here — call queue_commit() after
+    successful processing, or queue_nack() to allow redelivery.
+
+    If the worker crashes before committing, Kafka's consumer group protocol
+    will reassign the partition and redeliver the message to another consumer.
+    """
     from aiokafka import AIOKafkaConsumer
 
     topic = _tasks_topic(queue_name)
@@ -257,10 +264,35 @@ async def queue_pop(
     result = await consumer.getmany(timeout_ms=timeout * 1000)  # type: ignore[union-attr]
     for tp, messages in result.items():
         for msg in messages:
-            await consumer.commit()  # type: ignore[union-attr]
+            # Do NOT commit — let the worker decide via queue_commit/queue_nack
             return json.loads(msg.value.decode("utf-8"))
 
     return None
+
+
+async def queue_commit(queue_name: str) -> None:
+    """Commit the consumer offset — acknowledges successful processing.
+
+    After this call, the message will not be redelivered even if the
+    worker crashes later.
+    """
+    topic = _tasks_topic(queue_name)
+    consumer_key = f"worker:{topic}"
+    if consumer_key in _consumers:
+        await _consumers[consumer_key].commit()  # type: ignore[union-attr]
+
+
+async def queue_nack(queue_name: str) -> None:
+    """Do NOT commit the offset — the message will be redelivered.
+
+    On the next poll (or after a rebalance if the worker dies), this
+    message will be returned again, either to this consumer or to another
+    consumer in the group. This keeps the task in its original position
+    within its partition, preserving ordering.
+    """
+    # Intentionally do nothing — the uncommitted offset means Kafka will
+    # redeliver the message. The consumer's next poll will return it again.
+    pass
 
 
 # ---------------------------------------------------------------------------

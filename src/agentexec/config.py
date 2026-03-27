@@ -130,6 +130,17 @@ class Config(BaseSettings):
         ),
         validation_alias="AGENTEXEC_SCHEDULER_TIMEZONE",
     )
+    max_task_retries: int = Field(
+        default=3,
+        description=(
+            "Maximum number of times a failed task will be retried before "
+            "being marked as a permanent error. Set to 0 to disable retries. "
+            "With the Kafka backend, retries preserve partition ordering — "
+            "the task stays in its original position in the queue."
+        ),
+        validation_alias="AGENTEXEC_MAX_TASK_RETRIES",
+    )
+
     lock_ttl: int = Field(
         default=1800,
         description=(

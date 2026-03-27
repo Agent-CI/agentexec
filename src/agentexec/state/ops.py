@@ -110,8 +110,31 @@ async def queue_pop(
     *,
     timeout: int = 1,
 ) -> dict[str, Any] | None:
-    """Pop the next task from the queue."""
+    """Pop the next task from the queue.
+
+    The task is not acknowledged until queue_commit() is called.
+    """
     return await get_backend().queue_pop(queue_name, timeout=timeout)
+
+
+async def queue_commit(queue_name: str) -> None:
+    """Acknowledge successful processing of the last task.
+
+    Kafka: commits the offset so the message won't be redelivered.
+    Redis: no-op (already removed by BRPOP).
+    """
+    await get_backend().queue_commit(queue_name)
+
+
+async def queue_nack(queue_name: str) -> None:
+    """Signal that the last task should be retried.
+
+    Kafka: skips the commit — the message stays at the uncommitted offset
+    and will be redelivered on the next poll or after a rebalance. The task
+    stays in its original position within its partition.
+    Redis: no-op.
+    """
+    await get_backend().queue_nack(queue_name)
 
 
 # ---------------------------------------------------------------------------
