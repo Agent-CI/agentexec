@@ -4,22 +4,15 @@ These tests run against a real Kafka broker. They are skipped if the
 ``aiokafka`` package is not installed or ``KAFKA_BOOTSTRAP_SERVERS`` is
 not set.
 
-Run locally with a Kafka broker (e.g. via Docker):
+Run locally:
 
-    docker run -d --name kafka -p 9092:9092 \\
-        -e KAFKA_CFG_NODE_ID=1 \\
-        -e KAFKA_CFG_PROCESS_ROLES=broker,controller \\
-        -e KAFKA_CFG_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \\
-        -e KAFKA_CFG_CONTROLLER_LISTENER_NAMES=CONTROLLER \\
-        -e KAFKA_CFG_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \\
-        -e KAFKA_CFG_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \\
-        -e KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \\
-        -e KAFKA_CFG_INTER_BROKER_LISTENER_NAME=PLAINTEXT \\
-        bitnami/kafka:3.9
+    docker compose -f docker-compose.kafka.yml up -d
 
     AGENTEXEC_STATE_BACKEND=agentexec.state.kafka_backend \\
     KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \\
-    pytest tests/test_kafka_integration.py -v
+    uv run pytest tests/test_kafka_integration.py -v
+
+    docker compose -f docker-compose.kafka.yml down
 """
 
 from __future__ import annotations
@@ -264,13 +257,10 @@ class TestQueue:
             "context": {"query": "hello"},
             "agent_id": str(uuid.uuid4()),
         }
-        print(f"\n[DEBUG] Pushing to queue: {q}")
         await queue_push(q, json.dumps(task_data))
-        print(f"[DEBUG] Push complete, calling queue_pop with timeout=10")
 
         result = await queue_pop(q, timeout=10)
-        print(f"[DEBUG] Pop result: {result}")
-        assert result is not None, f"queue_pop returned None for queue {q}"
+        assert result is not None
         assert result["task_name"] == "test_task"
         assert result["context"]["query"] == "hello"
 

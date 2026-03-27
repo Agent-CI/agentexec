@@ -29,13 +29,11 @@ async def queue_push(
     the same partition_key are guaranteed to be processed in order by a
     single consumer — this replaces distributed locking.
     """
-    topic = tasks_topic(queue_name)
     await produce(
-        topic,
+        tasks_topic(queue_name),
         value.encode("utf-8"),
         key=partition_key,
     )
-    print(f"[queue_push] produced to topic={topic}")
 
 
 async def queue_pop(
@@ -61,7 +59,6 @@ async def queue_pop(
         # Get partition info from admin metadata (not consumer metadata)
         partition_ids = await get_topic_partitions(topic)
         tps = [TopicPartition(topic, p) for p in partition_ids]
-        print(f"[queue_pop] topic={topic} partitions={partition_ids} tps={tps}")
 
         consumer = AIOKafkaConsumer(
             bootstrap_servers=get_bootstrap_servers(),
@@ -71,7 +68,6 @@ async def queue_pop(
         await consumer.start()
         consumer.assign(tps)
         await consumer.seek_to_beginning(*tps)
-        print(f"[queue_pop] assigned + seeked, assignment={consumer.assignment()}")
 
         consumers[consumer_key] = consumer
 
@@ -87,16 +83,6 @@ async def queue_pop(
             for msg in messages:
                 return json.loads(msg.value.decode("utf-8"))
         elapsed += interval
-
-    # Debug: print consumer state when no messages found
-    assignment = consumer.assignment()
-    positions = {}
-    for tp in assignment:
-        try:
-            positions[str(tp)] = await consumer.position(tp)
-        except Exception as e:
-            positions[str(tp)] = f"error: {e}"
-    print(f"[queue_pop] TIMEOUT topic={topic} assignment={assignment} positions={positions}")
 
     return None
 
