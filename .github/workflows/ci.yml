@@ -47,7 +47,7 @@ jobs:
 
     services:
       kafka:
-        image: apache/kafka:3.9.2
+        image: apache/kafka:latest
         ports:
           - 9092:9092
         env:
