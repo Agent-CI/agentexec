@@ -21,7 +21,7 @@ from pydantic import BaseModel
 
 from agentexec.config import CONF
 from agentexec.state import ops
-from agentexec.state.backend import StateBackend, load_backend
+from agentexec.state.backend import load_backend
 
 # ---------------------------------------------------------------------------
 # Backend initialization
@@ -34,7 +34,7 @@ ops.init(CONF.state_backend)
 # Modules that still reference ``state.backend`` will work during migration.
 import importlib as _importlib
 
-backend: StateBackend = load_backend(
+backend = load_backend(
     _importlib.import_module(CONF.state_backend)
 )
 
