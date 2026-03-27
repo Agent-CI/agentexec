@@ -243,12 +243,12 @@ async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
     await requeue(task2)
 
     # Dequeue should return task_1 first (from front/right), then task_2 (from back/left)
-    from agentexec.core.queue import dequeue
+    from agentexec.state import ops
 
-    result1 = await dequeue(timeout=1)
+    result1 = await ops.queue_pop(ax.CONF.queue_name, timeout=1)
     assert result1 is not None
     assert result1["task_name"] == "task_1"
 
-    result2 = await dequeue(timeout=1)
+    result2 = await ops.queue_pop(ax.CONF.queue_name, timeout=1)
     assert result2 is not None
     assert result2["task_name"] == "task_2"

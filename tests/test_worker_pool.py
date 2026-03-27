@@ -209,9 +209,7 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
         queue_name="test_queue",
     )
 
-    worker = Worker(worker_id=0, context=context)
-
-    # Mock dequeue to return task data
+    # Mock queue_pop to return task data
     agent_id = uuid.uuid4()
     task_data = {
         "task_name": "test_task",
@@ -219,12 +217,13 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
         "agent_id": str(agent_id),
     }
 
-    async def mock_dequeue(**kwargs):
+    async def mock_queue_pop(*args, **kwargs):
         return task_data
 
-    monkeypatch.setattr("agentexec.worker.pool.dequeue", mock_dequeue)
+    monkeypatch.setattr("agentexec.state.ops.queue_pop", mock_queue_pop)
 
-    task = await worker._dequeue_task()
+    from agentexec.core.queue import dequeue
+    task = await dequeue(context.tasks, queue_name="test_queue", timeout=1)
 
     assert task is not None
     assert task.task_name == "test_task"
@@ -233,26 +232,16 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     assert task.agent_id == agent_id
 
 
-async def test_worker_dequeue_task_returns_none_on_empty_queue(pool, monkeypatch) -> None:
-    """Test Worker._dequeue_task returns None when queue is empty."""
-    from agentexec.worker.pool import Worker, WorkerContext
-    from agentexec.worker.event import StateEvent
+async def test_dequeue_returns_none_on_empty_queue(pool, monkeypatch) -> None:
+    """Test dequeue returns None when queue is empty."""
 
-    context = WorkerContext(
-        database_url="sqlite:///:memory:",
-        shutdown_event=StateEvent("shutdown", "test-worker"),
-        tasks=pool._context.tasks,
-        queue_name="test_queue",
-    )
-
-    worker = Worker(worker_id=0, context=context)
-
-    async def mock_dequeue(**kwargs):
+    async def mock_queue_pop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("agentexec.worker.pool.dequeue", mock_dequeue)
+    monkeypatch.setattr("agentexec.state.ops.queue_pop", mock_queue_pop)
 
-    task = await worker._dequeue_task()
+    from agentexec.core.queue import dequeue
+    task = await dequeue(pool._context.tasks, queue_name="test_queue", timeout=1)
 
     assert task is None
 

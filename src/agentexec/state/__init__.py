@@ -11,8 +11,7 @@ delegates to whichever backend is loaded. Modules like queue.py,
 schedule.py, and tracker.py should call ops functions rather than
 touching backend primitives directly.
 
-All I/O operations are async. Only publish_log remains sync (Python
-logging handler requirement).
+All I/O operations are async.
 """
 
 from typing import AsyncGenerator
@@ -89,9 +88,9 @@ async def delete_result(agent_id: UUID | str) -> int:
     return await ops.delete_result(agent_id)
 
 
-def publish_log(message: str) -> None:
+async def publish_log(message: str) -> None:
     """Publish a log message to the log channel."""
-    ops.publish_log(message)
+    await ops.publish_log(message)
 
 
 def subscribe_logs() -> AsyncGenerator[str, None]:
@@ -114,7 +113,7 @@ async def check_event(name: str, id: str) -> bool:
     return await ops.check_event(name, id)
 
 
-async def acquire_lock(lock_key: str, agent_id: str) -> bool:
+async def acquire_lock(lock_key: str, agent_id: UUID) -> bool:
     """Attempt to acquire a task lock."""
     return await ops.acquire_lock(lock_key, agent_id)
 

@@ -38,25 +38,15 @@ def _queue_key() -> str:
 
 @pytest.fixture
 def fake_redis(monkeypatch):
-    """Setup fake redis for state backend with shared state."""
+    """Setup fake redis for state backend."""
     import fakeredis
 
     server = fakeredis.FakeServer()
-    fake_redis_sync = fakeredis.FakeRedis(server=server, decode_responses=False)
     fake_redis_async = fake_aioredis.FakeRedis(server=server, decode_responses=False)
-
-    def get_fake_sync_client():
-        return fake_redis_sync
 
     def get_fake_async_client():
         return fake_redis_async
 
-    monkeypatch.setattr(
-        "agentexec.state.redis_backend.connection.get_sync_client", get_fake_sync_client
-    )
-    monkeypatch.setattr(
-        "agentexec.state.redis_backend.state.get_sync_client", get_fake_sync_client
-    )
     monkeypatch.setattr(
         "agentexec.state.redis_backend.state.get_async_client", get_fake_async_client
     )
@@ -64,7 +54,7 @@ def fake_redis(monkeypatch):
         "agentexec.state.redis_backend.queue.get_async_client", get_fake_async_client
     )
 
-    yield fake_redis_sync
+    yield fake_redis_async
 
 
 @pytest.fixture
@@ -87,6 +77,16 @@ def pool():
         pass
 
     return p
+
+
+async def _force_due(fake_redis, task_name):
+    """Helper: set a schedule's next_run to the past so tick() picks it up."""
+    data = await fake_redis.get(_schedule_key(task_name))
+    st = ScheduledTask.model_validate_json(data)
+    st.next_run = time.time() - 10
+    await fake_redis.set(_schedule_key(task_name), st.model_dump_json().encode())
+    await fake_redis.zadd(_queue_key(), {task_name: st.next_run})
+    return st
 
 
 # ---------------------------------------------------------------------------
@@ -226,7 +226,7 @@ class TestScheduleRegister:
             context=RefreshContext(scope="all"),
         )
 
-        data = fake_redis.get(_schedule_key("refresh_cache"))
+        data = await fake_redis.get(_schedule_key("refresh_cache"))
         assert data is not None
 
         st = ScheduledTask.model_validate_json(data)
@@ -242,7 +242,7 @@ class TestScheduleRegister:
             context=RefreshContext(scope="all"),
         )
 
-        members = fake_redis.zrange(_queue_key(), 0, -1, withscores=True)
+        members = await fake_redis.zrange(_queue_key(), 0, -1, withscores=True)
         assert len(members) == 1
 
 
@@ -293,102 +293,92 @@ class TestPoolScheduleDecorator:
 # ---------------------------------------------------------------------------
 
 
-def _force_due(fake_redis, task_name):
-    """Helper: set a schedule's next_run to the past so tick() picks it up."""
-    data = fake_redis.get(_schedule_key(task_name))
-    st = ScheduledTask.model_validate_json(data)
-    st.next_run = time.time() - 10
-    fake_redis.set(_schedule_key(task_name), st.model_dump_json().encode())
-    fake_redis.zadd(_queue_key(), {task_name: st.next_run})
-    return st
-
-
 class TestTick:
     async def test_tick_enqueues_due_task(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
-        _force_due(fake_redis, "refresh_cache")
+        await _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        assert fake_redis.llen(ax.CONF.queue_name) == 1
+        assert await fake_redis.llen(ax.CONF.queue_name) == 1
 
     async def test_tick_skips_future_tasks(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
         await tick()
 
-        assert fake_redis.llen(ax.CONF.queue_name) == 0
+        assert await fake_redis.llen(ax.CONF.queue_name) == 0
 
     async def test_tick_removes_one_shot_schedule(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "* * * * *", RefreshContext(scope="all"), repeat=0)
-        _force_due(fake_redis, "refresh_cache")
+        await _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        assert fake_redis.get(_schedule_key("refresh_cache")) is None
-        assert fake_redis.zcard(_queue_key()) == 0
+        assert await fake_redis.get(_schedule_key("refresh_cache")) is None
+        assert await fake_redis.zcard(_queue_key()) == 0
 
     async def test_tick_decrements_repeat_count(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"), repeat=3)
-        old_st = _force_due(fake_redis, "refresh_cache")
+        old_st = await _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        data = fake_redis.get(_schedule_key("refresh_cache"))
+        data = await fake_redis.get(_schedule_key("refresh_cache"))
         updated = ScheduledTask.model_validate_json(data)
         assert updated.repeat == 2
         assert updated.next_run > old_st.next_run
 
     async def test_tick_infinite_repeat_stays_negative(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
-        _force_due(fake_redis, "refresh_cache")
+        await _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        data = fake_redis.get(_schedule_key("refresh_cache"))
+        data = await fake_redis.get(_schedule_key("refresh_cache"))
         updated = ScheduledTask.model_validate_json(data)
         assert updated.repeat == -1
 
     async def test_tick_anchor_based_rescheduling(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
-        old_st = _force_due(fake_redis, "refresh_cache")
+        old_st = await _force_due(fake_redis, "refresh_cache")
 
         await tick()
 
-        data = fake_redis.get(_schedule_key("refresh_cache"))
+        data = await fake_redis.get(_schedule_key("refresh_cache"))
         updated = ScheduledTask.model_validate_json(data)
         assert updated.next_run > old_st.next_run
 
     async def test_tick_skips_orphaned_entries(self, fake_redis, mock_activity_create):
         """Orphaned queue entries are skipped (not deleted) with a warning."""
-        fake_redis.zadd(_queue_key(), {"orphan-id": time.time() - 100})
+        await fake_redis.zadd(_queue_key(), {"orphan-id": time.time() - 100})
 
         await tick()
 
-        assert fake_redis.zcard(_queue_key()) == 1
-        assert fake_redis.llen(ax.CONF.queue_name) == 0
+        assert await fake_redis.zcard(_queue_key()) == 1
+        assert await fake_redis.llen(ax.CONF.queue_name) == 0
 
     async def test_tick_skips_missed_intervals(self, fake_redis, mock_activity_create):
         """After downtime, advance() skips to the next future run — no burst of catch-up tasks."""
         await register("refresh_cache", "*/1 * * * *", RefreshContext(scope="all"))
 
         # Simulate 10 minutes of downtime
-        data = fake_redis.get(_schedule_key("refresh_cache"))
+        data = await fake_redis.get(_schedule_key("refresh_cache"))
         st = ScheduledTask.model_validate_json(data)
         st.next_run = time.time() - 600
-        fake_redis.set(_schedule_key("refresh_cache"), st.model_dump_json().encode())
-        fake_redis.zadd(_queue_key(), {"refresh_cache": st.next_run})
+        await fake_redis.set(_schedule_key("refresh_cache"), st.model_dump_json().encode())
+        await fake_redis.zadd(_queue_key(), {"refresh_cache": st.next_run})
 
         await tick()
-        assert fake_redis.llen(ax.CONF.queue_name) == 1
+        assert await fake_redis.llen(ax.CONF.queue_name) == 1
 
         # Second tick should not enqueue again (next_run is in the future now)
         await tick()
-        assert fake_redis.llen(ax.CONF.queue_name) == 1
+        assert await fake_redis.llen(ax.CONF.queue_name) == 1
 
     async def test_context_payload_preserved(self, fake_redis):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="users", ttl=999))
 
-        data = fake_redis.get(_schedule_key("refresh_cache"))
+        data = await fake_redis.get(_schedule_key("refresh_cache"))
         st = ScheduledTask.model_validate_json(data)
         ctx = state.backend.deserialize(st.context)
         assert isinstance(ctx, RefreshContext)

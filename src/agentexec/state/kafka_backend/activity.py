@@ -16,6 +16,7 @@ from typing import Any
 from agentexec.state.kafka_backend.connection import (
     _cache_lock,
     activity_topic,
+    ensure_topic,
     produce,
 )
 
@@ -30,9 +31,11 @@ def _now_iso() -> str:
 
 async def _activity_produce(record: dict[str, Any]) -> None:
     """Persist an activity record to the compacted activity topic."""
+    topic = activity_topic()
+    await ensure_topic(topic)
     agent_id = record["agent_id"]
     data = json.dumps(record, default=str).encode("utf-8")
-    await produce(activity_topic(), data, key=str(agent_id))
+    await produce(topic, data, key=str(agent_id))
 
 
 async def activity_create(

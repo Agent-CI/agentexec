@@ -4,7 +4,7 @@ import logging
 import time
 
 import pytest
-import fakeredis
+from fakeredis import aioredis as fake_aioredis
 
 from agentexec.worker.logging import (
     DEFAULT_FORMAT,
@@ -141,10 +141,10 @@ class TestStateLogHandler:
     @pytest.fixture
     def fake_redis_backend(self, monkeypatch):
         """Setup fake redis backend for state."""
-        fake_redis = fakeredis.FakeRedis(decode_responses=False)
+        fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
 
         monkeypatch.setattr(
-            "agentexec.state.redis_backend.state.get_sync_client", lambda: fake_redis
+            "agentexec.state.redis_backend.state.get_async_client", lambda: fake_redis
         )
 
         return fake_redis
@@ -159,15 +159,17 @@ class TestStateLogHandler:
         handler = StateLogHandler(channel="custom:logs")
         assert handler.channel == "custom:logs"
 
-    def test_handler_emit(self, fake_redis_backend):
+    async def test_handler_emit(self, fake_redis_backend):
         """Test StateLogHandler.emit() publishes to state backend."""
+        import asyncio
+
         handler = StateLogHandler()
 
         # Subscribe to the channel to capture the message
         pubsub = fake_redis_backend.pubsub()
-        pubsub.subscribe(LOG_CHANNEL)
-        # Get the subscribe message
-        pubsub.get_message()
+        await pubsub.subscribe(LOG_CHANNEL)
+        # Get the subscribe confirmation
+        await pubsub.get_message()
 
         # Create and emit a log record
         record = logging.LogRecord(
@@ -182,8 +184,11 @@ class TestStateLogHandler:
 
         handler.emit(record)
 
+        # Let the scheduled task run
+        await asyncio.sleep(0.1)
+
         # Get the published message
-        message = pubsub.get_message()
+        message = await pubsub.get_message()
 
         assert message is not None
         assert message["type"] == "message"
@@ -205,9 +210,9 @@ class TestGetWorkerLogger:
         monkeypatch.setattr("agentexec.worker.logging._worker_logging_configured", False)
 
         # Setup fake redis backend
-        fake_redis = fakeredis.FakeRedis(decode_responses=False)
+        fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
         monkeypatch.setattr(
-            "agentexec.state.redis_backend.state.get_sync_client", lambda: fake_redis
+            "agentexec.state.redis_backend.state.get_async_client", lambda: fake_redis
         )
 
         yield

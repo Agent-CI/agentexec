@@ -127,19 +127,10 @@ async def queue_pop(
 ) -> dict[str, Any] | None:
     """Pop the next task from the queue.
 
-    The task is not acknowledged until queue_commit() is called.
+    The message is committed on retrieval. Retries are handled by
+    the caller via requeue with an incremented retry_count.
     """
     return await get_backend().queue_pop(queue_name, timeout=timeout)
-
-
-async def queue_commit(queue_name: str) -> None:
-    """Acknowledge successful processing of the last task."""
-    await get_backend().queue_commit(queue_name)
-
-
-async def queue_nack(queue_name: str) -> None:
-    """Signal that the last task should be retried."""
-    await get_backend().queue_nack(queue_name)
 
 
 # ---------------------------------------------------------------------------
@@ -202,10 +193,10 @@ async def check_event(name: str, id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def publish_log(message: str) -> None:
-    """Publish a log message. Sync — required by Python logging handlers."""
+async def publish_log(message: str) -> None:
+    """Publish a log message."""
     b = get_backend()
-    b.log_publish(b.format_key(*CHANNEL_LOGS), message)
+    await b.log_publish(b.format_key(*CHANNEL_LOGS), message)
 
 
 async def subscribe_logs() -> AsyncGenerator[str, None]:
@@ -220,7 +211,7 @@ async def subscribe_logs() -> AsyncGenerator[str, None]:
 # ---------------------------------------------------------------------------
 
 
-async def acquire_lock(lock_key: str, agent_id: str) -> bool:
+async def acquire_lock(lock_key: str, agent_id: UUID) -> bool:
     """Attempt to acquire a task lock."""
     b = get_backend()
     return await b.acquire_lock(

@@ -71,8 +71,6 @@ from agentexec.state.kafka_backend.state import (  # noqa: E402
 from agentexec.state.kafka_backend.queue import (  # noqa: E402
     queue_push,
     queue_pop,
-    queue_commit,
-    queue_nack,
 )
 from agentexec.state.kafka_backend.activity import (  # noqa: E402
     activity_create,
@@ -103,27 +101,24 @@ class TaskContext(BaseModel):
 # ---------------------------------------------------------------------------
 
 
+pytestmark = pytest.mark.asyncio(loop_scope="module")
+
+
 @pytest.fixture(autouse=True)
 async def kafka_cleanup():
-    """Ensure caches are clean before/after each test and connections closed."""
-    # Reset in-memory caches
+    """Ensure caches are clean before/after each test."""
     await clear_keys()
     activity._activity_cache.clear()
 
     yield
 
-    # Teardown: close consumers so each test gets fresh consumer offsets
-    for consumer in list(connection.get_consumers().values()):
-        await consumer.stop()
-    connection.get_consumers().clear()
-
     await clear_keys()
     activity._activity_cache.clear()
 
 
-@pytest.fixture(autouse=True)
+@pytest.fixture(autouse=True, scope="module")
 async def close_connections():
-    """Close producer/admin after all tests in this module."""
+    """Close all Kafka connections once after the module completes."""
     yield
     await connection.close()
 
@@ -264,9 +259,6 @@ class TestQueue:
         assert result["task_name"] == "test_task"
         assert result["context"]["query"] == "hello"
 
-        # Commit so offset advances
-        await queue_commit(q)
-
     async def test_pop_empty_queue_returns_none(self):
         """Popping an empty queue returns None after timeout."""
         q = f"kafka_empty_{uuid.uuid4().hex[:8]}"
@@ -288,10 +280,9 @@ class TestQueue:
         result = await queue_pop(q, timeout=10)
         assert result is not None
         assert result["task_name"] == "keyed_task"
-        await queue_commit(q)
 
     async def test_multiple_push_pop_ordering(self):
-        """Multiple tasks are consumed in order (single partition)."""
+        """Tasks with the same partition key are consumed in order."""
         q = f"kafka_order_{uuid.uuid4().hex[:8]}"
         import json
 
@@ -301,15 +292,14 @@ class TestQueue:
                 "task_name": "order_test",
                 "context": {"query": "test"},
                 "agent_id": agent_id,
-            }))
+            }), partition_key="same-key")
 
         received = []
         for _ in range(3):
             result = await queue_pop(q, timeout=10)
             assert result is not None
             received.append(result["agent_id"])
-            await queue_commit(q)
-
+    
         assert received == ids
 
 
@@ -455,8 +445,8 @@ class TestLogPubSub:
         await asyncio.sleep(2)
 
         # Publish messages
-        log_publish(channel, '{"level":"info","msg":"hello"}')
-        log_publish(channel, '{"level":"info","msg":"world"}')
+        await log_publish(channel, '{"level":"info","msg":"hello"}')
+        await log_publish(channel, '{"level":"info","msg":"world"}')
 
         # Wait for messages to arrive (with timeout)
         try:

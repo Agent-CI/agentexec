@@ -2,19 +2,8 @@
 
 import pytest
 from fakeredis import aioredis as fake_aioredis
-import fakeredis
 
 from agentexec.worker.event import StateEvent
-
-
-@pytest.fixture
-def fake_redis_sync(monkeypatch):
-    """Setup fake sync redis for state backend."""
-    fake_redis = fakeredis.FakeRedis(decode_responses=False)
-
-    monkeypatch.setattr("agentexec.state.redis_backend.state.get_sync_client", lambda: fake_redis)
-
-    yield fake_redis
 
 
 @pytest.fixture

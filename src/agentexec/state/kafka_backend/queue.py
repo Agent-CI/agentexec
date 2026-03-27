@@ -1,23 +1,45 @@
-"""Kafka queue operations using manual partition assignment (no consumer groups)."""
+"""Kafka queue operations using consumer groups for reliable fan-out."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-from collections import deque
 from typing import Any
 
+from aiokafka import AIOKafkaConsumer
+
+from agentexec.config import CONF
 from agentexec.state.kafka_backend.connection import (
     client_id,
     ensure_topic,
     get_bootstrap_servers,
     get_consumers,
-    get_topic_partitions,
     produce,
     tasks_topic,
 )
 
-# Per-consumer message buffer for messages fetched but not yet returned
-_buffers: dict[str, deque[bytes]] = {}
+
+async def _get_consumer(topic: str) -> AIOKafkaConsumer:
+    """Return a consumer for the given topic, creating one if needed.
+
+    Uses a shared consumer group so Kafka assigns partitions across
+    workers — each message is delivered to exactly one consumer.
+    """
+    active_consumers = get_consumers()
+
+    if topic not in active_consumers:
+        consumer = AIOKafkaConsumer(
+            topic,
+            bootstrap_servers=get_bootstrap_servers(),
+            group_id=f"{CONF.key_prefix}-workers",
+            client_id=client_id("worker"),
+            auto_offset_reset="earliest",
+            enable_auto_commit=False,
+        )
+        await consumer.start()
+        active_consumers[topic] = consumer
+
+    return active_consumers[topic]
 
 
 async def queue_push(
@@ -33,11 +55,9 @@ async def queue_push(
     the same partition_key are guaranteed to be processed in order by a
     single consumer — this replaces distributed locking.
     """
-    await produce(
-        tasks_topic(queue_name),
-        value.encode("utf-8"),
-        key=partition_key,
-    )
+    topic = tasks_topic(queue_name)
+    await ensure_topic(topic, compact=False)
+    await produce(topic, value.encode("utf-8"), key=partition_key)
 
 
 async def queue_pop(
@@ -47,67 +67,18 @@ async def queue_pop(
 ) -> dict[str, Any] | None:
     """Consume the next task from the tasks topic.
 
-    Uses manual partition assignment without consumer groups to avoid
-    group-join/rebalance overhead entirely.  Partition info comes from
-    the admin client metadata.
+    The message offset is committed after successful retrieval so Kafka
+    tracks consumer progress. Retry logic is handled by the caller via
+    requeue with an incremented retry_count.
     """
-    from aiokafka import AIOKafkaConsumer, TopicPartition
+    consumer = await _get_consumer(tasks_topic(queue_name))
 
-    topic = tasks_topic(queue_name)
-    consumer_key = f"worker:{topic}"
-    consumers = get_consumers()
-
-    if consumer_key not in consumers:
-        await ensure_topic(topic)
-
-        # Get partition info from admin metadata (not consumer metadata)
-        partition_ids = await get_topic_partitions(topic)
-        tps = [TopicPartition(topic, p) for p in partition_ids]
-
-        consumer = AIOKafkaConsumer(
-            bootstrap_servers=get_bootstrap_servers(),
-            client_id=client_id("worker"),
-            enable_auto_commit=False,
+    try:
+        msg = await asyncio.wait_for(
+            consumer.getone(),
+            timeout=timeout,
         )
-        await consumer.start()
-        consumer.assign(tps)
-        await consumer.seek_to_beginning(*tps)
-
-        consumers[consumer_key] = consumer
-        _buffers[consumer_key] = deque()
-
-    # Check buffer first — previous getmany may have returned multiple messages
-    buf = _buffers.get(consumer_key, deque())
-    if buf:
-        return json.loads(buf.popleft().decode("utf-8"))
-
-    consumer = consumers[consumer_key]
-
-    # Poll with retries — first call may return empty while position settles
-    deadline = timeout * 1000
-    interval = min(1000, deadline)
-    elapsed = 0
-    while elapsed < deadline:
-        result = await consumer.getmany(timeout_ms=interval)
-        all_msgs: list[bytes] = []
-        for tp in sorted(result.keys()):
-            for msg in result[tp]:
-                all_msgs.append(msg.value)
-        if all_msgs:
-            # Return first, buffer the rest
-            for extra in all_msgs[1:]:
-                buf.append(extra)
-            return json.loads(all_msgs[0].decode("utf-8"))
-        elapsed += interval
-
-    return None
-
-
-async def queue_commit(queue_name: str) -> None:
-    """No-op — offset tracking is implicit via consumer position."""
-    pass
-
-
-async def queue_nack(queue_name: str) -> None:
-    """Do NOT commit the offset — the message will be redelivered."""
-    pass
+        await consumer.commit()
+        return json.loads(msg.value.decode("utf-8"))
+    except asyncio.TimeoutError:
+        return None

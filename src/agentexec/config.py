@@ -115,6 +115,11 @@ class Config(BaseSettings):
         description="Producer linger time in milliseconds",
         validation_alias="AGENTEXEC_KAFKA_LINGER_MS",
     )
+    kafka_retention_ms: int = Field(
+        default=-1,
+        description="Retention for compacted topics in ms (-1 = forever)",
+        validation_alias="AGENTEXEC_KAFKA_RETENTION_MS",
+    )
 
     key_prefix: str = Field(
         default="agentexec",

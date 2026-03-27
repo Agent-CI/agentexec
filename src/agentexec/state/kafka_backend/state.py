@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import importlib
 import json
+import uuid
 from typing import Any, AsyncGenerator, Optional, TypedDict
 
+from aiokafka import AIOKafkaConsumer
 from pydantic import BaseModel
 
 from agentexec.config import CONF
@@ -21,7 +23,6 @@ from agentexec.state.kafka_backend.connection import (
     kv_topic,
     logs_topic,
     produce,
-    produce_sync,
 )
 
 # ---------------------------------------------------------------------------
@@ -48,9 +49,11 @@ async def store_set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -
     ttl_seconds is accepted for interface compatibility but not enforced —
     Kafka uses topic-level retention instead of per-key TTL.
     """
+    topic = kv_topic()
+    await ensure_topic(topic)
     with _cache_lock:
         _kv_cache[key] = value
-    await produce(kv_topic(), value, key=key)
+    await produce(topic, value, key=key)
     return True
 
 
@@ -59,7 +62,9 @@ async def store_delete(key: str) -> int:
     with _cache_lock:
         existed = 1 if key in _kv_cache else 0
         _kv_cache.pop(key, None)
-    await produce(kv_topic(), None, key=key)  # Tombstone
+    topic = kv_topic()
+    await ensure_topic(topic)
+    await produce(topic, None, key=key)  # Tombstone
     return existed
 
 
@@ -68,40 +73,41 @@ async def store_delete(key: str) -> int:
 
 async def counter_incr(key: str) -> int:
     """Increment counter in local cache and persist to compacted topic."""
+    topic = kv_topic()
+    await ensure_topic(topic)
     with _cache_lock:
         val = _counter_cache.get(key, 0) + 1
         _counter_cache[key] = val
-    await produce(kv_topic(), str(val).encode("utf-8"), key=f"counter:{key}")
+    await produce(topic, str(val).encode("utf-8"), key=f"counter:{key}")
     return val
 
 
 async def counter_decr(key: str) -> int:
     """Decrement counter in local cache and persist to compacted topic."""
+    topic = kv_topic()
+    await ensure_topic(topic)
     with _cache_lock:
         val = _counter_cache.get(key, 0) - 1
         _counter_cache[key] = val
-    await produce(kv_topic(), str(val).encode("utf-8"), key=f"counter:{key}")
+    await produce(topic, str(val).encode("utf-8"), key=f"counter:{key}")
     return val
 
 
 # -- Pub/sub (log streaming via Kafka topic) ----------------------------------
 
 
-def log_publish(channel: str, message: str) -> None:
-    """Produce a log message to the logs topic. Sync for logging handler compatibility."""
-    produce_sync(logs_topic(), message.encode("utf-8"))
+async def log_publish(channel: str, message: str) -> None:
+    """Produce a log message to the logs topic."""
+    topic = logs_topic()
+    await ensure_topic(topic, compact=False)
+    await produce(topic, message.encode("utf-8"))
 
 
 async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
     """Consume log messages from the logs topic."""
-    from aiokafka import AIOKafkaConsumer, TopicPartition
-
     topic = logs_topic()
-    await ensure_topic(topic)
 
-    # Get partition info from admin metadata
-    partition_ids = await get_topic_partitions(topic)
-    tps = [TopicPartition(topic, p) for p in partition_ids]
+    tps = await get_topic_partitions(topic)
 
     # Manual partition assignment — no consumer group overhead
     consumer = AIOKafkaConsumer(
@@ -123,7 +129,7 @@ async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
 # -- Locks — no-op with Kafka ------------------------------------------------
 
 
-async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
+async def acquire_lock(key: str, agent_id: uuid.UUID, ttl_seconds: int) -> bool:
     """Always returns True — partition assignment handles isolation."""
     return True
 
@@ -138,6 +144,8 @@ async def release_lock(key: str) -> int:
 
 async def index_add(key: str, mapping: dict[str, float]) -> int:
     """Add members with scores. Persists to compacted topic."""
+    topic = kv_topic()
+    await ensure_topic(topic)
     added = 0
     with _cache_lock:
         if key not in _sorted_set_cache:
@@ -147,7 +155,7 @@ async def index_add(key: str, mapping: dict[str, float]) -> int:
                 added += 1
             _sorted_set_cache[key][member] = score
     data = json.dumps(_sorted_set_cache[key]).encode("utf-8")
-    await produce(kv_topic(), data, key=f"zset:{key}")
+    await produce(topic, data, key=f"zset:{key}")
     return added
 
 
@@ -174,8 +182,10 @@ async def index_remove(key: str, *members: str) -> int:
                     del _sorted_set_cache[key][member]
                     removed += 1
     if removed > 0:
+        topic = kv_topic()
+        await ensure_topic(topic)
         data = json.dumps(_sorted_set_cache.get(key, {})).encode("utf-8")
-        await produce(kv_topic(), data, key=f"zset:{key}")
+        await produce(topic, data, key=f"zset:{key}")
     return removed
 
 

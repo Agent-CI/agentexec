@@ -104,12 +104,12 @@ class TestResultOperations:
 class TestLogOperations:
     """Tests for log pub/sub operations."""
 
-    def test_publish_log(self):
+    async def test_publish_log(self):
         """Test publishing a log message."""
         log_message = '{"level": "info", "message": "test log"}'
 
-        with patch.object(state.backend, "log_publish") as mock_publish:
-            state.publish_log(log_message)
+        with patch.object(state.backend, "log_publish", new_callable=AsyncMock) as mock_publish:
+            await state.publish_log(log_message)
 
             mock_publish.assert_called_once_with("agentexec:logs", log_message)
 
@@ -144,9 +144,9 @@ class TestKeyGeneration:
         with patch.object(state.backend, "store_get", side_effect=mock_store_get):
             await state.get_result("test-id")
 
-    def test_logs_channel_format(self):
+    async def test_logs_channel_format(self):
         """Test that log channel is formatted correctly."""
-        with patch.object(state.backend, "log_publish") as mock_publish:
-            state.publish_log("test")
+        with patch.object(state.backend, "log_publish", new_callable=AsyncMock) as mock_publish:
+            await state.publish_log("test")
 
             mock_publish.assert_called_once_with("agentexec:logs", "test")

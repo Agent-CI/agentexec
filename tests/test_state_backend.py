@@ -35,13 +35,6 @@ def reset_redis_clients():
     connection._pubsub = None
 
 
-@pytest.fixture
-def mock_sync_client():
-    """Mock synchronous Redis client."""
-    client = MagicMock()
-    with patch("agentexec.state.redis_backend.state.get_sync_client", return_value=client):
-        yield client
-
 
 @pytest.fixture
 def mock_async_client():
@@ -181,11 +174,11 @@ class TestCounterOperations:
 class TestPubSubOperations:
     """Tests for pub/sub operations."""
 
-    def test_log_publish(self, mock_sync_client):
+    async def test_log_publish(self, mock_async_client):
         """Test publishing message to channel."""
-        redis_backend.log_publish("logs", "log message")
+        await redis_backend.log_publish("logs", "log message")
 
-        mock_sync_client.publish.assert_called_once_with("logs", "log message")
+        mock_async_client.publish.assert_called_once_with("logs", "log message")
 
     async def test_log_subscribe(self, mock_async_client):
         """Test subscribing to channel."""

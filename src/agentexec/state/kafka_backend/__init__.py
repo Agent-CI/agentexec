@@ -28,8 +28,6 @@ from agentexec.state.kafka_backend.state import (
 from agentexec.state.kafka_backend.queue import (
     queue_push,
     queue_pop,
-    queue_commit,
-    queue_nack,
 )
 from agentexec.state.kafka_backend.activity import (
     activity_create,
@@ -64,8 +62,6 @@ __all__ = [
     # Queue
     "queue_push",
     "queue_pop",
-    "queue_commit",
-    "queue_nack",
     # Activity
     "activity_create",
     "activity_append_log",

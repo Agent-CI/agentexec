@@ -8,7 +8,8 @@ from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
 
 import agentexec as ax
-from agentexec.core.queue import Priority, dequeue, enqueue
+from agentexec.core.queue import Priority, enqueue
+from agentexec.state import ops
 
 
 class SampleContext(BaseModel):
@@ -122,7 +123,7 @@ async def test_dequeue_returns_task_data(fake_redis) -> None:
     await fake_redis.lpush(ax.CONF.queue_name, json.dumps(task_data).encode())
 
     # Dequeue
-    result = await dequeue(timeout=1)
+    result = await ops.queue_pop(ax.CONF.queue_name, timeout=1)
 
     assert result is not None
     assert result["task_name"] == "test_task"
@@ -133,7 +134,7 @@ async def test_dequeue_returns_task_data(fake_redis) -> None:
 async def test_dequeue_returns_none_on_empty_queue(fake_redis) -> None:
     """Test that dequeue returns None when queue is empty."""
     # timeout=1 because timeout=0 means block indefinitely in Redis BRPOP
-    result = await dequeue(timeout=1)
+    result = await ops.queue_pop(ax.CONF.queue_name, timeout=1)
 
     assert result is None
 
@@ -147,7 +148,7 @@ async def test_dequeue_custom_queue_name(fake_redis) -> None:
     }
     await fake_redis.lpush("custom_queue", json.dumps(task_data).encode())
 
-    result = await dequeue(queue_name="custom_queue", timeout=1)
+    result = await ops.queue_pop("custom_queue", timeout=1)
 
     assert result is not None
     assert result["task_name"] == "custom_task"
@@ -163,7 +164,7 @@ async def test_dequeue_brpop_behavior(fake_redis) -> None:
     await fake_redis.lpush(ax.CONF.queue_name, json.dumps(task2).encode())
 
     # BRPOP should get the first task (oldest) from the right
-    result = await dequeue(timeout=1)
+    result = await ops.queue_pop(ax.CONF.queue_name, timeout=1)
     assert result is not None
     assert result["task_name"] == "first"
 
@@ -176,7 +177,7 @@ async def test_enqueue_dequeue_roundtrip(fake_redis, mock_activity_create) -> No
     task = await enqueue("roundtrip_task", ctx)
 
     # Dequeue
-    result = await dequeue(timeout=1)
+    result = await ops.queue_pop(ax.CONF.queue_name, timeout=1)
 
     assert result is not None
     assert result["task_name"] == "roundtrip_task"
@@ -195,6 +196,6 @@ async def test_multiple_enqueue_fifo_order(fake_redis, mock_activity_create) -> 
 
     # Dequeue should be in FIFO order
     for i in range(3):
-        result = await dequeue(timeout=1)
+        result = await ops.queue_pop(ax.CONF.queue_name, timeout=1)
         assert result is not None
         assert result["task_name"] == f"task_{i}"

@@ -59,7 +59,7 @@ class Worker:
 
     _worker_id: int
     _context: WorkerContext
-    _logger: logging.Logger
+    logger: logging.Logger
 
     def __init__(self, worker_id: int, context: WorkerContext):
         """Initialize worker with isolated state.
@@ -70,7 +70,7 @@ class Worker:
         """
         self._worker_id = worker_id
         self._context = context
-        self._logger = get_worker_logger(__name__)
+        self.logger = get_worker_logger(__name__)
 
     @classmethod
     def run_in_process(cls, worker_id: int, context: WorkerContext) -> None:
@@ -85,93 +85,69 @@ class Worker:
 
     def run(self) -> None:
         """Main worker entry point - sets up async loop and runs."""
-        self._logger.info(f"Worker {self._worker_id} starting")
+        self.logger.info(f"Worker {self._worker_id} starting")
 
         ops.configure(worker_id=str(self._worker_id))
 
+        # TODO: Make postgres session conditional on backend — not all backends
+        # need it (e.g. Kafka). An empty/unset DATABASE_URL could skip this.
         engine = create_engine(self._context.database_url)
         set_global_session(engine)
 
         try:
             asyncio.run(self._run())
         except Exception as e:
-            self._logger.exception(f"Worker {self._worker_id} fatal error: {e}")
+            self.logger.exception(f"Worker {self._worker_id} fatal error: {e}")
             raise
+        finally:
+            asyncio.run(ops.close())  # TODO: avoid second asyncio.run — maybe fold into _run's finally
+            remove_global_session()
+            self.logger.info(f"Worker {self._worker_id} shutting down")
 
     async def _run(self) -> None:
         """Async main loop - polls queue and processes tasks."""
         queue = self._context.queue_name
-        try:
-            while not await self._context.shutdown_event.is_set():
-                if (task := await self._dequeue_task()) is not None:
-                    lock_key = task.get_lock_key()
 
-                    if lock_key is not None:
-                        acquired = await ops.acquire_lock(lock_key, str(task.agent_id))
-                        if not acquired:
-                            self._logger.debug(
-                                f"Worker {self._worker_id} lock held for {task.task_name} "
-                                f"(lock_key={lock_key}), requeuing"
-                            )
-                            await requeue(task, queue_name=queue)
-                            await ops.queue_commit(queue)
-                            continue
+        while not await self._context.shutdown_event.is_set():
+            task = await dequeue(self._context.tasks, queue_name=queue)
+            if task is None:
+                continue
 
-                    try:
-                        self._logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                        result = await task.execute()
+            lock_key = task.get_lock_key()
 
-                        if result is not None:
-                            # Task succeeded — commit the offset
-                            await ops.queue_commit(queue)
-                            self._logger.info(
-                                f"Worker {self._worker_id} completed: {task.task_name}"
-                            )
-                        else:
-                            # task.execute() returned None — task errored.
-                            # Check retry count to decide commit vs nack.
-                            retry_count = task.retry_count
-                            if retry_count < CONF.max_task_retries:
-                                # Don't commit — let the message be redelivered
-                                await ops.queue_nack(queue)
-                                self._logger.warning(
-                                    f"Worker {self._worker_id} task {task.task_name} failed "
-                                    f"(attempt {retry_count + 1}/{CONF.max_task_retries}), "
-                                    f"will retry"
-                                )
-                            else:
-                                # Retries exhausted — commit to move past this message
-                                await ops.queue_commit(queue)
-                                self._logger.error(
-                                    f"Worker {self._worker_id} task {task.task_name} failed "
-                                    f"after {retry_count + 1} attempts, giving up"
-                                )
-                    finally:
-                        if lock_key is not None:
-                            await ops.release_lock(lock_key)
-        except Exception as e:
-            self._logger.exception(f"Worker {self._worker_id} error: {e}")
-        finally:
-            await ops.close()
-            remove_global_session()
-            self._logger.info(f"Worker {self._worker_id} shutting down")
+            if lock_key is not None:
+                acquired = await ops.acquire_lock(lock_key, task.agent_id)
+                if not acquired:
+                    self.logger.debug(
+                        f"Worker {self._worker_id} lock held for {task.task_name}, requeuing"
+                    )
+                    await requeue(task, queue_name=queue)
+                    continue
 
-    async def _dequeue_task(self) -> Task | None:
-        """Dequeue and hydrate a task from the Redis queue.
+            try:
+                self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
+                await task.execute()
+                self.logger.info(
+                    f"Worker {self._worker_id} completed: {task.task_name}"
+                )
+            except Exception as e:
+                if task.retry_count < CONF.max_task_retries:
+                    task.retry_count += 1
+                    await requeue(task, queue_name=queue)
+                    self.logger.warning(
+                        f"Worker {self._worker_id} task {task.task_name} failed "
+                        f"(attempt {task.retry_count}/{CONF.max_task_retries}), "
+                        f"will retry: {e}"
+                    )
+                else:
+                    self.logger.error(
+                        f"Worker {self._worker_id} task {task.task_name} failed "
+                        f"after {task.retry_count + 1} attempts, giving up: {e}"
+                    )
+            finally:
+                if lock_key is not None:
+                    await ops.release_lock(lock_key)
 
-        Reconstructs the typed context using the TaskDefinition
-        and binds the definition to the task.
-
-        Returns:
-            Hydrated Task instance if available, else None.
-        """
-        if (data := await dequeue(queue_name=self._context.queue_name)) is not None:
-            return Task.from_serialized(
-                definition=self._context.tasks[data["task_name"]],
-                data=data,
-            )
-
-        return None
 
 
 class Pool:

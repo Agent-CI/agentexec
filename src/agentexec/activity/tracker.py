@@ -158,9 +158,9 @@ async def cancel_pending(
         Number of agents that were canceled
     """
     pending_agent_ids = await ops.activity_get_pending_ids()
-    for aid in pending_agent_ids:
+    for agent_id in pending_agent_ids:
         await ops.activity_append_log(
-            aid, "Canceled due to shutdown", Status.CANCELED.value, None,
+            agent_id, "Canceled due to shutdown", Status.CANCELED.value, None,
         )
     return len(pending_agent_ids)
 

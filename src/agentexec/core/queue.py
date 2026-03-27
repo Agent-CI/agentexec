@@ -107,22 +107,29 @@ async def requeue(
 
 
 async def dequeue(
+    tasks: dict[str, Any],
     *,
     queue_name: str | None = None,
     timeout: int = 1,
-) -> dict[str, Any] | None:
-    """Dequeue a task from the queue.
-
-    Blocks for up to timeout seconds waiting for a task.
+) -> Task | None:
+    """Dequeue and hydrate a task from the queue.
 
     Args:
+        tasks: Task registry mapping task names to TaskDefinitions.
         queue_name: Queue name. Defaults to CONF.queue_name.
         timeout: Maximum seconds to wait for a task.
 
     Returns:
-        Parsed task data if available, None otherwise.
+        Hydrated Task instance if available, None otherwise.
     """
-    return await ops.queue_pop(
+    data = await ops.queue_pop(
         queue_name or CONF.queue_name,
         timeout=timeout,
+    )
+    if data is None:
+        return None
+
+    return Task.from_serialized(
+        definition=tasks[data["task_name"]],
+        data=data,
     )

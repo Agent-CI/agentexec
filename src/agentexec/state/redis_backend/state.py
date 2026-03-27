@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import uuid
 from typing import Any, AsyncGenerator, Optional, TypedDict
 
 from pydantic import BaseModel
@@ -13,7 +14,6 @@ from agentexec.config import CONF
 from agentexec.state.redis_backend.connection import (
     get_async_client,
     get_pubsub,
-    get_sync_client,
     set_pubsub,
 )
 
@@ -60,10 +60,10 @@ async def counter_decr(key: str) -> int:
 # -- Pub/sub ------------------------------------------------------------------
 
 
-def log_publish(channel: str, message: str) -> None:
-    """Publish message to a channel. Sync for logging handler compatibility."""
-    client = get_sync_client()
-    client.publish(channel, message)
+async def log_publish(channel: str, message: str) -> None:
+    """Publish message to a channel."""
+    client = get_async_client()
+    await client.publish(channel, message)
 
 
 async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
@@ -90,10 +90,10 @@ async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
 # -- Locks --------------------------------------------------------------------
 
 
-async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
+async def acquire_lock(key: str, agent_id: uuid.UUID, ttl_seconds: int) -> bool:
     """Attempt to acquire a distributed lock using SET NX EX."""
     client = get_async_client()
-    result = await client.set(key, value, nx=True, ex=ttl_seconds)
+    result = await client.set(key, str(agent_id), nx=True, ex=ttl_seconds)
     return result is not None
 
 

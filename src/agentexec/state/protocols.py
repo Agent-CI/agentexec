@@ -43,9 +43,7 @@ class StateProtocol(Protocol):
     # -- Pub/sub (log streaming) ----------------------------------------------
 
     @staticmethod
-    def log_publish(channel: str, message: str) -> None:
-        """Publish a log message. Sync — required by Python logging handlers."""
-        ...
+    async def log_publish(channel: str, message: str) -> None: ...
 
     @staticmethod
     async def log_subscribe(channel: str) -> AsyncGenerator[str, None]: ...
@@ -53,7 +51,7 @@ class StateProtocol(Protocol):
     # -- Locks ----------------------------------------------------------------
 
     @staticmethod
-    async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool: ...
+    async def acquire_lock(key: str, agent_id: uuid.UUID, ttl_seconds: int) -> bool: ...
 
     @staticmethod
     async def release_lock(key: str) -> int: ...
@@ -108,11 +106,6 @@ class QueueProtocol(Protocol):
         timeout: int = 1,
     ) -> dict[str, Any] | None: ...
 
-    @staticmethod
-    async def queue_commit(queue_name: str) -> None: ...
-
-    @staticmethod
-    async def queue_nack(queue_name: str) -> None: ...
 
 
 @runtime_checkable

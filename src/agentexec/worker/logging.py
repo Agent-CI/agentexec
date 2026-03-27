@@ -1,4 +1,5 @@
 from __future__ import annotations
+import asyncio
 import logging
 from pydantic import BaseModel
 from agentexec.state import ops
@@ -62,10 +63,16 @@ class StateLogHandler(logging.Handler):
         self.channel = channel
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Publish log record to log channel."""
+        """Publish log record to log channel.
+
+        Schedules the async publish on the running event loop.
+        """
         try:
             message = LogMessage.from_log_record(record)
-            ops.publish_log(message.model_dump_json())
+            loop = asyncio.get_running_loop()
+            loop.create_task(ops.publish_log(message.model_dump_json()))
+        except RuntimeError:
+            pass  # No running loop — discard silently
         except Exception:
             self.handleError(record)
 

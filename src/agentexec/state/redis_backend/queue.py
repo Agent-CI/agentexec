@@ -36,9 +36,7 @@ async def queue_pop(
 ) -> dict[str, Any] | None:
     """Pop the next task from the Redis list queue (blocking).
 
-    Note: BRPOP atomically removes the message. There is no way to
-    "un-pop" it, so Redis provides at-most-once delivery.
-    queue_commit/queue_nack are no-ops for Redis.
+    BRPOP atomically removes the message — delivery is implicit.
     """
     client = get_async_client()
     result = await client.brpop([queue_name], timeout=timeout)  # type: ignore[misc]
@@ -46,13 +44,3 @@ async def queue_pop(
         return None
     _, value = result
     return json.loads(value.decode("utf-8"))
-
-
-async def queue_commit(queue_name: str) -> None:
-    """No-op for Redis — BRPOP already removed the message."""
-    pass
-
-
-async def queue_nack(queue_name: str) -> None:
-    """No-op for Redis — BRPOP already removed the message."""
-    pass
