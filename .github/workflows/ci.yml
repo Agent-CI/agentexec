@@ -112,9 +112,18 @@ jobs:
         run: |
           uv run pytest tests/test_kafka_integration.py \
             -o "addopts=" \
-            -v --tb=short
+            -v --tb=long 2>&1 | tee /tmp/kafka_test_output.txt
+          exit ${PIPESTATUS[0]}
         env:
           AGENTEXEC_STATE_BACKEND: agentexec.state.kafka_backend
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
           AGENTEXEC_KAFKA_DEFAULT_PARTITIONS: "2"
           AGENTEXEC_KAFKA_REPLICATION_FACTOR: "1"
+
+      - name: Upload test output on failure
+        if: failure()
+        run: |
+          echo '## Kafka Integration Test Output' >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
+          cat /tmp/kafka_test_output.txt >> $GITHUB_STEP_SUMMARY
+          echo '```' >> $GITHUB_STEP_SUMMARY
