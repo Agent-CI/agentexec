@@ -72,14 +72,65 @@ class Config(BaseSettings):
 
     result_ttl: int = Field(
         default=3600,
-        description="TTL in seconds for task results in Redis",
+        description="TTL in seconds for task results",
         validation_alias="AGENTEXEC_RESULT_TTL",
     )
 
     state_backend: str = Field(
         default="agentexec.state.redis_backend",
-        description="State backend to use (fully-qualified module path)",
+        description=(
+            "Legacy state backend (fully-qualified module path). "
+            "Prefer kv_backend / stream_backend for new deployments."
+        ),
         validation_alias="AGENTEXEC_STATE_BACKEND",
+    )
+
+    kv_backend: str | None = Field(
+        default=None,
+        description=(
+            "KV backend module path (e.g. 'agentexec.state.redis_kv_backend'). "
+            "When set, takes precedence over state_backend for KV operations."
+        ),
+        validation_alias="AGENTEXEC_KV_BACKEND",
+    )
+
+    stream_backend: str | None = Field(
+        default=None,
+        description=(
+            "Stream backend module path (e.g. 'agentexec.state.kafka_stream_backend'). "
+            "When set, queue and pub/sub operations use this backend."
+        ),
+        validation_alias="AGENTEXEC_STREAM_BACKEND",
+    )
+
+    # -- Kafka settings -------------------------------------------------------
+
+    kafka_bootstrap_servers: str | None = Field(
+        default=None,
+        description="Kafka bootstrap servers (e.g. 'localhost:9092')",
+        validation_alias=AliasChoices(
+            "AGENTEXEC_KAFKA_BOOTSTRAP_SERVERS", "KAFKA_BOOTSTRAP_SERVERS"
+        ),
+    )
+    kafka_default_partitions: int = Field(
+        default=6,
+        description="Default number of partitions for auto-created topics",
+        validation_alias="AGENTEXEC_KAFKA_DEFAULT_PARTITIONS",
+    )
+    kafka_replication_factor: int = Field(
+        default=1,
+        description="Replication factor for auto-created topics",
+        validation_alias="AGENTEXEC_KAFKA_REPLICATION_FACTOR",
+    )
+    kafka_max_batch_size: int = Field(
+        default=16384,
+        description="Producer max batch size in bytes",
+        validation_alias="AGENTEXEC_KAFKA_MAX_BATCH_SIZE",
+    )
+    kafka_linger_ms: int = Field(
+        default=5,
+        description="Producer linger time in milliseconds",
+        validation_alias="AGENTEXEC_KAFKA_LINGER_MS",
     )
 
     key_prefix: str = Field(
