@@ -87,6 +87,8 @@ class Worker:
         """Main worker entry point - sets up async loop and runs."""
         self._logger.info(f"Worker {self._worker_id} starting")
 
+        ops.configure(worker_id=str(self._worker_id))
+
         engine = create_engine(self._context.database_url)
         set_global_session(engine)
 

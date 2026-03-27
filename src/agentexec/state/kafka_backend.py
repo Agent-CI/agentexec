@@ -70,6 +70,25 @@ _sorted_set_cache: dict[str, dict[str, float]] = {}  # key -> {member: score}
 
 _cache_lock = threading.Lock()
 _initialized_topics: set[str] = set()
+_worker_id: str | None = None
+
+
+def configure(*, worker_id: str | None = None) -> None:
+    """Set per-process identity for Kafka client IDs.
+
+    Called by Worker.run() before any Kafka operations so that broker
+    logs and monitoring tools can distinguish between consumers.
+    """
+    global _worker_id
+    _worker_id = worker_id
+
+
+def _client_id(role: str = "worker") -> str:
+    """Build a client_id string, including worker_id when available."""
+    base = f"{CONF.key_prefix}-{role}"
+    if _worker_id is not None:
+        return f"{base}-{_worker_id}"
+    return base
 
 
 def _get_bootstrap_servers() -> str:
@@ -110,7 +129,7 @@ async def _get_producer():  # type: ignore[no-untyped-def]
 
         _producer = AIOKafkaProducer(
             bootstrap_servers=_get_bootstrap_servers(),
-            client_id=f"{CONF.key_prefix}-producer",
+            client_id=_client_id("producer"),
             acks="all",
             max_batch_size=CONF.kafka_max_batch_size,
             linger_ms=CONF.kafka_linger_ms,
@@ -126,7 +145,7 @@ async def _get_admin():  # type: ignore[no-untyped-def]
 
         _admin = AIOKafkaAdminClient(
             bootstrap_servers=_get_bootstrap_servers(),
-            client_id=f"{CONF.key_prefix}-admin",
+            client_id=_client_id("admin"),
         )
         await _admin.start()  # type: ignore[union-attr]
     return _admin
@@ -253,7 +272,7 @@ async def queue_pop(
             topic,
             bootstrap_servers=_get_bootstrap_servers(),
             group_id=f"{CONF.key_prefix}-workers",
-            client_id=f"{CONF.key_prefix}-worker",
+            client_id=_client_id("worker"),
             auto_offset_reset="earliest",
             enable_auto_commit=False,
         )
@@ -401,7 +420,7 @@ async def subscribe(channel: str) -> AsyncGenerator[str, None]:
         topic,
         bootstrap_servers=_get_bootstrap_servers(),
         group_id=f"{CONF.key_prefix}-log-collector",
-        client_id=f"{CONF.key_prefix}-log-collector",
+        client_id=_client_id("log-collector"),
         auto_offset_reset="latest",
         enable_auto_commit=True,
     )

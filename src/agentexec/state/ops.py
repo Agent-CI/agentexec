@@ -48,6 +48,17 @@ def get_backend():  # type: ignore[no-untyped-def]
     return _backend
 
 
+def configure(**kwargs: Any) -> None:
+    """Pass per-process configuration to the backend.
+
+    Currently used to set worker_id for Kafka client IDs.
+    Backends that don't support configure() silently ignore the call.
+    """
+    b = get_backend()
+    if hasattr(b, "configure"):
+        b.configure(**kwargs)
+
+
 async def close() -> None:
     """Close all backend connections."""
     await get_backend().close()
