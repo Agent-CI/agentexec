@@ -8,7 +8,7 @@ from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
 
 from agentexec import activity
 from agentexec.config import CONF
-from agentexec.state import ops
+from agentexec.state import KEY_RESULT, backend
 
 
 TaskResult: TypeAlias = BaseModel
@@ -316,11 +316,8 @@ class Task(BaseModel):
 
             # TODO ensure we are properly supporting None return values
             if isinstance(result, BaseModel):
-                await ops.set_result(
-                    self.agent_id,
-                    result,
-                    ttl_seconds=CONF.result_ttl,
-                )
+                key = backend.format_key(*KEY_RESULT, str(self.agent_id))
+                await backend.state.set(key, backend.serialize(result), ttl_seconds=CONF.result_ttl)
 
             await activity.update(
                 agent_id=self.agent_id,

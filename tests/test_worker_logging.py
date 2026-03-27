@@ -141,13 +141,10 @@ class TestStateLogHandler:
     @pytest.fixture
     def fake_redis_backend(self, monkeypatch):
         """Setup fake redis backend for state."""
-        fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
-
-        monkeypatch.setattr(
-            "agentexec.state.redis_backend.state.get_async_client", lambda: fake_redis
-        )
-
-        return fake_redis
+        from agentexec.state import backend
+        fake = fake_aioredis.FakeRedis(decode_responses=False)
+        monkeypatch.setattr(backend, "_client", fake)
+        return fake
 
     def test_handler_initialization(self):
         """Test StateLogHandler initializes with default channel."""
@@ -210,10 +207,9 @@ class TestGetWorkerLogger:
         monkeypatch.setattr("agentexec.worker.logging._worker_logging_configured", False)
 
         # Setup fake redis backend
+        from agentexec.state import backend
         fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
-        monkeypatch.setattr(
-            "agentexec.state.redis_backend.state.get_async_client", lambda: fake_redis
-        )
+        monkeypatch.setattr(backend, "_client", fake_redis)
 
         yield
 

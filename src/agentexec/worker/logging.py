@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pydantic import BaseModel
-from agentexec.state import ops
+from agentexec.state import CHANNEL_LOGS, backend
 
 LOGGER_NAME = "agentexec"
 LOG_CHANNEL = "agentexec:logs"
@@ -23,7 +23,6 @@ class LogMessage(BaseModel):
 
     @classmethod
     def from_log_record(cls, record: logging.LogRecord) -> LogMessage:
-        """Create a LogMessage from a logging.LogRecord."""
         return cls(
             name=record.name,
             levelno=record.levelno,
@@ -36,7 +35,6 @@ class LogMessage(BaseModel):
         )
 
     def to_log_record(self) -> logging.LogRecord:
-        """Convert back to a logging.LogRecord."""
         record = logging.LogRecord(
             name=self.name,
             level=self.levelno,
@@ -53,24 +51,18 @@ class LogMessage(BaseModel):
 
 
 class StateLogHandler(logging.Handler):
-    """Logging handler that publishes log records to state backend pubsub.
-
-    Used by worker processes to send logs to the main process.
-    """
+    """Logging handler that publishes log records to state backend pubsub."""
 
     def __init__(self, channel: str = LOG_CHANNEL):
         super().__init__()
         self.channel = channel
 
     def emit(self, record: logging.LogRecord) -> None:
-        """Publish log record to log channel.
-
-        Schedules the async publish on the running event loop.
-        """
         try:
             message = LogMessage.from_log_record(record)
+            channel = backend.format_key(*CHANNEL_LOGS)
             loop = asyncio.get_running_loop()
-            loop.create_task(ops.publish_log(message.model_dump_json()))
+            loop.create_task(backend.state.log_publish(channel, message.model_dump_json()))
         except RuntimeError:
             pass  # No running loop — discard silently
         except Exception:
@@ -81,22 +73,7 @@ _worker_logging_configured = False
 
 
 def get_worker_logger(name: str) -> logging.Logger:
-    """Configure worker logging and return a logger.
-
-    On first call, sets up a state handler that publishes log records
-    to the main process via state backend pubsub. Subsequent calls just return
-    a logger under the agentexec namespace.
-
-    Args:
-        name: Logger name. Typically __name__.
-
-    Returns:
-        Configured logger instance.
-
-    Example:
-        logger = get_worker_logger(__name__)
-        logger.info("Worker starting")
-    """
+    """Configure worker logging and return a logger."""
     global _worker_logging_configured
 
     if not _worker_logging_configured:

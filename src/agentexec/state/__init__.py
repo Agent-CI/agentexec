@@ -1,128 +1,54 @@
 """State management layer.
 
-Initializes the configured backend and exposes high-level operations for
-the rest of agentexec. Pick one backend via AGENTEXEC_STATE_BACKEND:
+Initializes the configured backend and exposes it as a public reference.
+All state operations go through ``backend.state``, ``backend.queue``, and
+``backend.activity`` directly. No ops passthrough layer.
 
+Pick one backend via AGENTEXEC_STATE_BACKEND:
   - 'agentexec.state.redis_backend'  (default)
   - 'agentexec.state.kafka_backend'
-
-All state operations go through the ops layer (``state.ops``), which
-delegates to whichever backend is loaded. Modules like queue.py,
-schedule.py, and tracker.py should call ops functions rather than
-touching backend primitives directly.
-
-All I/O operations are async.
 """
 
-from typing import AsyncGenerator
-from uuid import UUID
-
-from pydantic import BaseModel
+from __future__ import annotations
 
 from agentexec.config import CONF
-from agentexec.state import ops
-from agentexec.state.backend import load_backend
+from agentexec.state.base import BaseBackend
 
 # ---------------------------------------------------------------------------
-# Backend initialization
+# Key constants — used by domain modules to build namespaced keys
 # ---------------------------------------------------------------------------
 
-# Initialize the ops layer with the configured backend.
-ops.init(CONF.state_backend)
-
-# Also load the backend module directly for backward compatibility.
-# Modules that still reference ``state.backend`` will work during migration.
-import importlib as _importlib
-
-backend = load_backend(
-    _importlib.import_module(CONF.state_backend)
-)
-
-# Re-export key constants from ops for backward compatibility.
-KEY_RESULT = ops.KEY_RESULT
-KEY_EVENT = ops.KEY_EVENT
-KEY_LOCK = ops.KEY_LOCK
-KEY_SCHEDULE = ops.KEY_SCHEDULE
-KEY_SCHEDULE_QUEUE = ops.KEY_SCHEDULE_QUEUE
-CHANNEL_LOGS = ops.CHANNEL_LOGS
-
+KEY_RESULT = (CONF.key_prefix, "result")
+KEY_EVENT = (CONF.key_prefix, "event")
+KEY_LOCK = (CONF.key_prefix, "lock")
+KEY_SCHEDULE = (CONF.key_prefix, "schedule")
+KEY_SCHEDULE_QUEUE = (CONF.key_prefix, "schedule_queue")
+CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
 # ---------------------------------------------------------------------------
-# Public API — delegates to ops layer (all async except publish_log)
+# Backend instance — created once at import time
 # ---------------------------------------------------------------------------
 
-__all__ = [
-    "backend",
-    "ops",
-    "get_result",
-    "set_result",
-    "delete_result",
-    "publish_log",
-    "subscribe_logs",
-    "set_event",
-    "clear_event",
-    "check_event",
-    "acquire_lock",
-    "release_lock",
-    "clear_keys",
-]
+_BACKEND_CLASSES = {
+    "agentexec.state.redis_backend": "agentexec.state.redis_backend.backend:RedisBackend",
+    "agentexec.state.kafka_backend": "agentexec.state.kafka_backend.backend:KafkaBackend",
+}
 
 
-async def get_result(agent_id: UUID | str) -> BaseModel | None:
-    """Get result for an agent."""
-    return await ops.get_result(agent_id)
+def _create_backend() -> BaseBackend:
+    """Instantiate the configured backend class."""
+    backend_path = _BACKEND_CLASSES.get(CONF.state_backend)
+    if backend_path is None:
+        raise ValueError(
+            f"Unknown state backend: {CONF.state_backend}. "
+            f"Valid options: {list(_BACKEND_CLASSES.keys())}"
+        )
+
+    module_path, class_name = backend_path.rsplit(":", 1)
+    import importlib
+    module = importlib.import_module(module_path)
+    cls = getattr(module, class_name)
+    return cls()
 
 
-async def set_result(
-    agent_id: UUID | str,
-    data: BaseModel,
-    ttl_seconds: int | None = None,
-) -> bool:
-    """Set result for an agent."""
-    await ops.set_result(agent_id, data, ttl_seconds=ttl_seconds)
-    return True
-
-
-async def delete_result(agent_id: UUID | str) -> int:
-    """Delete result for an agent."""
-    return await ops.delete_result(agent_id)
-
-
-async def publish_log(message: str) -> None:
-    """Publish a log message to the log channel."""
-    await ops.publish_log(message)
-
-
-def subscribe_logs() -> AsyncGenerator[str, None]:
-    """Subscribe to log messages."""
-    return ops.subscribe_logs()
-
-
-async def set_event(name: str, id: str) -> None:
-    """Set an event flag."""
-    await ops.set_event(name, id)
-
-
-async def clear_event(name: str, id: str) -> None:
-    """Clear an event flag."""
-    await ops.clear_event(name, id)
-
-
-async def check_event(name: str, id: str) -> bool:
-    """Check if an event flag is set."""
-    return await ops.check_event(name, id)
-
-
-async def acquire_lock(lock_key: str, agent_id: UUID) -> bool:
-    """Attempt to acquire a task lock."""
-    return await ops.acquire_lock(lock_key, agent_id)
-
-
-async def release_lock(lock_key: str) -> int:
-    """Release a task lock."""
-    return await ops.release_lock(lock_key)
-
-
-async def clear_keys() -> int:
-    """Clear all state keys managed by this application."""
-    return await ops.clear_keys()
+backend: BaseBackend = _create_backend()

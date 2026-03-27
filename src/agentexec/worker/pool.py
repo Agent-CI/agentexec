@@ -10,8 +10,8 @@ from uuid import uuid4
 from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
 
-from agentexec.state import ops
 from agentexec.config import CONF
+from agentexec.state import CHANNEL_LOGS, KEY_LOCK, backend
 from agentexec.core.db import remove_global_session, set_global_session
 from agentexec.core.queue import dequeue, requeue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
@@ -87,7 +87,7 @@ class Worker:
         """Main worker entry point - sets up async loop and runs."""
         self.logger.info(f"Worker {self._worker_id} starting")
 
-        ops.configure(worker_id=str(self._worker_id))
+        backend.configure(worker_id=str(self._worker_id))
 
         # TODO: Make postgres session conditional on backend — not all backends
         # need it (e.g. Kafka). An empty/unset DATABASE_URL could skip this.
@@ -100,7 +100,7 @@ class Worker:
             self.logger.exception(f"Worker {self._worker_id} fatal error: {e}")
             raise
         finally:
-            asyncio.run(ops.close())  # TODO: avoid second asyncio.run — maybe fold into _run's finally
+            asyncio.run(backend.close())  # TODO: avoid second asyncio.run — maybe fold into _run's finally
             remove_global_session()
             self.logger.info(f"Worker {self._worker_id} shutting down")
 
@@ -116,7 +116,8 @@ class Worker:
             lock_key = task.get_lock_key()
 
             if lock_key is not None:
-                acquired = await ops.acquire_lock(lock_key, task.agent_id)
+                lock_full_key = backend.format_key(*KEY_LOCK, lock_key)
+                acquired = await backend.state.acquire_lock(lock_full_key, task.agent_id, CONF.lock_ttl)
                 if not acquired:
                     self.logger.debug(
                         f"Worker {self._worker_id} lock held for {task.task_name}, requeuing"
@@ -146,7 +147,7 @@ class Worker:
                     )
             finally:
                 if lock_key is not None:
-                    await ops.release_lock(lock_key)
+                    await backend.state.release_lock(lock_full_key)
 
 
 
@@ -423,7 +424,7 @@ class Pool:
                 pass
             finally:
                 await self.shutdown()
-                await ops.close()
+                await backend.close()
 
         try:
             asyncio.run(_loop())
@@ -467,7 +468,7 @@ class Pool:
         """Process log messages from the state backend."""
         assert self._log_handler, "Log handler not initialized"
 
-        async for message in ops.subscribe_logs():
+        async for message in backend.state.log_subscribe(backend.format_key(*CHANNEL_LOGS)):
             log_message = LogMessage.model_validate_json(message)
             self._log_handler.emit(log_message.to_log_record())
 

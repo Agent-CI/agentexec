@@ -37,7 +37,7 @@ def mock_state_backend(monkeypatch):
     def pop_right():
         return queue_data.pop() if queue_data else None
 
-    monkeypatch.setattr("agentexec.state.ops.queue_push", mock_queue_push)
+    monkeypatch.setattr("agentexec.state.backend.queue.push", mock_queue_push)
 
     return {"queue": queue_data, "pop": pop_right}
 
@@ -220,7 +220,7 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     async def mock_queue_pop(*args, **kwargs):
         return task_data
 
-    monkeypatch.setattr("agentexec.state.ops.queue_pop", mock_queue_pop)
+    monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
     from agentexec.core.queue import dequeue
     task = await dequeue(context.tasks, queue_name="test_queue", timeout=1)
@@ -238,7 +238,7 @@ async def test_dequeue_returns_none_on_empty_queue(pool, monkeypatch) -> None:
     async def mock_queue_pop(*args, **kwargs):
         return None
 
-    monkeypatch.setattr("agentexec.state.ops.queue_pop", mock_queue_pop)
+    monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
     from agentexec.core.queue import dequeue
     task = await dequeue(pool._context.tasks, queue_name="test_queue", timeout=1)

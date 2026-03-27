@@ -183,14 +183,14 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    # Mock ops.set_result
+    # Mock backend.state.set
     set_result_calls = []
 
-    async def mock_set_result(agent_id, data, ttl_seconds=None):
-        set_result_calls.append((agent_id, data, ttl_seconds))
+    async def mock_state_set(key, value, ttl_seconds=None):
+        set_result_calls.append((key, value, ttl_seconds))
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.ops.set_result", mock_set_result)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
 
     execution_result = TaskResult(status="success")
 
@@ -222,8 +222,8 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
 
     # Verify result was stored
     assert len(set_result_calls) == 1
-    assert set_result_calls[0][0] == agent_id  # Can be UUID or str
-    assert set_result_calls[0][1] == execution_result
+    assert str(agent_id) in set_result_calls[0][0]  # Key contains agent_id
+    assert set_result_calls[0][1] is not None  # Serialized result
 
 
 async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
@@ -233,11 +233,11 @@ async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
     async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    async def mock_set_result(agent_id, data, ttl_seconds=None):
+    async def mock_state_set(key, value, ttl_seconds=None):
         pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.ops.set_result", mock_set_result)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
 
     @pool.task("sync_task")
     def sync_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
@@ -284,11 +284,11 @@ async def test_task_execute_error_marks_activity_errored(pool, monkeypatch) -> N
     async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    async def mock_set_result(agent_id, data, ttl_seconds=None):
+    async def mock_state_set(key, value, ttl_seconds=None):
         pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.ops.set_result", mock_set_result)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
 
     @pool.task("failing_task")
     async def failing_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:

@@ -7,7 +7,7 @@ from agentexec.activity.schemas import (
     ActivityListItemSchema,
     ActivityListSchema,
 )
-from agentexec.state import ops
+from agentexec.state import backend
 
 
 def generate_agent_id() -> uuid.UUID:
@@ -60,7 +60,7 @@ async def create(
         The agent_id (as UUID object) of the created record
     """
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
-    await ops.activity_create(agent_id, task_name, message, metadata)
+    await backend.activity.create(agent_id, task_name, message, metadata)
     return agent_id
 
 
@@ -89,7 +89,7 @@ async def update(
         ValueError: If agent_id not found
     """
     status_value = (status if status else Status.RUNNING).value
-    await ops.activity_append_log(
+    await backend.activity.append_log(
         normalize_agent_id(agent_id), message, status_value, percentage,
     )
     return True
@@ -115,7 +115,7 @@ async def complete(
     Raises:
         ValueError: If agent_id not found
     """
-    await ops.activity_append_log(
+    await backend.activity.append_log(
         normalize_agent_id(agent_id), message, Status.COMPLETE.value, percentage,
     )
     return True
@@ -141,7 +141,7 @@ async def error(
     Raises:
         ValueError: If agent_id not found
     """
-    await ops.activity_append_log(
+    await backend.activity.append_log(
         normalize_agent_id(agent_id), message, Status.ERROR.value, percentage,
     )
     return True
@@ -157,9 +157,9 @@ async def cancel_pending(
     Returns:
         Number of agents that were canceled
     """
-    pending_agent_ids = await ops.activity_get_pending_ids()
+    pending_agent_ids = await backend.activity.get_pending_ids()
     for agent_id in pending_agent_ids:
-        await ops.activity_append_log(
+        await backend.activity.append_log(
             agent_id, "Canceled due to shutdown", Status.CANCELED.value, None,
         )
     return len(pending_agent_ids)
@@ -184,7 +184,7 @@ async def list(
     Returns:
         ActivityList with list of ActivityListItemSchema items
     """
-    rows, total = await ops.activity_list(page, page_size, metadata_filter)
+    rows, total = await backend.activity.list(page, page_size, metadata_filter)
     return ActivityListSchema(
         items=[ActivityListItemSchema.model_validate(row) for row in rows],
         total=total,
@@ -213,7 +213,7 @@ async def detail(
     """
     if agent_id is None:
         return None
-    item = await ops.activity_get(normalize_agent_id(agent_id), metadata_filter)
+    item = await backend.activity.get(normalize_agent_id(agent_id), metadata_filter)
     if item is not None:
         return ActivityDetailSchema.model_validate(item)
     return None
@@ -228,4 +228,4 @@ async def count_active(session: Any = None) -> int:
     Returns:
         Count of agents with QUEUED or RUNNING status
     """
-    return await ops.activity_count_active()
+    return await backend.activity.count_active()

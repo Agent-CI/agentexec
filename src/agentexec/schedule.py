@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, ValidationError
 from agentexec.config import CONF
 from agentexec.core.logging import get_logger
 from agentexec.core.queue import enqueue
-from agentexec.state import ops
+from agentexec.state import KEY_SCHEDULE, KEY_SCHEDULE_QUEUE, backend
 
 logger = get_logger(__name__)
 
@@ -22,12 +22,7 @@ REPEAT_FOREVER: int = -1
 
 
 class ScheduledTask(BaseModel):
-    """A task scheduled to run on a recurring interval.
-
-    Stored in the backend with a sorted-set index for efficient due-time
-    polling. Each time it fires, a fresh Task (with its own agent_id) is
-    enqueued for the worker pool.
-    """
+    """A task scheduled to run on a recurring interval."""
 
     task_name: str
     context: bytes
@@ -38,17 +33,10 @@ class ScheduledTask(BaseModel):
     metadata: dict[str, Any] | None = None
 
     def model_post_init(self, __context: Any) -> None:
-        """Compute next_run from cron if not explicitly set."""
         if self.next_run == 0:
             self.next_run = self._next_after(self.created_at)
 
     def advance(self) -> None:
-        """Advance next_run to the next future cron occurrence.
-
-        Skips past any missed intervals so we don't enqueue a burst of
-        catch-up tasks after downtime. Decrements repeat for each skipped
-        interval (finite schedules only; -1 stays unchanged).
-        """
         now = time.time()
         while True:
             self.next_run = self._next_after(self.next_run)
@@ -58,9 +46,16 @@ class ScheduledTask(BaseModel):
                 break
 
     def _next_after(self, anchor: float) -> float:
-        """Compute the next cron occurrence after anchor."""
         dt = datetime.fromtimestamp(anchor, tz=CONF.scheduler_tz)
         return float(croniter(self.cron, dt).get_next(float))
+
+
+def _schedule_key(task_name: str) -> str:
+    return backend.format_key(*KEY_SCHEDULE, task_name)
+
+
+def _queue_key() -> str:
+    return backend.format_key(*KEY_SCHEDULE_QUEUE)
 
 
 async def register(
@@ -71,40 +66,28 @@ async def register(
     repeat: int = REPEAT_FOREVER,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Register a new scheduled task.
-
-    The task will first fire at the next cron occurrence from now.
-
-    Args:
-        task_name: Name of the registered task to enqueue on each tick.
-        every: Schedule expression (cron syntax: min hour dom mon dow).
-        context: Pydantic context payload passed to the handler each time.
-        repeat: How many additional executions after the first.
-            -1 = forever (default), 0 = one-shot, N = N more times.
-        metadata: Optional metadata dict (e.g. for multi-tenancy).
-    """
+    """Register a new scheduled task."""
     task = ScheduledTask(
         task_name=task_name,
-        context=ops.serialize(context),
+        context=backend.serialize(context),
         cron=every,
         repeat=repeat,
         metadata=metadata,
     )
 
-    await ops.schedule_set(task_name, task.model_dump_json().encode())
-    await ops.schedule_index_add(task_name, task.next_run)
+    await backend.state.set(_schedule_key(task_name), task.model_dump_json().encode())
+    await backend.state.index_add(_queue_key(), {task_name: task.next_run})
     logger.info(f"Scheduled {task_name}")
 
 
 async def tick() -> None:
-    """Process all scheduled tasks that are due right now.
+    """Process all scheduled tasks that are due right now."""
+    raw = await backend.state.index_range(_queue_key(), 0, time.time())
+    due_names = [item.decode("utf-8") for item in raw]
 
-    For each due task, enqueues it into the normal task queue. If repeats
-    remain, advances to the next run time. Otherwise removes the schedule.
-    """
-    for task_name in await ops.schedule_index_due(time.time()):
+    for task_name in due_names:
         try:
-            data = await ops.schedule_get(task_name)
+            data = await backend.state.get(_schedule_key(task_name))
             task = ScheduledTask.model_validate_json(data)
         except (ValidationError, TypeError):
             logger.warning(f"Failed to load schedule {task_name}, skipping")
@@ -112,15 +95,15 @@ async def tick() -> None:
 
         await enqueue(
             task.task_name,
-            context=ops.deserialize(task.context),
+            context=backend.deserialize(task.context),
             metadata=task.metadata,
         )
 
         if task.repeat == 0:
-            await ops.schedule_index_remove(task_name)
-            await ops.schedule_delete(task_name)
+            await backend.state.index_remove(_queue_key(), task_name)
+            await backend.state.delete(_schedule_key(task_name))
             logger.info(f"Schedule for '{task_name}' exhausted")
         else:
             task.advance()
-            await ops.schedule_set(task_name, task.model_dump_json().encode())
-            await ops.schedule_index_add(task_name, task.next_run)
+            await backend.state.set(_schedule_key(task_name), task.model_dump_json().encode())
+            await backend.state.index_add(_queue_key(), {task_name: task.next_run})

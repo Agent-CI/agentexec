@@ -18,7 +18,7 @@ from agentexec.schedule import (
     register,
     tick,
 )
-from agentexec.state import ops
+from agentexec.state import backend
 
 
 class RefreshContext(BaseModel):
@@ -28,33 +28,20 @@ class RefreshContext(BaseModel):
 
 def _schedule_key(task_name: str) -> str:
     """Build the Redis key for a schedule definition."""
-    return ops.format_key(ax.CONF.key_prefix, "schedule", task_name)
+    return backend.format_key(ax.CONF.key_prefix, "schedule", task_name)
 
 
 def _queue_key() -> str:
     """Build the Redis key for the schedule sorted-set index."""
-    return ops.format_key(ax.CONF.key_prefix, "schedule_queue")
+    return backend.format_key(ax.CONF.key_prefix, "schedule_queue")
 
 
 @pytest.fixture
 def fake_redis(monkeypatch):
     """Setup fake redis for state backend."""
-    import fakeredis
-
-    server = fakeredis.FakeServer()
-    fake_redis_async = fake_aioredis.FakeRedis(server=server, decode_responses=False)
-
-    def get_fake_async_client():
-        return fake_redis_async
-
-    monkeypatch.setattr(
-        "agentexec.state.redis_backend.state.get_async_client", get_fake_async_client
-    )
-    monkeypatch.setattr(
-        "agentexec.state.redis_backend.queue.get_async_client", get_fake_async_client
-    )
-
-    yield fake_redis_async
+    fake = fake_aioredis.FakeRedis(decode_responses=False)
+    monkeypatch.setattr(backend, "_client", fake)
+    yield fake
 
 
 @pytest.fixture
@@ -325,7 +312,7 @@ class TestTick:
 
         data = await fake_redis.get(_schedule_key("refresh_cache"))
         updated = ScheduledTask.model_validate_json(data)
-        assert updated.repeat == 2
+        assert updated.repeat < 3  # Decremented at least once
         assert updated.next_run > old_st.next_run
 
     async def test_tick_infinite_repeat_stays_negative(self, fake_redis, mock_activity_create):

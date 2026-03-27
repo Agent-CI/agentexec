@@ -25,41 +25,24 @@ Example:
 """
 
 from agentexec.config import CONF
-from agentexec.state import ops
+from agentexec.state import backend
 
 
 class Tracker:
-    """Coordinate dynamic fan-out with an atomic counter.
-
-    Args:
-        *args: Key parts used to construct the tracker's unique key.
-               Typically includes a name and identifier, e.g., ("research", batch_id)
-    """
+    """Coordinate dynamic fan-out with an atomic counter."""
 
     def __init__(self, *args: str):
-        self._key = ops.format_key(CONF.key_prefix, "tracker", *args)
+        self._key = backend.format_key(CONF.key_prefix, "tracker", *args)
 
     async def incr(self) -> int:
-        """Increment the counter.
-
-        Returns:
-            Counter value after increment.
-        """
-        return await ops.counter_incr(self._key)
+        return await backend.state.counter_incr(self._key)
 
     async def decr(self) -> int:
-        """Decrement the counter.
-
-        Returns:
-            Counter value after decrement.
-        """
-        return await ops.counter_decr(self._key)
+        return await backend.state.counter_decr(self._key)
 
     async def count(self) -> int:
-        """Get current counter value."""
-        result = await ops.counter_get(self._key)
+        result = await backend.state.get(self._key)
         return int(result) if result else 0
 
     async def complete(self) -> bool:
-        """Check if counter has reached zero."""
         return await self.count() == 0
