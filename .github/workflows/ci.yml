@@ -122,17 +122,17 @@ jobs:
           AGENTEXEC_KAFKA_DEFAULT_PARTITIONS: "2"
           AGENTEXEC_KAFKA_REPLICATION_FACTOR: "1"
 
-      - name: Upload test output on failure
+      - name: Show test output on failure
         if: failure()
         run: |
-          echo '## Kafka Integration Test Output' >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
-          tail -100 /tmp/kafka_test_output.txt >> $GITHUB_STEP_SUMMARY
-          echo '```' >> $GITHUB_STEP_SUMMARY
+          echo "=== KAFKA TEST OUTPUT ==="
+          cat /tmp/kafka_test_output.txt
+          echo "=== END OUTPUT ==="
 
-      - name: Upload test output artifact
+      - name: Create failure check annotation with output
         if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: kafka-test-output
-          path: /tmp/kafka_test_output.txt
+        run: |
+          # Write last 50 lines as warning annotations so they appear in the PR
+          tail -50 /tmp/kafka_test_output.txt | while IFS= read -r line; do
+            echo "::warning::$line"
+          done
