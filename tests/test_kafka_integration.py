@@ -264,10 +264,13 @@ class TestQueue:
             "context": {"query": "hello"},
             "agent_id": str(uuid.uuid4()),
         }
+        print(f"\n[DEBUG] Pushing to queue: {q}")
         await queue_push(q, json.dumps(task_data))
+        print(f"[DEBUG] Push complete, calling queue_pop with timeout=10")
 
         result = await queue_pop(q, timeout=10)
-        assert result is not None
+        print(f"[DEBUG] Pop result: {result}")
+        assert result is not None, f"queue_pop returned None for queue {q}"
         assert result["task_name"] == "test_task"
         assert result["context"]["query"] == "hello"
 

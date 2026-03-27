@@ -59,6 +59,7 @@ async def queue_pop(
         # Get partition info from admin metadata (not consumer metadata)
         partition_ids = await get_topic_partitions(topic)
         tps = [TopicPartition(topic, p) for p in partition_ids]
+        print(f"[queue_pop] topic={topic} partitions={partition_ids} tps={tps}")
 
         consumer = AIOKafkaConsumer(
             bootstrap_servers=get_bootstrap_servers(),
@@ -68,6 +69,7 @@ async def queue_pop(
         await consumer.start()
         consumer.assign(tps)
         await consumer.seek_to_beginning(*tps)
+        print(f"[queue_pop] assigned + seeked, assignment={consumer.assignment()}")
 
         consumers[consumer_key] = consumer
 
@@ -79,10 +81,14 @@ async def queue_pop(
     elapsed = 0
     while elapsed < deadline:
         result = await consumer.getmany(timeout_ms=interval)
+        if result:
+            print(f"[queue_pop] getmany returned {len(result)} topic-partitions")
         for tp, messages in result.items():
+            print(f"[queue_pop]   tp={tp} msgs={len(messages)}")
             for msg in messages:
                 return json.loads(msg.value.decode("utf-8"))
         elapsed += interval
+        print(f"[queue_pop] empty poll, elapsed={elapsed}/{deadline}")
 
     return None
 
