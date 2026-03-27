@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from typing import Any
 
 from agentexec.state.kafka_backend.connection import (
@@ -14,6 +15,9 @@ from agentexec.state.kafka_backend.connection import (
     produce,
     tasks_topic,
 )
+
+# Per-consumer message buffer for messages fetched but not yet returned
+_buffers: dict[str, deque[bytes]] = {}
 
 
 async def queue_push(
@@ -70,6 +74,12 @@ async def queue_pop(
         await consumer.seek_to_beginning(*tps)
 
         consumers[consumer_key] = consumer
+        _buffers[consumer_key] = deque()
+
+    # Check buffer first — previous getmany may have returned multiple messages
+    buf = _buffers.get(consumer_key, deque())
+    if buf:
+        return json.loads(buf.popleft().decode("utf-8"))
 
     consumer = consumers[consumer_key]
 
@@ -79,9 +89,15 @@ async def queue_pop(
     elapsed = 0
     while elapsed < deadline:
         result = await consumer.getmany(timeout_ms=interval)
-        for tp, messages in result.items():
-            for msg in messages:
-                return json.loads(msg.value.decode("utf-8"))
+        all_msgs: list[bytes] = []
+        for tp in sorted(result.keys()):
+            for msg in result[tp]:
+                all_msgs.append(msg.value)
+        if all_msgs:
+            # Return first, buffer the rest
+            for extra in all_msgs[1:]:
+                buf.append(extra)
+            return json.loads(all_msgs[0].decode("utf-8"))
         elapsed += interval
 
     return None

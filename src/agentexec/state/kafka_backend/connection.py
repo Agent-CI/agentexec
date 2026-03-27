@@ -109,10 +109,13 @@ async def get_admin():  # type: ignore[no-untyped-def]
     return _admin
 
 
-async def produce(topic: str, value: bytes | None, key: str | None = None) -> None:
+async def produce(topic: str, value: bytes | None, key: str | bytes | None = None) -> None:
     """Produce a message. key=None means unkeyed."""
     producer = await get_producer()
-    key_bytes = key.encode("utf-8") if key is not None else None
+    if isinstance(key, str):
+        key_bytes = key.encode("utf-8")
+    else:
+        key_bytes = key
     await producer.send_and_wait(topic, value=value, key=key_bytes)  # type: ignore[union-attr]
 
 
