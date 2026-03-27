@@ -125,5 +125,20 @@ jobs:
         run: |
           echo '## Kafka Integration Test Output' >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
-          cat /tmp/kafka_test_output.txt >> $GITHUB_STEP_SUMMARY
+          tail -100 /tmp/kafka_test_output.txt >> $GITHUB_STEP_SUMMARY
           echo '```' >> $GITHUB_STEP_SUMMARY
+
+      - name: Post test output as PR comment
+        if: failure() && github.event_name == 'pull_request'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const output = fs.readFileSync('/tmp/kafka_test_output.txt', 'utf8');
+            const last200 = output.split('\n').slice(-200).join('\n');
+            await github.rest.issues.createComment({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+              body: `## Kafka Integration Test Output\n\`\`\`\n${last200}\n\`\`\``
+            });
