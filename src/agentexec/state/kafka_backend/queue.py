@@ -1,9 +1,11 @@
-"""Kafka queue operations using consumer groups with commit/nack semantics."""
+"""Kafka queue operations using manual partition assignment."""
 
 from __future__ import annotations
 
 import json
 from typing import Any
+
+from aiokafka import TopicPartition
 
 from agentexec.config import CONF
 from agentexec.state.kafka_backend.connection import (
@@ -43,8 +45,8 @@ async def queue_pop(
 ) -> dict[str, Any] | None:
     """Consume the next task from the tasks topic.
 
-    The message offset is NOT committed here — call queue_commit() after
-    successful processing, or queue_nack() to allow redelivery.
+    Uses manual partition assignment (no consumer group) so there is no
+    group-join/rebalance overhead.  Offset tracking is manual via commit().
     """
     from aiokafka import AIOKafkaConsumer
 
@@ -55,21 +57,36 @@ async def queue_pop(
     if consumer_key not in consumers:
         await ensure_topic(topic)
         consumer = AIOKafkaConsumer(
-            topic,
             bootstrap_servers=get_bootstrap_servers(),
-            group_id=f"{CONF.key_prefix}-workers-{topic}",
             client_id=client_id("worker"),
-            auto_offset_reset="earliest",
             enable_auto_commit=False,
-            session_timeout_ms=10_000,
-            heartbeat_interval_ms=1_000,
+            group_id=f"{CONF.key_prefix}-workers-{topic}",
         )
         await consumer.start()  # type: ignore[union-attr]
+
+        # Manually assign all partitions for this topic
+        partitions = consumer.partitions_for_topic(topic)  # type: ignore[union-attr]
+        if not partitions:
+            # Metadata may not be available yet — fetch it
+            await consumer.force_metadata_update()  # type: ignore[union-attr,unused-ignore]
+            partitions = consumer.partitions_for_topic(topic) or {0}  # type: ignore[union-attr]
+
+        tps = [TopicPartition(topic, p) for p in sorted(partitions)]
+        consumer.assign(tps)  # type: ignore[union-attr]
+
+        # Seek to committed offsets (or beginning if none committed)
+        for tp in tps:
+            committed = await consumer.committed(tp)  # type: ignore[union-attr]
+            if committed is not None:
+                consumer.seek(tp, committed)  # type: ignore[union-attr]
+            else:
+                await consumer.seek_to_beginning(tp)  # type: ignore[union-attr]
+
         consumers[consumer_key] = consumer
 
     consumer = consumers[consumer_key]
 
-    # Retry getmany in case partition assignment is still in progress
+    # Poll with retries — first poll may return empty while metadata settles
     deadline = timeout * 1000
     interval = min(1000, deadline)
     elapsed = 0
