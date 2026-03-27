@@ -1,8 +1,7 @@
-"""Kafka queue operations using manual partition assignment (no consumer groups)."""
+"""Kafka queue operations using per-topic consumer groups."""
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any
 
@@ -37,19 +36,6 @@ async def queue_push(
     )
 
 
-async def _discover_partitions(consumer, topic: str) -> list:  # type: ignore[no-untyped-def]
-    """Wait for partition metadata to become available."""
-    from aiokafka import TopicPartition
-
-    for _ in range(10):
-        partitions = consumer.partitions_for_topic(topic)
-        if partitions:
-            return [TopicPartition(topic, p) for p in sorted(partitions)]
-        await asyncio.sleep(0.5)
-    # Fallback: assume partition 0
-    return [TopicPartition(topic, 0)]
-
-
 async def queue_pop(
     queue_name: str,
     *,
@@ -57,8 +43,8 @@ async def queue_pop(
 ) -> dict[str, Any] | None:
     """Consume the next task from the tasks topic.
 
-    Uses manual partition assignment without consumer groups to avoid
-    group-join/rebalance overhead entirely.
+    Uses a per-topic consumer group so each queue has independent
+    consumer coordination with no cross-topic rebalancing.
     """
     from aiokafka import AIOKafkaConsumer
 
@@ -69,22 +55,20 @@ async def queue_pop(
     if consumer_key not in consumers:
         await ensure_topic(topic)
         consumer = AIOKafkaConsumer(
+            topic,
             bootstrap_servers=get_bootstrap_servers(),
+            group_id=f"{CONF.key_prefix}-workers-{topic}",
             client_id=client_id("worker"),
+            auto_offset_reset="earliest",
             enable_auto_commit=False,
+            max_poll_interval_ms=30_000,
         )
         await consumer.start()
-
-        # Manually assign all partitions and seek to beginning
-        tps = await _discover_partitions(consumer, topic)
-        consumer.assign(tps)
-        await consumer.seek_to_beginning(*tps)
-
         consumers[consumer_key] = consumer
 
     consumer = consumers[consumer_key]
 
-    # Poll with retries — first poll may return empty while metadata settles
+    # Poll with retries — first call after group-join may return empty
     deadline = timeout * 1000
     interval = min(1000, deadline)
     elapsed = 0
@@ -99,12 +83,12 @@ async def queue_pop(
 
 
 async def queue_commit(queue_name: str) -> None:
-    """No-op for manual assignment without consumer groups.
-
-    Offset tracking is implicit — the consumer position advances
-    after each getmany() call.
-    """
-    pass
+    """Commit the consumer offset — acknowledges successful processing."""
+    topic = tasks_topic(queue_name)
+    consumer_key = f"worker:{topic}"
+    consumers = get_consumers()
+    if consumer_key in consumers:
+        await consumers[consumer_key].commit()
 
 
 async def queue_nack(queue_name: str) -> None:

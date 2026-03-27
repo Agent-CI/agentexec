@@ -69,6 +69,8 @@ jobs:
           KAFKA_NUM_PARTITIONS: "1"
           # Allow auto topic creation
           KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+          # Fast consumer group rebalancing for tests
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
           # Cluster ID for KRaft
           CLUSTER_ID: "ciTestCluster0001"
         options: >-
