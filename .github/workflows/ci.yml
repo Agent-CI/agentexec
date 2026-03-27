@@ -40,50 +40,34 @@ jobs:
             -v --tb=long
 
   # -----------------------------------------------------------------------
-  # Kafka integration tests — real broker via Docker service
+  # Kafka integration tests — real broker via docker run
   # -----------------------------------------------------------------------
   test-kafka:
     runs-on: ubuntu-latest
 
-    services:
-      kafka:
-        image: confluentinc/cp-kafka:7.7.1
-        ports:
-          - 9092:9092
-        env:
-          # KRaft mode
-          KAFKA_NODE_ID: "1"
-          KAFKA_PROCESS_ROLES: broker,controller
-          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
-          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
-          # Listeners
-          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
-          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092
-          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
-          KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
-          # Faster compaction for tests
-          KAFKA_LOG_CLEANER_MIN_COMPACTION_LAG_MS: "0"
-          KAFKA_LOG_CLEANER_MIN_CLEANABLE_RATIO: "0.01"
-          # Short retention for non-compacted topics
-          KAFKA_LOG_RETENTION_MS: "60000"
-          # Single partition by default
-          KAFKA_NUM_PARTITIONS: "1"
-          # Allow auto topic creation
-          KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
-          # Fast consumer group rebalancing for tests
-          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: "0"
-          # Cluster ID for KRaft
-          CLUSTER_ID: "ciTestCluster0001"
-          KAFKA_KRAFT_CLUSTER_ID: "ciTestCluster0001"
-        options: >-
-          --health-cmd "kafka-topics --bootstrap-server localhost:9092 --list"
-          --health-interval 5s
-          --health-timeout 10s
-          --health-retries 15
-          --health-start-period 30s
-
     steps:
       - uses: actions/checkout@v4
+
+      - name: Start Kafka broker
+        run: |
+          docker run -d --name kafka \
+            -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 \
+            -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
+            -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
+            -e KAFKA_LOG_CLEANER_MIN_COMPACTION_LAG_MS=0 \
+            -e KAFKA_LOG_CLEANER_MIN_CLEANABLE_RATIO=0.01 \
+            -e KAFKA_LOG_RETENTION_MS=60000 \
+            -e KAFKA_NUM_PARTITIONS=1 \
+            -e KAFKA_AUTO_CREATE_TOPICS_ENABLE=true \
+            -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
+            -e CLUSTER_ID=ciTestCluster0001 \
+            apache/kafka:3.9.0
 
       - name: Install uv
         uses: astral-sh/setup-uv@v6
@@ -110,6 +94,7 @@ jobs:
             sleep 2
           done
           echo "Kafka failed to start"
+          docker logs kafka
           exit 1
 
       - name: Run Kafka integration tests
@@ -124,17 +109,15 @@ jobs:
           AGENTEXEC_KAFKA_DEFAULT_PARTITIONS: "2"
           AGENTEXEC_KAFKA_REPLICATION_FACTOR: "1"
 
-      - name: Show test output on failure
+      - name: Show Kafka logs on failure
         if: failure()
-        run: |
-          echo "=== KAFKA TEST OUTPUT ==="
-          cat /tmp/kafka_test_output.txt
-          echo "=== END OUTPUT ==="
+        run: docker logs kafka 2>&1 | tail -50
 
       - name: Create failure check annotation with output
         if: failure()
         run: |
-          # Emit ONLY debug/failure lines (not PASSED) as annotations
-          grep -E '\[queue_|FAILED|ERROR|AssertionError|TIMEOUT|short test summary' /tmp/kafka_test_output.txt | tail -9 | while IFS= read -r line; do
-            echo "::warning::$line"
-          done
+          if [ -f /tmp/kafka_test_output.txt ]; then
+            grep -E '\[queue_|FAILED|ERROR|AssertionError|TIMEOUT|short test summary' /tmp/kafka_test_output.txt | tail -9 | while IFS= read -r line; do
+              echo "::warning::$line"
+            done
+          fi
