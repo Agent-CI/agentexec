@@ -11,6 +11,7 @@ this layer, which keeps the rest of the codebase backend-agnostic.
 from __future__ import annotations
 
 import importlib
+import uuid
 from typing import Any, AsyncGenerator, Coroutine, Optional
 from uuid import UUID
 
@@ -339,6 +340,58 @@ def schedule_index_remove(task_name: str) -> None:
     """Remove a task from the schedule index."""
     b = get_backend()
     b.zrem(b.format_key(*KEY_SCHEDULE_QUEUE), task_name)
+
+
+# ---------------------------------------------------------------------------
+# Activity operations
+# ---------------------------------------------------------------------------
+
+
+def activity_create(
+    agent_id: uuid.UUID,
+    agent_type: str,
+    message: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Create a new activity record with initial QUEUED log entry."""
+    get_backend().activity_create(agent_id, agent_type, message, metadata)
+
+
+def activity_append_log(
+    agent_id: uuid.UUID,
+    message: str,
+    status: str,
+    percentage: int | None = None,
+) -> None:
+    """Append a log entry to an existing activity record."""
+    get_backend().activity_append_log(agent_id, message, status, percentage)
+
+
+def activity_get(
+    agent_id: uuid.UUID,
+    metadata_filter: dict[str, Any] | None = None,
+) -> Any:
+    """Get a single activity record by agent_id."""
+    return get_backend().activity_get(agent_id, metadata_filter)
+
+
+def activity_list(
+    page: int = 1,
+    page_size: int = 50,
+    metadata_filter: dict[str, Any] | None = None,
+) -> tuple[list[Any], int]:
+    """List activity records with pagination. Returns (items, total)."""
+    return get_backend().activity_list(page, page_size, metadata_filter)
+
+
+def activity_count_active() -> int:
+    """Count activities with QUEUED or RUNNING status."""
+    return get_backend().activity_count_active()
+
+
+def activity_get_pending_ids() -> list[uuid.UUID]:
+    """Get agent_ids for all activities with QUEUED or RUNNING status."""
+    return get_backend().activity_get_pending_ids()
 
 
 # ---------------------------------------------------------------------------

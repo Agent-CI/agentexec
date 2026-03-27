@@ -22,6 +22,8 @@ import asyncio
 import importlib
 import json
 import threading
+import uuid
+from datetime import UTC, datetime
 from typing import Any, AsyncGenerator, Coroutine, Optional, TypedDict
 
 from pydantic import BaseModel
@@ -67,6 +69,7 @@ _admin: object | None = None  # AIOKafkaAdminClient
 _kv_cache: dict[str, bytes] = {}
 _counter_cache: dict[str, int] = {}
 _sorted_set_cache: dict[str, dict[str, float]] = {}  # key -> {member: score}
+_activity_cache: dict[str, dict[str, Any]] = {}  # agent_id -> activity record
 
 _cache_lock = threading.Lock()
 _initialized_topics: set[str] = set()
@@ -115,6 +118,10 @@ def _kv_topic() -> str:
 
 def _logs_topic() -> str:
     return f"{CONF.key_prefix}.logs"
+
+
+def _activity_topic() -> str:
+    return f"{CONF.key_prefix}.activity"
 
 
 # ---------------------------------------------------------------------------
@@ -498,6 +505,192 @@ def zrem(key: str, *members: str) -> int:
 
 
 # ---------------------------------------------------------------------------
+# Activity operations (compacted topic + in-memory cache)
+# ---------------------------------------------------------------------------
+
+
+def _now_iso() -> str:
+    """Current UTC time as ISO string."""
+    return datetime.now(UTC).isoformat()
+
+
+def _activity_produce(record: dict[str, Any]) -> None:
+    """Persist an activity record to the compacted activity topic."""
+    agent_id = record["agent_id"]
+    data = json.dumps(record, default=str).encode("utf-8")
+    _produce_sync(_activity_topic(), data, key=str(agent_id))
+
+
+def activity_create(
+    agent_id: uuid.UUID,
+    agent_type: str,
+    message: str,
+    metadata: dict[str, Any] | None = None,
+) -> None:
+    """Create a new activity record with initial QUEUED log entry."""
+    now = _now_iso()
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "message": message,
+        "status": "queued",
+        "percentage": 0,
+        "created_at": now,
+    }
+    record: dict[str, Any] = {
+        "agent_id": str(agent_id),
+        "agent_type": agent_type,
+        "created_at": now,
+        "updated_at": now,
+        "metadata": metadata,
+        "logs": [log_entry],
+    }
+    with _cache_lock:
+        _activity_cache[str(agent_id)] = record
+    _activity_produce(record)
+
+
+def activity_append_log(
+    agent_id: uuid.UUID,
+    message: str,
+    status: str,
+    percentage: int | None = None,
+) -> None:
+    """Append a log entry to an existing activity record."""
+    key = str(agent_id)
+    now = _now_iso()
+    log_entry = {
+        "id": str(uuid.uuid4()),
+        "message": message,
+        "status": status,
+        "percentage": percentage,
+        "created_at": now,
+    }
+    with _cache_lock:
+        record = _activity_cache.get(key)
+        if record is None:
+            raise ValueError(f"Activity not found for agent_id {agent_id}")
+        record["logs"].append(log_entry)
+        record["updated_at"] = now
+    _activity_produce(record)
+
+
+def activity_get(
+    agent_id: uuid.UUID,
+    metadata_filter: dict[str, Any] | None = None,
+) -> dict[str, Any] | None:
+    """Get a single activity record by agent_id."""
+    key = str(agent_id)
+    with _cache_lock:
+        record = _activity_cache.get(key)
+    if record is None:
+        return None
+    if metadata_filter and record.get("metadata"):
+        for k, v in metadata_filter.items():
+            if str(record["metadata"].get(k)) != str(v):
+                return None
+    elif metadata_filter:
+        return None
+    return record
+
+
+def activity_list(
+    page: int = 1,
+    page_size: int = 50,
+    metadata_filter: dict[str, Any] | None = None,
+) -> tuple[list[dict[str, Any]], int]:
+    """List activity records with pagination.
+
+    Returns (items, total) where items are summary dicts matching
+    ActivityListItemSchema fields.
+    """
+    with _cache_lock:
+        records = list(_activity_cache.values())
+
+    # Apply metadata filter
+    if metadata_filter:
+        filtered = []
+        for r in records:
+            meta = r.get("metadata")
+            if meta and all(str(meta.get(k)) == str(v) for k, v in metadata_filter.items()):
+                filtered.append(r)
+        records = filtered
+
+    # Build summary items
+    items: list[dict[str, Any]] = []
+    for r in records:
+        logs = r.get("logs", [])
+        latest = logs[-1] if logs else None
+        first = logs[0] if logs else None
+        items.append({
+            "agent_id": r["agent_id"],
+            "agent_type": r.get("agent_type"),
+            "status": latest["status"] if latest else "queued",
+            "latest_log_message": latest["message"] if latest else None,
+            "latest_log_timestamp": latest["created_at"] if latest else None,
+            "percentage": latest.get("percentage", 0) if latest else 0,
+            "started_at": first["created_at"] if first else None,
+            "metadata": r.get("metadata"),
+        })
+
+    # Sort: active (running/queued) first, then by started_at desc
+    def sort_key(item: dict[str, Any]) -> tuple[int, int, str]:
+        status = item["status"]
+        if status == "running":
+            active, priority = 0, 1
+        elif status == "queued":
+            active, priority = 0, 2
+        else:
+            active, priority = 1, 3
+        # Negate time for descending order (use string sort, ISO format is sortable)
+        ts = item.get("started_at") or ""
+        return (active, priority, ts)
+
+    items.sort(key=sort_key)
+    # For descending started_at within each group, reverse within groups
+    # Actually, the ISO string sort is ascending; we want descending within non-active
+    # Simpler: sort by (active, priority, -started_at)
+    items.sort(key=lambda x: (
+        0 if x["status"] in ("running", "queued") else 1,
+        {"running": 1, "queued": 2}.get(x["status"], 3),
+        "",  # placeholder
+    ))
+    # Stable sort: within same priority, reverse by started_at
+    # Use a two-pass: sort by started_at desc first, then stable sort by priority
+    items.sort(key=lambda x: x.get("started_at") or "", reverse=True)
+    items.sort(key=lambda x: (
+        0 if x["status"] in ("running", "queued") else 1,
+        {"running": 1, "queued": 2}.get(x["status"], 3),
+    ))
+
+    total = len(items)
+    offset = (page - 1) * page_size
+    page_items = items[offset:offset + page_size]
+    return page_items, total
+
+
+def activity_count_active() -> int:
+    """Count activities with QUEUED or RUNNING status."""
+    count = 0
+    with _cache_lock:
+        for record in _activity_cache.values():
+            logs = record.get("logs", [])
+            if logs and logs[-1]["status"] in ("queued", "running"):
+                count += 1
+    return count
+
+
+def activity_get_pending_ids() -> list[uuid.UUID]:
+    """Get agent_ids for all activities with QUEUED or RUNNING status."""
+    pending: list[uuid.UUID] = []
+    with _cache_lock:
+        for record in _activity_cache.values():
+            logs = record.get("logs", [])
+            if logs and logs[-1]["status"] in ("queued", "running"):
+                pending.append(uuid.UUID(record["agent_id"]))
+    return pending
+
+
+# ---------------------------------------------------------------------------
 # Serialization
 # ---------------------------------------------------------------------------
 
@@ -552,8 +745,12 @@ def format_key(*args: str) -> str:
 def clear_keys() -> int:
     """Clear in-memory caches. Topic data is managed by retention policies."""
     with _cache_lock:
-        count = len(_kv_cache) + len(_counter_cache) + len(_sorted_set_cache)
+        count = (
+            len(_kv_cache) + len(_counter_cache)
+            + len(_sorted_set_cache) + len(_activity_cache)
+        )
         _kv_cache.clear()
         _counter_cache.clear()
         _sorted_set_cache.clear()
+        _activity_cache.clear()
     return count
