@@ -143,11 +143,8 @@ class TestStateLogHandler:
         """Setup fake redis backend for state."""
         fake_redis = fakeredis.FakeRedis(decode_responses=False)
 
-        def get_fake_sync_client():
-            return fake_redis
-
         monkeypatch.setattr(
-            "agentexec.state.redis_backend._get_sync_client", get_fake_sync_client
+            "agentexec.state.redis_backend.state.get_sync_client", lambda: fake_redis
         )
 
         return fake_redis
@@ -210,7 +207,7 @@ class TestGetWorkerLogger:
         # Setup fake redis backend
         fake_redis = fakeredis.FakeRedis(decode_responses=False)
         monkeypatch.setattr(
-            "agentexec.state.redis_backend._get_sync_client", lambda: fake_redis
+            "agentexec.state.redis_backend.state.get_sync_client", lambda: fake_redis
         )
 
         yield

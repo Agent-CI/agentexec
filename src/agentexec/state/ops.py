@@ -6,13 +6,16 @@ configured (Redis or Kafka) via a single module reference.
 
 Callers should never touch backend primitives directly — they go through
 this layer, which keeps the rest of the codebase backend-agnostic.
+
+All I/O methods are async. Pure-CPU helpers (serialize, deserialize,
+format_key) remain sync.
 """
 
 from __future__ import annotations
 
 import importlib
 import uuid
-from typing import Any, AsyncGenerator, Coroutine, Optional
+from typing import Any, AsyncGenerator, Optional
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -23,7 +26,7 @@ from agentexec.config import CONF
 # Backend reference (populated by init())
 # ---------------------------------------------------------------------------
 
-_backend: Any = None  # The loaded StateBackend module
+_backend: Any = None  # The loaded backend module
 
 
 def init(backend_module: str) -> None:
@@ -78,7 +81,7 @@ CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
 
 # ---------------------------------------------------------------------------
-# Helpers
+# Helpers (sync — pure CPU)
 # ---------------------------------------------------------------------------
 
 
@@ -102,7 +105,7 @@ def deserialize(data: bytes) -> BaseModel:
 # ---------------------------------------------------------------------------
 
 
-def queue_push(
+async def queue_push(
     queue_name: str,
     value: str,
     *,
@@ -110,7 +113,7 @@ def queue_push(
     partition_key: str | None = None,
 ) -> None:
     """Push a serialized task onto the queue."""
-    get_backend().queue_push(
+    await get_backend().queue_push(
         queue_name, value,
         high_priority=high_priority,
         partition_key=partition_key,
@@ -130,22 +133,12 @@ async def queue_pop(
 
 
 async def queue_commit(queue_name: str) -> None:
-    """Acknowledge successful processing of the last task.
-
-    Kafka: commits the offset so the message won't be redelivered.
-    Redis: no-op (already removed by BRPOP).
-    """
+    """Acknowledge successful processing of the last task."""
     await get_backend().queue_commit(queue_name)
 
 
 async def queue_nack(queue_name: str) -> None:
-    """Signal that the last task should be retried.
-
-    Kafka: skips the commit — the message stays at the uncommitted offset
-    and will be redelivered on the next poll or after a rebalance. The task
-    stays in its original position within its partition.
-    Redis: no-op.
-    """
+    """Signal that the last task should be retried."""
     await get_backend().queue_nack(queue_name)
 
 
@@ -154,58 +147,31 @@ async def queue_nack(queue_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def set_result(
+async def set_result(
     agent_id: UUID | str,
     data: BaseModel,
     ttl_seconds: int | None = None,
 ) -> None:
     """Store a task result."""
     b = get_backend()
-    b.set(
+    await b.store_set(
         b.format_key(*KEY_RESULT, str(agent_id)),
         b.serialize(data),
         ttl_seconds=ttl_seconds,
     )
 
 
-async def aset_result(
-    agent_id: UUID | str,
-    data: BaseModel,
-    ttl_seconds: int | None = None,
-) -> None:
-    """Store a task result (async)."""
+async def get_result(agent_id: UUID | str) -> BaseModel | None:
+    """Retrieve a task result."""
     b = get_backend()
-    await b.aset(
-        b.format_key(*KEY_RESULT, str(agent_id)),
-        b.serialize(data),
-        ttl_seconds=ttl_seconds,
-    )
-
-
-def get_result(agent_id: UUID | str) -> BaseModel | None:
-    """Retrieve a task result (sync)."""
-    b = get_backend()
-    data = b.get(b.format_key(*KEY_RESULT, str(agent_id)))
+    data = await b.store_get(b.format_key(*KEY_RESULT, str(agent_id)))
     return b.deserialize(data) if data else None
 
 
-async def aget_result(agent_id: UUID | str) -> BaseModel | None:
-    """Retrieve a task result (async)."""
+async def delete_result(agent_id: UUID | str) -> int:
+    """Delete a task result."""
     b = get_backend()
-    data = await b.aget(b.format_key(*KEY_RESULT, str(agent_id)))
-    return b.deserialize(data) if data else None
-
-
-def delete_result(agent_id: UUID | str) -> int:
-    """Delete a task result (sync)."""
-    b = get_backend()
-    return b.delete(b.format_key(*KEY_RESULT, str(agent_id)))
-
-
-async def adelete_result(agent_id: UUID | str) -> None:
-    """Delete a task result (async)."""
-    b = get_backend()
-    await b.adelete(b.format_key(*KEY_RESULT, str(agent_id)))
+    return await b.store_delete(b.format_key(*KEY_RESULT, str(agent_id)))
 
 
 # ---------------------------------------------------------------------------
@@ -213,28 +179,22 @@ async def adelete_result(agent_id: UUID | str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def set_event(name: str, id: str) -> None:
+async def set_event(name: str, id: str) -> None:
     """Set an event flag."""
     b = get_backend()
-    b.set(b.format_key(*KEY_EVENT, name, id), b"1")
+    await b.store_set(b.format_key(*KEY_EVENT, name, id), b"1")
 
 
-def clear_event(name: str, id: str) -> None:
+async def clear_event(name: str, id: str) -> None:
     """Clear an event flag."""
     b = get_backend()
-    b.delete(b.format_key(*KEY_EVENT, name, id))
+    await b.store_delete(b.format_key(*KEY_EVENT, name, id))
 
 
-def check_event(name: str, id: str) -> bool:
-    """Check if an event flag is set (sync)."""
+async def check_event(name: str, id: str) -> bool:
+    """Check if an event flag is set."""
     b = get_backend()
-    return b.get(b.format_key(*KEY_EVENT, name, id)) is not None
-
-
-async def acheck_event(name: str, id: str) -> bool:
-    """Check if an event flag is set (async)."""
-    b = get_backend()
-    return await b.aget(b.format_key(*KEY_EVENT, name, id)) is not None
+    return await b.store_get(b.format_key(*KEY_EVENT, name, id)) is not None
 
 
 # ---------------------------------------------------------------------------
@@ -243,15 +203,15 @@ async def acheck_event(name: str, id: str) -> bool:
 
 
 def publish_log(message: str) -> None:
-    """Publish a log message."""
+    """Publish a log message. Sync — required by Python logging handlers."""
     b = get_backend()
-    b.publish(b.format_key(*CHANNEL_LOGS), message)
+    b.log_publish(b.format_key(*CHANNEL_LOGS), message)
 
 
 async def subscribe_logs() -> AsyncGenerator[str, None]:
     """Subscribe to log messages."""
     b = get_backend()
-    async for msg in b.subscribe(b.format_key(*CHANNEL_LOGS)):
+    async for msg in b.log_subscribe(b.format_key(*CHANNEL_LOGS)):
         yield msg
 
 
@@ -261,11 +221,7 @@ async def subscribe_logs() -> AsyncGenerator[str, None]:
 
 
 async def acquire_lock(lock_key: str, agent_id: str) -> bool:
-    """Attempt to acquire a task lock.
-
-    Kafka backends return True unconditionally (partition isolation).
-    Redis backends use SET NX EX.
-    """
+    """Attempt to acquire a task lock."""
     b = get_backend()
     return await b.acquire_lock(
         b.format_key(*KEY_LOCK, lock_key),
@@ -285,19 +241,19 @@ async def release_lock(lock_key: str) -> int:
 # ---------------------------------------------------------------------------
 
 
-def counter_incr(key: str) -> int:
+async def counter_incr(key: str) -> int:
     """Atomically increment a counter."""
-    return get_backend().incr(key)
+    return await get_backend().counter_incr(key)
 
 
-def counter_decr(key: str) -> int:
+async def counter_decr(key: str) -> int:
     """Atomically decrement a counter."""
-    return get_backend().decr(key)
+    return await get_backend().counter_decr(key)
 
 
-def counter_get(key: str) -> Optional[bytes]:
+async def counter_get(key: str) -> Optional[bytes]:
     """Get current counter value."""
-    return get_backend().get(key)
+    return await get_backend().store_get(key)
 
 
 # ---------------------------------------------------------------------------
@@ -305,41 +261,41 @@ def counter_get(key: str) -> Optional[bytes]:
 # ---------------------------------------------------------------------------
 
 
-def schedule_set(task_name: str, task_data: bytes) -> None:
+async def schedule_set(task_name: str, task_data: bytes) -> None:
     """Store a schedule definition."""
     b = get_backend()
-    b.set(b.format_key(*KEY_SCHEDULE, task_name), task_data)
+    await b.store_set(b.format_key(*KEY_SCHEDULE, task_name), task_data)
 
 
-def schedule_get(task_name: str) -> Optional[bytes]:
+async def schedule_get(task_name: str) -> Optional[bytes]:
     """Get a schedule definition."""
     b = get_backend()
-    return b.get(b.format_key(*KEY_SCHEDULE, task_name))
+    return await b.store_get(b.format_key(*KEY_SCHEDULE, task_name))
 
 
-def schedule_delete(task_name: str) -> None:
+async def schedule_delete(task_name: str) -> None:
     """Delete a schedule definition."""
     b = get_backend()
-    b.delete(b.format_key(*KEY_SCHEDULE, task_name))
+    await b.store_delete(b.format_key(*KEY_SCHEDULE, task_name))
 
 
-def schedule_index_add(task_name: str, next_run: float) -> None:
+async def schedule_index_add(task_name: str, next_run: float) -> None:
     """Add a task to the schedule index with its next run time."""
     b = get_backend()
-    b.zadd(b.format_key(*KEY_SCHEDULE_QUEUE), {task_name: next_run})
+    await b.index_add(b.format_key(*KEY_SCHEDULE_QUEUE), {task_name: next_run})
 
 
 async def schedule_index_due(max_time: float) -> list[str]:
     """Get task names that are due (next_run <= max_time)."""
     b = get_backend()
-    raw = await b.zrangebyscore(b.format_key(*KEY_SCHEDULE_QUEUE), 0, max_time)
+    raw = await b.index_range(b.format_key(*KEY_SCHEDULE_QUEUE), 0, max_time)
     return [item.decode("utf-8") for item in raw]
 
 
-def schedule_index_remove(task_name: str) -> None:
+async def schedule_index_remove(task_name: str) -> None:
     """Remove a task from the schedule index."""
     b = get_backend()
-    b.zrem(b.format_key(*KEY_SCHEDULE_QUEUE), task_name)
+    await b.index_remove(b.format_key(*KEY_SCHEDULE_QUEUE), task_name)
 
 
 # ---------------------------------------------------------------------------
@@ -347,51 +303,51 @@ def schedule_index_remove(task_name: str) -> None:
 # ---------------------------------------------------------------------------
 
 
-def activity_create(
+async def activity_create(
     agent_id: uuid.UUID,
     agent_type: str,
     message: str,
     metadata: dict[str, Any] | None = None,
 ) -> None:
     """Create a new activity record with initial QUEUED log entry."""
-    get_backend().activity_create(agent_id, agent_type, message, metadata)
+    await get_backend().activity_create(agent_id, agent_type, message, metadata)
 
 
-def activity_append_log(
+async def activity_append_log(
     agent_id: uuid.UUID,
     message: str,
     status: str,
     percentage: int | None = None,
 ) -> None:
     """Append a log entry to an existing activity record."""
-    get_backend().activity_append_log(agent_id, message, status, percentage)
+    await get_backend().activity_append_log(agent_id, message, status, percentage)
 
 
-def activity_get(
+async def activity_get(
     agent_id: uuid.UUID,
     metadata_filter: dict[str, Any] | None = None,
 ) -> Any:
     """Get a single activity record by agent_id."""
-    return get_backend().activity_get(agent_id, metadata_filter)
+    return await get_backend().activity_get(agent_id, metadata_filter)
 
 
-def activity_list(
+async def activity_list(
     page: int = 1,
     page_size: int = 50,
     metadata_filter: dict[str, Any] | None = None,
 ) -> tuple[list[Any], int]:
     """List activity records with pagination. Returns (items, total)."""
-    return get_backend().activity_list(page, page_size, metadata_filter)
+    return await get_backend().activity_list(page, page_size, metadata_filter)
 
 
-def activity_count_active() -> int:
+async def activity_count_active() -> int:
     """Count activities with QUEUED or RUNNING status."""
-    return get_backend().activity_count_active()
+    return await get_backend().activity_count_active()
 
 
-def activity_get_pending_ids() -> list[uuid.UUID]:
+async def activity_get_pending_ids() -> list[uuid.UUID]:
     """Get agent_ids for all activities with QUEUED or RUNNING status."""
-    return get_backend().activity_get_pending_ids()
+    return await get_backend().activity_get_pending_ids()
 
 
 # ---------------------------------------------------------------------------
@@ -399,6 +355,6 @@ def activity_get_pending_ids() -> list[uuid.UUID]:
 # ---------------------------------------------------------------------------
 
 
-def clear_keys() -> int:
+async def clear_keys() -> int:
     """Clear all managed state."""
-    return get_backend().clear_keys()
+    return await get_backend().clear_keys()

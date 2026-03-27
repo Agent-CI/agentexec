@@ -1,4 +1,4 @@
-"""Kafka state operations: KV, counters, pub/sub, locks, sorted sets, serialization.
+"""Kafka state operations: KV store, counters, pub/sub, locks, sorted index, serialization.
 
 Uses compacted topics for persistence and in-memory caches for reads.
 """
@@ -7,7 +7,7 @@ from __future__ import annotations
 
 import importlib
 import json
-from typing import Any, AsyncGenerator, Coroutine, Optional, TypedDict
+from typing import Any, AsyncGenerator, Optional, TypedDict
 
 from pydantic import BaseModel
 
@@ -32,25 +32,16 @@ _counter_cache: dict[str, int] = {}
 _sorted_set_cache: dict[str, dict[str, float]] = {}  # key -> {member: score}
 
 
-# ---------------------------------------------------------------------------
-# Key-value operations (compacted topic + in-memory cache)
-# ---------------------------------------------------------------------------
+# -- KV store (compacted topic + in-memory cache) ----------------------------
 
 
-def get(key: str) -> Optional[bytes]:
+async def store_get(key: str) -> Optional[bytes]:
     """Get from in-memory cache (populated from compacted state topic)."""
     with _cache_lock:
         return _kv_cache.get(key)
 
 
-def aget(key: str) -> Coroutine[None, None, Optional[bytes]]:
-    """Async get — same as sync since reads are from in-memory cache."""
-    async def _get() -> Optional[bytes]:
-        return get(key)
-    return _get()
-
-
-def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
+async def store_set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
     """Write to compacted state topic and update local cache.
 
     ttl_seconds is accepted for interface compatibility but not enforced —
@@ -58,76 +49,49 @@ def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
     """
     with _cache_lock:
         _kv_cache[key] = value
-    produce_sync(kv_topic(), value, key=key)
+    await produce(kv_topic(), value, key=key)
     return True
 
 
-def aset(
-    key: str, value: bytes, ttl_seconds: Optional[int] = None
-) -> Coroutine[None, None, bool]:
-    """Async set."""
-    async def _set() -> bool:
-        with _cache_lock:
-            _kv_cache[key] = value
-        await produce(kv_topic(), value, key=key)
-        return True
-    return _set()
-
-
-def delete(key: str) -> int:
+async def store_delete(key: str) -> int:
     """Tombstone the key in the compacted topic and remove from cache."""
     with _cache_lock:
         existed = 1 if key in _kv_cache else 0
         _kv_cache.pop(key, None)
-    produce_sync(kv_topic(), None, key=key)  # Tombstone
+    await produce(kv_topic(), None, key=key)  # Tombstone
     return existed
 
 
-def adelete(key: str) -> Coroutine[None, None, int]:
-    """Async delete."""
-    async def _delete() -> int:
-        with _cache_lock:
-            existed = 1 if key in _kv_cache else 0
-            _kv_cache.pop(key, None)
-        await produce(kv_topic(), None, key=key)
-        return existed
-    return _delete()
+# -- Counters (in-memory + compacted topic) -----------------------------------
 
 
-# ---------------------------------------------------------------------------
-# Atomic counters (in-memory + compacted topic)
-# ---------------------------------------------------------------------------
-
-
-def incr(key: str) -> int:
+async def counter_incr(key: str) -> int:
     """Increment counter in local cache and persist to compacted topic."""
     with _cache_lock:
         val = _counter_cache.get(key, 0) + 1
         _counter_cache[key] = val
-    produce_sync(kv_topic(), str(val).encode("utf-8"), key=f"counter:{key}")
+    await produce(kv_topic(), str(val).encode("utf-8"), key=f"counter:{key}")
     return val
 
 
-def decr(key: str) -> int:
+async def counter_decr(key: str) -> int:
     """Decrement counter in local cache and persist to compacted topic."""
     with _cache_lock:
         val = _counter_cache.get(key, 0) - 1
         _counter_cache[key] = val
-    produce_sync(kv_topic(), str(val).encode("utf-8"), key=f"counter:{key}")
+    await produce(kv_topic(), str(val).encode("utf-8"), key=f"counter:{key}")
     return val
 
 
-# ---------------------------------------------------------------------------
-# Pub/sub (log streaming via Kafka topic)
-# ---------------------------------------------------------------------------
+# -- Pub/sub (log streaming via Kafka topic) ----------------------------------
 
 
-def publish(channel: str, message: str) -> None:
-    """Produce a log message to the logs topic."""
+def log_publish(channel: str, message: str) -> None:
+    """Produce a log message to the logs topic. Sync for logging handler compatibility."""
     produce_sync(logs_topic(), message.encode("utf-8"))
 
 
-async def subscribe(channel: str) -> AsyncGenerator[str, None]:
+async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
     """Consume log messages from the logs topic."""
     from aiokafka import AIOKafkaConsumer
 
@@ -151,9 +115,7 @@ async def subscribe(channel: str) -> AsyncGenerator[str, None]:
         await consumer.stop()  # type: ignore[union-attr]
 
 
-# ---------------------------------------------------------------------------
-# Distributed locks — no-op with Kafka
-# ---------------------------------------------------------------------------
+# -- Locks — no-op with Kafka ------------------------------------------------
 
 
 async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
@@ -166,12 +128,10 @@ async def release_lock(key: str) -> int:
     return 0
 
 
-# ---------------------------------------------------------------------------
-# Sorted sets (in-memory + compacted topic)
-# ---------------------------------------------------------------------------
+# -- Sorted index (in-memory + compacted topic) ------------------------------
 
 
-def zadd(key: str, mapping: dict[str, float]) -> int:
+async def index_add(key: str, mapping: dict[str, float]) -> int:
     """Add members with scores. Persists to compacted topic."""
     added = 0
     with _cache_lock:
@@ -182,11 +142,11 @@ def zadd(key: str, mapping: dict[str, float]) -> int:
                 added += 1
             _sorted_set_cache[key][member] = score
     data = json.dumps(_sorted_set_cache[key]).encode("utf-8")
-    produce_sync(kv_topic(), data, key=f"zset:{key}")
+    await produce(kv_topic(), data, key=f"zset:{key}")
     return added
 
 
-async def zrangebyscore(
+async def index_range(
     key: str, min_score: float, max_score: float
 ) -> list[bytes]:
     """Query in-memory sorted set index by score range."""
@@ -199,7 +159,7 @@ async def zrangebyscore(
         ]
 
 
-def zrem(key: str, *members: str) -> int:
+async def index_remove(key: str, *members: str) -> int:
     """Remove members from in-memory sorted set. Persists update."""
     removed = 0
     with _cache_lock:
@@ -210,13 +170,11 @@ def zrem(key: str, *members: str) -> int:
                     removed += 1
     if removed > 0:
         data = json.dumps(_sorted_set_cache.get(key, {})).encode("utf-8")
-        produce_sync(kv_topic(), data, key=f"zset:{key}")
+        await produce(kv_topic(), data, key=f"zset:{key}")
     return removed
 
 
-# ---------------------------------------------------------------------------
-# Serialization
-# ---------------------------------------------------------------------------
+# -- Serialization (sync — pure CPU) -----------------------------------------
 
 
 class _SerializeWrapper(TypedDict):
@@ -251,9 +209,7 @@ def deserialize(data: bytes) -> BaseModel:
     return result
 
 
-# ---------------------------------------------------------------------------
-# Key formatting
-# ---------------------------------------------------------------------------
+# -- Key formatting -----------------------------------------------------------
 
 
 def format_key(*args: str) -> str:
@@ -261,12 +217,10 @@ def format_key(*args: str) -> str:
     return ".".join(args)
 
 
-# ---------------------------------------------------------------------------
-# Cleanup
-# ---------------------------------------------------------------------------
+# -- Cleanup ------------------------------------------------------------------
 
 
-def clear_keys() -> int:
+async def clear_keys() -> int:
     """Clear in-memory caches. Topic data is managed by retention policies."""
     from agentexec.state.kafka_backend.activity import _activity_cache
 

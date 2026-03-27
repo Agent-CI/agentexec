@@ -34,7 +34,7 @@ async def get_result(task: Task, timeout: int = DEFAULT_TIMEOUT) -> BaseModel:
     start = time.time()
 
     while time.time() - start < timeout:
-        result = await ops.aget_result(task.agent_id)
+        result = await ops.get_result(task.agent_id)
         if result is not None:
             return result
         await asyncio.sleep(0.5)

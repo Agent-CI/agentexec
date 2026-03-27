@@ -5,22 +5,22 @@ and need to trigger a follow-up step when all complete.
 
 Example:
     tracker = ax.Tracker("research", batch_id)
-    tracker.incr()  # Count the discovery process itself
+    await tracker.incr()  # Count the discovery process itself
 
     @function_tool
     async def queue_research(company: str) -> str:
-        tracker.incr()
+        await tracker.incr()
         await ax.enqueue("research", ResearchContext(company=company, batch_id=batch_id))
         return f"Queued {company}"
 
     # When discovery finishes, decrement itself
-    if tracker.decr() == 0:
+    if await tracker.decr() == 0:
         await ax.enqueue("aggregate", AggregateContext(batch_id=batch_id))
 
     # In research task - decrement when done
     tracker = ax.Tracker("research", context.batch_id)
     # ... do research ...
-    if tracker.decr() == 0:
+    if await tracker.decr() == 0:
         await ax.enqueue("aggregate", AggregateContext(batch_id=context.batch_id))
 """
 
@@ -39,29 +39,27 @@ class Tracker:
     def __init__(self, *args: str):
         self._key = ops.format_key(CONF.key_prefix, "tracker", *args)
 
-    def incr(self) -> int:
+    async def incr(self) -> int:
         """Increment the counter.
 
         Returns:
             Counter value after increment.
         """
-        return ops.counter_incr(self._key)
+        return await ops.counter_incr(self._key)
 
-    def decr(self) -> int:
+    async def decr(self) -> int:
         """Decrement the counter.
 
         Returns:
             Counter value after decrement.
         """
-        return ops.counter_decr(self._key)
+        return await ops.counter_decr(self._key)
 
-    @property
-    def count(self) -> int:
+    async def count(self) -> int:
         """Get current counter value."""
-        result = ops.counter_get(self._key)
+        result = await ops.counter_get(self._key)
         return int(result) if result else 0
 
-    @property
-    def complete(self) -> bool:
+    async def complete(self) -> bool:
         """Check if counter has reached zero."""
-        return self.count == 0
+        return await self.count() == 0

@@ -1,57 +1,56 @@
 """Domain protocols for agentexec backend modules.
 
 Each backend (Redis, Kafka) implements these three protocols:
-- StateProtocol: KV, counters, locks, pub/sub, sorted sets, serialization
+- StateProtocol: KV store, counters, locks, pub/sub, sorted index, serialization
 - QueueProtocol: Task queue push/pop/commit/nack
 - ActivityProtocol: Task lifecycle tracking (create, update, query)
 
-Backends also implement connection management (close, configure) which
-is validated separately by load_backend().
+All I/O methods are async. Pure-CPU helpers (serialize, deserialize,
+format_key) remain sync.
 """
 
 from __future__ import annotations
 
 import uuid
-from typing import Any, AsyncGenerator, Coroutine, Optional, Protocol, runtime_checkable
+from typing import Any, AsyncGenerator, Optional, Protocol, runtime_checkable
 
 from pydantic import BaseModel
 
 
 @runtime_checkable
 class StateProtocol(Protocol):
-    """KV store, counters, locks, pub/sub, sorted sets, serialization."""
+    """KV store, counters, locks, pub/sub, sorted index, serialization."""
+
+    # -- KV store -------------------------------------------------------------
 
     @staticmethod
-    def get(key: str) -> Optional[bytes]: ...
+    async def store_get(key: str) -> Optional[bytes]: ...
 
     @staticmethod
-    def aget(key: str) -> Coroutine[None, None, Optional[bytes]]: ...
+    async def store_set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool: ...
 
     @staticmethod
-    def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool: ...
+    async def store_delete(key: str) -> int: ...
+
+    # -- Counters -------------------------------------------------------------
 
     @staticmethod
-    def aset(
-        key: str, value: bytes, ttl_seconds: Optional[int] = None
-    ) -> Coroutine[None, None, bool]: ...
+    async def counter_incr(key: str) -> int: ...
 
     @staticmethod
-    def delete(key: str) -> int: ...
+    async def counter_decr(key: str) -> int: ...
+
+    # -- Pub/sub (log streaming) ----------------------------------------------
 
     @staticmethod
-    def adelete(key: str) -> Coroutine[None, None, int]: ...
+    def log_publish(channel: str, message: str) -> None:
+        """Publish a log message. Sync — required by Python logging handlers."""
+        ...
 
     @staticmethod
-    def incr(key: str) -> int: ...
+    async def log_subscribe(channel: str) -> AsyncGenerator[str, None]: ...
 
-    @staticmethod
-    def decr(key: str) -> int: ...
-
-    @staticmethod
-    def publish(channel: str, message: str) -> None: ...
-
-    @staticmethod
-    def subscribe(channel: str) -> AsyncGenerator[str, None]: ...
+    # -- Locks ----------------------------------------------------------------
 
     @staticmethod
     async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool: ...
@@ -59,16 +58,18 @@ class StateProtocol(Protocol):
     @staticmethod
     async def release_lock(key: str) -> int: ...
 
-    @staticmethod
-    def zadd(key: str, mapping: dict[str, float]) -> int: ...
+    # -- Sorted index (schedule) ----------------------------------------------
 
     @staticmethod
-    async def zrangebyscore(
-        key: str, min_score: float, max_score: float
-    ) -> list[bytes]: ...
+    async def index_add(key: str, mapping: dict[str, float]) -> int: ...
 
     @staticmethod
-    def zrem(key: str, *members: str) -> int: ...
+    async def index_range(key: str, min_score: float, max_score: float) -> list[bytes]: ...
+
+    @staticmethod
+    async def index_remove(key: str, *members: str) -> int: ...
+
+    # -- Serialization (sync — pure CPU, no I/O) ------------------------------
 
     @staticmethod
     def serialize(obj: BaseModel) -> bytes: ...
@@ -76,11 +77,15 @@ class StateProtocol(Protocol):
     @staticmethod
     def deserialize(data: bytes) -> BaseModel: ...
 
+    # -- Key formatting (sync — pure string ops) ------------------------------
+
     @staticmethod
     def format_key(*args: str) -> str: ...
 
+    # -- Cleanup --------------------------------------------------------------
+
     @staticmethod
-    def clear_keys() -> int: ...
+    async def clear_keys() -> int: ...
 
 
 @runtime_checkable
@@ -88,7 +93,7 @@ class QueueProtocol(Protocol):
     """Task queue operations with commit/nack semantics."""
 
     @staticmethod
-    def queue_push(
+    async def queue_push(
         queue_name: str,
         value: str,
         *,
@@ -115,7 +120,7 @@ class ActivityProtocol(Protocol):
     """Task lifecycle tracking — create, update, query."""
 
     @staticmethod
-    def activity_create(
+    async def activity_create(
         agent_id: uuid.UUID,
         agent_type: str,
         message: str,
@@ -123,7 +128,7 @@ class ActivityProtocol(Protocol):
     ) -> None: ...
 
     @staticmethod
-    def activity_append_log(
+    async def activity_append_log(
         agent_id: uuid.UUID,
         message: str,
         status: str,
@@ -131,20 +136,20 @@ class ActivityProtocol(Protocol):
     ) -> None: ...
 
     @staticmethod
-    def activity_get(
+    async def activity_get(
         agent_id: uuid.UUID,
         metadata_filter: dict[str, Any] | None = None,
     ) -> Any: ...
 
     @staticmethod
-    def activity_list(
+    async def activity_list(
         page: int = 1,
         page_size: int = 50,
         metadata_filter: dict[str, Any] | None = None,
     ) -> tuple[list[Any], int]: ...
 
     @staticmethod
-    def activity_count_active() -> int: ...
+    async def activity_count_active() -> int: ...
 
     @staticmethod
-    def activity_get_pending_ids() -> list[uuid.UUID]: ...
+    async def activity_get_pending_ids() -> list[uuid.UUID]: ...

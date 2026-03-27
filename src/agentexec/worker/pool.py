@@ -113,7 +113,7 @@ class Worker:
                                 f"Worker {self._worker_id} lock held for {task.task_name} "
                                 f"(lock_key={lock_key}), requeuing"
                             )
-                            requeue(task, queue_name=queue)
+                            await requeue(task, queue_name=queue)
                             await ops.queue_commit(queue)
                             continue
 
@@ -229,6 +229,7 @@ class Pool:
         )
         self._processes = []
         self._log_handler = None
+        self._pending_schedules: list[dict[str, Any]] = []
 
     def task(
         self,
@@ -370,6 +371,9 @@ class Pool:
         ``pool.add_task()``.  The scheduler loop runs automatically
         inside ``pool.run()`` — no extra setup needed.
 
+        Schedules are stored and registered with the backend when
+        ``start()`` is called.
+
         Args:
             task_name: Name of a registered task.
             every: Schedule expression (cron syntax: min hour dom mon dow).
@@ -391,25 +395,28 @@ class Pool:
                 f"Use @pool.task() or pool.add_task() first."
             )
 
-        schedule.register(
+        self._pending_schedules.append(dict(
             task_name=task_name,
             every=every,
             context=context,
             repeat=repeat,
             metadata=metadata,
-        )
+        ))
 
-    def start(self) -> None:
+    async def start(self) -> None:
         """Start worker processes (non-blocking).
 
-        Spawns N worker processes that poll the Redis queue and execute
-        tasks from this pool's registry. Returns immediately.
-
-        Workers log to Redis pubsub. Use run() if you want the main
-        process to collect and display those logs.
+        Spawns N worker processes that poll the queue and execute
+        tasks from this pool's registry. Registers any pending schedules
+        with the backend before spawning workers.
         """
         # Clear any stale shutdown signal
-        self._context.shutdown_event.clear()
+        await self._context.shutdown_event.clear()
+
+        # Register pending schedules with the backend
+        for sched in self._pending_schedules:
+            await schedule.register(**sched)
+        self._pending_schedules.clear()
 
         # Spawn workers BEFORE setting up log handler to avoid pickling issues
         # (StreamHandler has a lock that can't be pickled)
@@ -424,7 +431,7 @@ class Pool:
         """Start workers and run log collector until interrupted.
 
         Spawns worker processes and runs an async event loop in the main
-        process that collects logs from workers via Redis pubsub.
+        process that collects logs from workers via pubsub.
         The scheduler loop also runs automatically alongside the workers,
         polling for due scheduled tasks and enqueuing them.
 
@@ -433,16 +440,16 @@ class Pool:
         """
 
         async def _loop() -> None:
+            await self.start()
             try:
                 await self._collect_logs()
             except asyncio.CancelledError:
                 pass
             finally:
-                self.shutdown()
+                await self.shutdown()
                 await ops.close()
 
         try:
-            self.start()
             asyncio.run(_loop())
         except KeyboardInterrupt:
             pass
@@ -488,7 +495,7 @@ class Pool:
             log_message = LogMessage.model_validate_json(message)
             self._log_handler.emit(log_message.to_log_record())
 
-    def shutdown(self, timeout: int | None = None) -> None:
+    async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.
 
         For use with start(). If using run(), shutdown is handled automatically.
@@ -500,7 +507,7 @@ class Pool:
             timeout = CONF.graceful_shutdown_timeout
 
         print("Shutting down worker pool")
-        self._context.shutdown_event.set()
+        await self._context.shutdown_event.set()
 
         for process in self._processes:
             process.join(timeout=timeout)

@@ -71,19 +71,19 @@ async def test_gather_without_task_definitions(monkeypatch) -> None:
     def mock_format_key(*args):
         return ":".join(args)
 
-    async def mock_aset(key, value, ttl_seconds=None):
+    async def mock_store_set(key, value, ttl_seconds=None):
         storage[key] = value
         return True
 
-    async def mock_aget(key):
+    async def mock_store_get(key):
         return storage.get(key)
 
     monkeypatch.setattr(state.backend, "format_key", mock_format_key)
-    monkeypatch.setattr(state.backend, "aset", mock_aset)
-    monkeypatch.setattr(state.backend, "aget", mock_aget)
+    monkeypatch.setattr(state.backend, "store_set", mock_store_set)
+    monkeypatch.setattr(state.backend, "store_get", mock_store_get)
 
-    await state.aset_result(task1.agent_id, result1)
-    await state.aset_result(task2.agent_id, result2)
+    await state.set_result(task1.agent_id, result1)
+    await state.set_result(task2.agent_id, result2)
 
     # Gather results - no TaskDefinition needed!
     results = await ax.gather(task1, task2)

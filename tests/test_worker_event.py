@@ -12,10 +12,7 @@ def fake_redis_sync(monkeypatch):
     """Setup fake sync redis for state backend."""
     fake_redis = fakeredis.FakeRedis(decode_responses=False)
 
-    def get_fake_sync_client():
-        return fake_redis
-
-    monkeypatch.setattr("agentexec.state.redis_backend._get_sync_client", get_fake_sync_client)
+    monkeypatch.setattr("agentexec.state.redis_backend.state.get_sync_client", lambda: fake_redis)
 
     yield fake_redis
 
@@ -25,10 +22,7 @@ def fake_redis_async(monkeypatch):
     """Setup fake async redis for state backend."""
     fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
 
-    def get_fake_async_client():
-        return fake_redis
-
-    monkeypatch.setattr("agentexec.state.redis_backend._get_async_client", get_fake_async_client)
+    monkeypatch.setattr("agentexec.state.redis_backend.state.get_async_client", lambda: fake_redis)
 
     yield fake_redis
 
@@ -41,36 +35,36 @@ def test_state_event_initialization():
     assert event.id == "event123"
 
 
-def test_redis_event_set(fake_redis_sync):
+async def test_redis_event_set(fake_redis_async):
     """Test StateEvent.set() sets the key in Redis."""
     event = StateEvent("shutdown", "pool1")
 
-    event.set()
+    await event.set()
 
     # Verify the key was set (with event prefix and formatted name:id)
-    value = fake_redis_sync.get("agentexec:event:shutdown:pool1")
+    value = await fake_redis_async.get("agentexec:event:shutdown:pool1")
     assert value == b"1"
 
 
-def test_redis_event_clear(fake_redis_sync):
+async def test_redis_event_clear(fake_redis_async):
     """Test StateEvent.clear() removes the key from Redis."""
     event = StateEvent("shutdown", "pool2")
 
     # Set then clear
-    fake_redis_sync.set("agentexec:event:shutdown:pool2", "1")
-    event.clear()
+    await fake_redis_async.set("agentexec:event:shutdown:pool2", "1")
+    await event.clear()
 
     # Verify the key was removed
-    value = fake_redis_sync.get("agentexec:event:shutdown:pool2")
+    value = await fake_redis_async.get("agentexec:event:shutdown:pool2")
     assert value is None
 
 
-def test_redis_event_clear_nonexistent(fake_redis_sync):
+async def test_redis_event_clear_nonexistent(fake_redis_async):
     """Test StateEvent.clear() handles non-existent keys gracefully."""
     event = StateEvent("nonexistent", "id123")
 
     # Should not raise an error
-    event.clear()
+    await event.clear()
 
 
 async def test_redis_event_is_set_true(fake_redis_async):
@@ -94,13 +88,13 @@ async def test_redis_event_is_set_false(fake_redis_async):
     assert result is False
 
 
-async def test_redis_event_is_set_after_clear(fake_redis_sync, fake_redis_async):
+async def test_redis_event_is_set_after_clear(fake_redis_async):
     """Test StateEvent.is_set() returns False after clear()."""
     event = StateEvent("shutdown", "pool5")
 
     # Set then clear
-    event.set()
-    event.clear()
+    await event.set()
+    await event.clear()
 
     # Check is_set
     result = await event.is_set()

@@ -6,10 +6,10 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from agentexec.state.redis_backend.connection import get_async_client, get_sync_client
+from agentexec.state.redis_backend.connection import get_async_client
 
 
-def queue_push(
+async def queue_push(
     queue_name: str,
     value: str,
     *,
@@ -22,11 +22,11 @@ def queue_push(
     LOW priority: lpush (left/back, dequeued later).
     partition_key is ignored (Redis uses locks for isolation).
     """
-    client = get_sync_client()
+    client = get_async_client()
     if high_priority:
-        client.rpush(queue_name, value)
+        await client.rpush(queue_name, value)
     else:
-        client.lpush(queue_name, value)
+        await client.lpush(queue_name, value)
 
 
 async def queue_pop(

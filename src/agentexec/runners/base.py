@@ -117,7 +117,7 @@ class _RunnerTools:
         agent_id = self._agent_id
         assert agent_id, "agent_id must be set to use report_status tool"
 
-        def report_activity(message: str, percentage: int) -> str:
+        async def report_activity(message: str, percentage: int) -> str:
             """Report progress and status updates.
 
             Use this tool to report your progress as you work through the task.
@@ -129,7 +129,7 @@ class _RunnerTools:
             Returns:
                 Confirmation message
             """
-            activity.update(
+            await activity.update(
                 agent_id=agent_id,
                 message=message,
                 percentage=percentage,

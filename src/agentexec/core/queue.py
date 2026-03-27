@@ -61,7 +61,7 @@ async def enqueue(
             metadata={"organization_id": "org-123"}
         )
     """
-    task = Task.create(
+    task = await Task.create(
         task_name=task_name,
         context=context,
         metadata=metadata,
@@ -74,7 +74,7 @@ async def enqueue(
     if task._definition is not None:
         partition_key = task.get_lock_key()
 
-    ops.queue_push(
+    await ops.queue_push(
         queue_name or CONF.queue_name,
         task.model_dump_json(),
         high_priority=(priority == Priority.HIGH),
@@ -85,7 +85,7 @@ async def enqueue(
     return task
 
 
-def requeue(
+async def requeue(
     task: Task,
     *,
     queue_name: str | None = None,
@@ -99,7 +99,7 @@ def requeue(
         task: Task to requeue.
         queue_name: Queue name. Defaults to CONF.queue_name.
     """
-    ops.queue_push(
+    await ops.queue_push(
         queue_name or CONF.queue_name,
         task.model_dump_json(),
         high_priority=False,

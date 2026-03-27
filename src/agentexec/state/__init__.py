@@ -1,5 +1,3 @@
-# cspell:ignore acheck
-
 """State management layer.
 
 Initializes the configured backend and exposes high-level operations for
@@ -12,9 +10,12 @@ All state operations go through the ops layer (``state.ops``), which
 delegates to whichever backend is loaded. Modules like queue.py,
 schedule.py, and tracker.py should call ops functions rather than
 touching backend primitives directly.
+
+All I/O operations are async. Only publish_log remains sync (Python
+logging handler requirement).
 """
 
-from typing import AsyncGenerator, Coroutine
+from typing import AsyncGenerator
 from uuid import UUID
 
 from pydantic import BaseModel
@@ -48,77 +49,44 @@ CHANNEL_LOGS = ops.CHANNEL_LOGS
 
 
 # ---------------------------------------------------------------------------
-# Public API — delegates to ops layer
+# Public API — delegates to ops layer (all async except publish_log)
 # ---------------------------------------------------------------------------
 
 __all__ = [
     "backend",
     "ops",
     "get_result",
-    "aget_result",
     "set_result",
-    "aset_result",
     "delete_result",
-    "adelete_result",
     "publish_log",
     "subscribe_logs",
     "set_event",
     "clear_event",
     "check_event",
-    "acheck_event",
     "acquire_lock",
     "release_lock",
     "clear_keys",
 ]
 
 
-def get_result(agent_id: UUID | str) -> BaseModel | None:
-    """Get result for an agent (sync)."""
-    return ops.get_result(agent_id)
+async def get_result(agent_id: UUID | str) -> BaseModel | None:
+    """Get result for an agent."""
+    return await ops.get_result(agent_id)
 
 
-def aget_result(agent_id: UUID | str) -> Coroutine[None, None, BaseModel | None]:
-    """Get result for an agent (async)."""
-    return ops.aget_result(agent_id)
-
-
-def set_result(
+async def set_result(
     agent_id: UUID | str,
     data: BaseModel,
     ttl_seconds: int | None = None,
 ) -> bool:
-    """Set result for an agent (sync)."""
-    ops.set_result(agent_id, data, ttl_seconds=ttl_seconds)
+    """Set result for an agent."""
+    await ops.set_result(agent_id, data, ttl_seconds=ttl_seconds)
     return True
 
 
-def aset_result(
-    agent_id: UUID | str,
-    data: BaseModel,
-    ttl_seconds: int | None = None,
-) -> Coroutine[None, None, bool]:
-    """Set result for an agent (async)."""
-
-    async def _set() -> bool:
-        await ops.aset_result(agent_id, data, ttl_seconds=ttl_seconds)
-        return True
-
-    return _set()
-
-
-def delete_result(agent_id: UUID | str) -> int:
-    """Delete result for an agent (sync)."""
-    return ops.delete_result(agent_id)
-
-
-def adelete_result(agent_id: UUID | str) -> Coroutine[None, None, int]:
-    """Delete result for an agent (async)."""
-
-    async def _delete() -> int:
-        await ops.adelete_result(agent_id)
-        return 1
-
-    return _delete()
+async def delete_result(agent_id: UUID | str) -> int:
+    """Delete result for an agent."""
+    return await ops.delete_result(agent_id)
 
 
 def publish_log(message: str) -> None:
@@ -131,50 +99,31 @@ def subscribe_logs() -> AsyncGenerator[str, None]:
     return ops.subscribe_logs()
 
 
-def set_event(name: str, id: str) -> bool:
+async def set_event(name: str, id: str) -> None:
     """Set an event flag."""
-    ops.set_event(name, id)
-    return True
+    await ops.set_event(name, id)
 
 
-def clear_event(name: str, id: str) -> int:
+async def clear_event(name: str, id: str) -> None:
     """Clear an event flag."""
-    ops.clear_event(name, id)
-    return 1
+    await ops.clear_event(name, id)
 
 
-def check_event(name: str, id: str) -> bool:
-    """Check if an event flag is set (sync)."""
-    return ops.check_event(name, id)
-
-
-def acheck_event(name: str, id: str) -> Coroutine[None, None, bool]:
-    """Check if an event flag is set (async)."""
-
-    async def _check() -> bool:
-        return await ops.acheck_event(name, id)
-
-    return _check()
+async def check_event(name: str, id: str) -> bool:
+    """Check if an event flag is set."""
+    return await ops.check_event(name, id)
 
 
 async def acquire_lock(lock_key: str, agent_id: str) -> bool:
-    """Attempt to acquire a task lock.
-
-    Kafka backend: always True (partition isolation).
-    Redis backend: SET NX EX with TTL safety net.
-    """
+    """Attempt to acquire a task lock."""
     return await ops.acquire_lock(lock_key, agent_id)
 
 
 async def release_lock(lock_key: str) -> int:
-    """Release a task lock.
-
-    Kafka backend: no-op (returns 0).
-    Redis backend: deletes the lock key.
-    """
+    """Release a task lock."""
     return await ops.release_lock(lock_key)
 
 
-def clear_keys() -> int:
+async def clear_keys() -> int:
     """Clear all state keys managed by this application."""
-    return ops.clear_keys()
+    return await ops.clear_keys()

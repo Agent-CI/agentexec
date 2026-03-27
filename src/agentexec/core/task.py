@@ -226,7 +226,7 @@ class Task(BaseModel):
         return task
 
     @classmethod
-    def create(
+    async def create(
         cls,
         task_name: str,
         context: BaseModel,
@@ -258,7 +258,7 @@ class Task(BaseModel):
                 metadata={"organization_id": "org-123"}
             )
         """
-        agent_id = activity.create(
+        agent_id = await activity.create(
             task_name=task_name,
             message=CONF.activity_message_create,
             metadata=metadata,
@@ -302,7 +302,7 @@ class Task(BaseModel):
         if self._definition is None:
             raise RuntimeError("Task must be bound to a definition before execution")
 
-        activity.update(
+        await activity.update(
             agent_id=self.agent_id,
             message=CONF.activity_message_started,
             percentage=0,
@@ -316,13 +316,13 @@ class Task(BaseModel):
 
             # TODO ensure we are properly supporting None return values
             if isinstance(result, BaseModel):
-                await ops.aset_result(
+                await ops.set_result(
                     self.agent_id,
                     result,
                     ttl_seconds=CONF.result_ttl,
                 )
 
-            activity.update(
+            await activity.update(
                 agent_id=self.agent_id,
                 message=CONF.activity_message_complete,
                 percentage=100,
@@ -330,7 +330,7 @@ class Task(BaseModel):
             )
             return result
         except Exception as e:
-            activity.update(
+            await activity.update(
                 agent_id=self.agent_id,
                 message=CONF.activity_message_error.format(error=e),
                 status=activity.Status.ERROR,

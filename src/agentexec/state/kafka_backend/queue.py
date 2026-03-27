@@ -11,12 +11,12 @@ from agentexec.state.kafka_backend.connection import (
     ensure_topic,
     get_bootstrap_servers,
     get_consumers,
-    produce_sync,
+    produce,
     tasks_topic,
 )
 
 
-def queue_push(
+async def queue_push(
     queue_name: str,
     value: str,
     *,
@@ -28,11 +28,8 @@ def queue_push(
     partition_key determines which partition the task lands in. Tasks with
     the same partition_key are guaranteed to be processed in order by a
     single consumer — this replaces distributed locking.
-
-    high_priority is stored as a header for potential future use but does
-    not affect partition assignment or ordering.
     """
-    produce_sync(
+    await produce(
         tasks_topic(queue_name),
         value.encode("utf-8"),
         key=partition_key,
@@ -48,9 +45,6 @@ async def queue_pop(
 
     The message offset is NOT committed here — call queue_commit() after
     successful processing, or queue_nack() to allow redelivery.
-
-    If the worker crashes before committing, Kafka's consumer group protocol
-    will reassign the partition and redeliver the message to another consumer.
     """
     from aiokafka import AIOKafkaConsumer
 
@@ -90,9 +84,5 @@ async def queue_commit(queue_name: str) -> None:
 
 
 async def queue_nack(queue_name: str) -> None:
-    """Do NOT commit the offset — the message will be redelivered.
-
-    Intentionally empty — the uncommitted offset means Kafka will
-    redeliver the message on the next poll or after a rebalance.
-    """
+    """Do NOT commit the offset — the message will be redelivered."""
     pass

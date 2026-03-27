@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 from agentexec.state import redis_backend
+from agentexec.state.redis_backend import connection
 
 
 class SampleModel(BaseModel):
@@ -25,20 +26,20 @@ class NestedModel(BaseModel):
 @pytest.fixture(autouse=True)
 def reset_redis_clients():
     """Reset Redis client state before and after each test."""
-    redis_backend._redis_client = None
-    redis_backend._redis_sync_client = None
-    redis_backend._pubsub = None
+    connection._redis_client = None
+    connection._redis_sync_client = None
+    connection._pubsub = None
     yield
-    redis_backend._redis_client = None
-    redis_backend._redis_sync_client = None
-    redis_backend._pubsub = None
+    connection._redis_client = None
+    connection._redis_sync_client = None
+    connection._pubsub = None
 
 
 @pytest.fixture
 def mock_sync_client():
     """Mock synchronous Redis client."""
     client = MagicMock()
-    with patch.object(redis_backend, "_get_sync_client", return_value=client):
+    with patch("agentexec.state.redis_backend.state.get_sync_client", return_value=client):
         yield client
 
 
@@ -46,7 +47,7 @@ def mock_sync_client():
 def mock_async_client():
     """Mock asynchronous Redis client."""
     client = AsyncMock()
-    with patch.object(redis_backend, "_get_async_client", return_value=client):
+    with patch("agentexec.state.redis_backend.state.get_async_client", return_value=client):
         yield client
 
 
@@ -107,146 +108,99 @@ class TestSerialization:
         assert deserialized.metadata == data.metadata
 
 
-class TestQueueOperations:
-    """Tests for queue operations (rpush, lpush, brpop)."""
-
-    def test_rpush(self, mock_sync_client):
-        """Test rpush adds to right of list."""
-        mock_sync_client.rpush.return_value = 5
-
-        result = redis_backend.rpush("tasks", "task_data")
-
-        mock_sync_client.rpush.assert_called_once_with("tasks", "task_data")
-        assert result == 5
-
-    def test_lpush(self, mock_sync_client):
-        """Test lpush adds to left of list."""
-        mock_sync_client.lpush.return_value = 3
-
-        result = redis_backend.lpush("tasks", "task_data")
-
-        mock_sync_client.lpush.assert_called_once_with("tasks", "task_data")
-        assert result == 3
-
-    async def test_brpop_with_result(self, mock_async_client):
-        """Test brpop returns decoded result."""
-        mock_async_client.brpop.return_value = (b"tasks", b"task_value")
-
-        result = await redis_backend.brpop("tasks", timeout=5)
-
-        mock_async_client.brpop.assert_called_once_with(["tasks"], timeout=5)
-        assert result == ("tasks", "task_value")
-
-    async def test_brpop_timeout(self, mock_async_client):
-        """Test brpop returns None on timeout."""
-        mock_async_client.brpop.return_value = None
-
-        result = await redis_backend.brpop("tasks", timeout=1)
-
-        assert result is None
-
-
 class TestKeyValueOperations:
-    """Tests for get/set/delete operations."""
+    """Tests for store_get/store_set/store_delete operations."""
 
-    def test_get_sync(self, mock_sync_client):
-        """Test synchronous get."""
-        mock_sync_client.get.return_value = b"value"
+    async def test_store_get(self, mock_async_client):
+        """Test async get."""
+        mock_async_client.get.return_value = b"value"
 
-        result = redis_backend.get("mykey")
-
-        mock_sync_client.get.assert_called_once_with("mykey")
-        assert result == b"value"
-
-    def test_get_sync_missing_key(self, mock_sync_client):
-        """Test get returns None for missing key."""
-        mock_sync_client.get.return_value = None
-
-        result = redis_backend.get("missing")
-
-        assert result is None
-
-    async def test_aget(self, mock_async_client):
-        """Test asynchronous get."""
-        mock_async_client.get.return_value = b"async_value"
-
-        result = await redis_backend.aget("mykey")
+        result = await redis_backend.store_get("mykey")
 
         mock_async_client.get.assert_called_once_with("mykey")
-        assert result == b"async_value"
+        assert result == b"value"
 
-    def test_set_sync(self, mock_sync_client):
-        """Test synchronous set without TTL."""
-        mock_sync_client.set.return_value = True
+    async def test_store_get_missing_key(self, mock_async_client):
+        """Test get returns None for missing key."""
+        mock_async_client.get.return_value = None
 
-        result = redis_backend.set("mykey", b"value")
+        result = await redis_backend.store_get("missing")
 
-        mock_sync_client.set.assert_called_once_with("mykey", b"value")
-        assert result is True
+        assert result is None
 
-    def test_set_sync_with_ttl(self, mock_sync_client):
-        """Test synchronous set with TTL."""
-        mock_sync_client.set.return_value = True
-
-        result = redis_backend.set("mykey", b"value", ttl_seconds=3600)
-
-        mock_sync_client.set.assert_called_once_with("mykey", b"value", ex=3600)
-        assert result is True
-
-    async def test_aset(self, mock_async_client):
-        """Test asynchronous set with TTL."""
+    async def test_store_set_without_ttl(self, mock_async_client):
+        """Test set without TTL."""
         mock_async_client.set.return_value = True
 
-        result = await redis_backend.aset("mykey", b"value", ttl_seconds=7200)
+        result = await redis_backend.store_set("mykey", b"value")
 
-        mock_async_client.set.assert_called_once_with("mykey", b"value", ex=7200)
+        mock_async_client.set.assert_called_once_with("mykey", b"value")
         assert result is True
 
-    def test_delete_sync(self, mock_sync_client):
-        """Test synchronous delete."""
-        mock_sync_client.delete.return_value = 1
+    async def test_store_set_with_ttl(self, mock_async_client):
+        """Test set with TTL."""
+        mock_async_client.set.return_value = True
 
-        result = redis_backend.delete("mykey")
+        result = await redis_backend.store_set("mykey", b"value", ttl_seconds=3600)
 
-        mock_sync_client.delete.assert_called_once_with("mykey")
-        assert result == 1
+        mock_async_client.set.assert_called_once_with("mykey", b"value", ex=3600)
+        assert result is True
 
-    async def test_adelete(self, mock_async_client):
-        """Test asynchronous delete."""
+    async def test_store_delete(self, mock_async_client):
+        """Test delete."""
         mock_async_client.delete.return_value = 1
 
-        result = await redis_backend.adelete("mykey")
+        result = await redis_backend.store_delete("mykey")
 
         mock_async_client.delete.assert_called_once_with("mykey")
         assert result == 1
 
 
+class TestCounterOperations:
+    """Tests for counter operations."""
+
+    async def test_counter_incr(self, mock_async_client):
+        """Test atomic increment."""
+        mock_async_client.incr.return_value = 5
+
+        result = await redis_backend.counter_incr("mycount")
+
+        mock_async_client.incr.assert_called_once_with("mycount")
+        assert result == 5
+
+    async def test_counter_decr(self, mock_async_client):
+        """Test atomic decrement."""
+        mock_async_client.decr.return_value = 3
+
+        result = await redis_backend.counter_decr("mycount")
+
+        mock_async_client.decr.assert_called_once_with("mycount")
+        assert result == 3
+
+
 class TestPubSubOperations:
     """Tests for pub/sub operations."""
 
-    def test_publish(self, mock_sync_client):
+    def test_log_publish(self, mock_sync_client):
         """Test publishing message to channel."""
-        redis_backend.publish("logs", "log message")
+        redis_backend.log_publish("logs", "log message")
 
         mock_sync_client.publish.assert_called_once_with("logs", "log message")
 
-    async def test_subscribe(self, mock_async_client):
+    async def test_log_subscribe(self, mock_async_client):
         """Test subscribing to channel."""
         mock_pubsub = AsyncMock()
-        # Make pubsub() return the mock directly (not a coroutine)
         mock_async_client.pubsub = MagicMock(return_value=mock_pubsub)
 
-        # Create async iterator for messages
         async def mock_listen():
             yield {"type": "subscribe"}
             yield {"type": "message", "data": b"message1"}
             yield {"type": "message", "data": "message2"}
 
-        # Make listen() return the generator directly (not wrapped in AsyncMock)
         mock_pubsub.listen = MagicMock(return_value=mock_listen())
 
         messages = []
-        async for msg in redis_backend.subscribe("test_channel"):
+        async for msg in redis_backend.log_subscribe("test_channel"):
             messages.append(msg)
 
         assert messages == ["message1", "message2"]
@@ -260,14 +214,13 @@ class TestConnectionManagement:
 
     async def test_close_all_connections(self):
         """Test close cleans up all resources."""
-        # Set up mock clients
         mock_async = AsyncMock()
         mock_sync = MagicMock()
         mock_ps = AsyncMock()
 
-        redis_backend._redis_client = mock_async
-        redis_backend._redis_sync_client = mock_sync
-        redis_backend._pubsub = mock_ps
+        connection._redis_client = mock_async
+        connection._redis_sync_client = mock_sync
+        connection._pubsub = mock_ps
 
         await redis_backend.close()
 
@@ -275,18 +228,17 @@ class TestConnectionManagement:
         mock_async.aclose.assert_called_once()
         mock_sync.close.assert_called_once()
 
-        assert redis_backend._redis_client is None
-        assert redis_backend._redis_sync_client is None
-        assert redis_backend._pubsub is None
+        assert connection._redis_client is None
+        assert connection._redis_sync_client is None
+        assert connection._pubsub is None
 
     async def test_close_handles_none_clients(self):
         """Test close handles None clients gracefully."""
-        redis_backend._redis_client = None
-        redis_backend._redis_sync_client = None
-        redis_backend._pubsub = None
+        connection._redis_client = None
+        connection._redis_sync_client = None
+        connection._pubsub = None
 
-        # Should not raise
         await redis_backend.close()
 
-        assert redis_backend._redis_client is None
-        assert redis_backend._redis_sync_client is None
+        assert connection._redis_client is None
+        assert connection._redis_sync_client is None

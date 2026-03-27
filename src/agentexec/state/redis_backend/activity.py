@@ -11,7 +11,7 @@ import uuid
 from typing import Any
 
 
-def activity_create(
+async def activity_create(
     agent_id: uuid.UUID,
     agent_type: str,
     message: str,
@@ -40,7 +40,7 @@ def activity_create(
     db.commit()
 
 
-def activity_append_log(
+async def activity_append_log(
     agent_id: uuid.UUID,
     message: str,
     status: str,
@@ -60,7 +60,7 @@ def activity_append_log(
     )
 
 
-def activity_get(
+async def activity_get(
     agent_id: uuid.UUID,
     metadata_filter: dict[str, Any] | None = None,
 ) -> Any:
@@ -76,7 +76,7 @@ def activity_get(
     return Activity.get_by_agent_id(db, agent_id, metadata_filter=metadata_filter)
 
 
-def activity_list(
+async def activity_list(
     page: int = 1,
     page_size: int = 50,
     metadata_filter: dict[str, Any] | None = None,
@@ -103,7 +103,7 @@ def activity_list(
     return rows, total
 
 
-def activity_count_active() -> int:
+async def activity_count_active() -> int:
     """Count activities with QUEUED or RUNNING status."""
     from agentexec.activity.models import Activity
     from agentexec.core.db import get_global_session
@@ -112,7 +112,7 @@ def activity_count_active() -> int:
     return Activity.get_active_count(db)
 
 
-def activity_get_pending_ids() -> list[uuid.UUID]:
+async def activity_get_pending_ids() -> list[uuid.UUID]:
     """Get agent_ids for all activities with QUEUED or RUNNING status."""
     from agentexec.activity.models import Activity
     from agentexec.core.db import get_global_session

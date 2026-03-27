@@ -39,7 +39,7 @@ def normalize_agent_id(agent_id: str | uuid.UUID) -> uuid.UUID:
     return agent_id
 
 
-def create(
+async def create(
     task_name: str,
     message: str = "Agent queued",
     agent_id: str | uuid.UUID | None = None,
@@ -60,11 +60,11 @@ def create(
         The agent_id (as UUID object) of the created record
     """
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
-    ops.activity_create(agent_id, task_name, message, metadata)
+    await ops.activity_create(agent_id, task_name, message, metadata)
     return agent_id
 
 
-def update(
+async def update(
     agent_id: str | uuid.UUID,
     message: str,
     percentage: int | None = None,
@@ -89,13 +89,13 @@ def update(
         ValueError: If agent_id not found
     """
     status_value = (status if status else Status.RUNNING).value
-    ops.activity_append_log(
+    await ops.activity_append_log(
         normalize_agent_id(agent_id), message, status_value, percentage,
     )
     return True
 
 
-def complete(
+async def complete(
     agent_id: str | uuid.UUID,
     message: str = "Agent completed",
     percentage: int = 100,
@@ -115,13 +115,13 @@ def complete(
     Raises:
         ValueError: If agent_id not found
     """
-    ops.activity_append_log(
+    await ops.activity_append_log(
         normalize_agent_id(agent_id), message, Status.COMPLETE.value, percentage,
     )
     return True
 
 
-def error(
+async def error(
     agent_id: str | uuid.UUID,
     message: str = "Agent failed",
     percentage: int = 100,
@@ -141,13 +141,13 @@ def error(
     Raises:
         ValueError: If agent_id not found
     """
-    ops.activity_append_log(
+    await ops.activity_append_log(
         normalize_agent_id(agent_id), message, Status.ERROR.value, percentage,
     )
     return True
 
 
-def cancel_pending(
+async def cancel_pending(
     session: Any = None,
 ) -> int:
     """Mark all queued and running agents as canceled.
@@ -157,15 +157,15 @@ def cancel_pending(
     Returns:
         Number of agents that were canceled
     """
-    pending_agent_ids = ops.activity_get_pending_ids()
+    pending_agent_ids = await ops.activity_get_pending_ids()
     for aid in pending_agent_ids:
-        ops.activity_append_log(
+        await ops.activity_append_log(
             aid, "Canceled due to shutdown", Status.CANCELED.value, None,
         )
     return len(pending_agent_ids)
 
 
-def list(
+async def list(
     session: Any = None,
     page: int = 1,
     page_size: int = 50,
@@ -184,7 +184,7 @@ def list(
     Returns:
         ActivityList with list of ActivityListItemSchema items
     """
-    rows, total = ops.activity_list(page, page_size, metadata_filter)
+    rows, total = await ops.activity_list(page, page_size, metadata_filter)
     return ActivityListSchema(
         items=[ActivityListItemSchema.model_validate(row) for row in rows],
         total=total,
@@ -193,7 +193,7 @@ def list(
     )
 
 
-def detail(
+async def detail(
     session: Any = None,
     agent_id: str | uuid.UUID | None = None,
     metadata_filter: dict[str, Any] | None = None,
@@ -213,13 +213,13 @@ def detail(
     """
     if agent_id is None:
         return None
-    item = ops.activity_get(normalize_agent_id(agent_id), metadata_filter)
+    item = await ops.activity_get(normalize_agent_id(agent_id), metadata_filter)
     if item is not None:
         return ActivityDetailSchema.model_validate(item)
     return None
 
 
-def count_active(session: Any = None) -> int:
+async def count_active(session: Any = None) -> int:
     """Get count of active (queued or running) agents.
 
     Args:
@@ -228,4 +228,4 @@ def count_active(session: Any = None) -> int:
     Returns:
         Count of agents with QUEUED or RUNNING status
     """
-    return ops.activity_count_active()
+    return await ops.activity_count_active()

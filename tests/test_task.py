@@ -112,16 +112,16 @@ def test_task_round_trip(pool) -> None:
     assert deserialized.agent_id == original.agent_id
 
 
-def test_task_create_with_basemodel(monkeypatch) -> None:
+async def test_task_create_with_basemodel(monkeypatch) -> None:
     """Test Task.create() with a BaseModel context."""
     # Mock activity.create to avoid database dependency
-    def mock_create(*args, **kwargs):
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
 
     ctx = SampleContext(message="hello", value=42)
-    task = ax.Task.create("test_task", ctx)
+    task = await ax.Task.create("test_task", ctx)
 
     assert task.task_name == "test_task"
     # Context is the typed object
@@ -130,16 +130,16 @@ def test_task_create_with_basemodel(monkeypatch) -> None:
     assert task.context.value == 42
 
 
-def test_task_create_preserves_nested(monkeypatch) -> None:
+async def test_task_create_preserves_nested(monkeypatch) -> None:
     """Test Task.create() preserves nested Pydantic models."""
     # Mock activity.create to avoid database dependency
-    def mock_create(*args, **kwargs):
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
 
     ctx = NestedContext(message="hello", nested={"key": "value"})
-    task = ax.Task.create("test_task", ctx)
+    task = await ax.Task.create("test_task", ctx)
 
     assert isinstance(task.context, NestedContext)
     assert task.context.message == "hello"
@@ -180,17 +180,17 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     # Track activity updates
     activity_updates = []
 
-    def mock_update(**kwargs):
+    async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    # Mock state.aset_result
-    aset_result_calls = []
+    # Mock ops.set_result
+    set_result_calls = []
 
-    async def mock_aset_result(agent_id, data, ttl_seconds=None):
-        aset_result_calls.append((agent_id, data, ttl_seconds))
+    async def mock_set_result(agent_id, data, ttl_seconds=None):
+        set_result_calls.append((agent_id, data, ttl_seconds))
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
+    monkeypatch.setattr("agentexec.core.task.ops.set_result", mock_set_result)
 
     execution_result = TaskResult(status="success")
 
@@ -221,23 +221,23 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     assert activity_updates[1]["percentage"] == 100
 
     # Verify result was stored
-    assert len(aset_result_calls) == 1
-    assert aset_result_calls[0][0] == agent_id  # Can be UUID or str
-    assert aset_result_calls[0][1] == execution_result
+    assert len(set_result_calls) == 1
+    assert set_result_calls[0][0] == agent_id  # Can be UUID or str
+    assert set_result_calls[0][1] == execution_result
 
 
 async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
     """Test Task.execute with a sync handler."""
     activity_updates = []
 
-    def mock_update(**kwargs):
+    async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    async def mock_aset_result(agent_id, data, ttl_seconds=None):
+    async def mock_set_result(agent_id, data, ttl_seconds=None):
         pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
+    monkeypatch.setattr("agentexec.core.task.ops.set_result", mock_set_result)
 
     @pool.task("sync_task")
     def sync_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
@@ -281,14 +281,14 @@ async def test_task_execute_error_marks_activity_errored(pool, monkeypatch) -> N
 
     activity_updates = []
 
-    def mock_update(**kwargs):
+    async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    async def mock_aset_result(agent_id, data, ttl_seconds=None):
+    async def mock_set_result(agent_id, data, ttl_seconds=None):
         pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
+    monkeypatch.setattr("agentexec.core.task.ops.set_result", mock_set_result)
 
     @pool.task("failing_task")
     async def failing_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:

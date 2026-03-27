@@ -2,6 +2,7 @@
 
 import json
 import uuid
+from unittest.mock import AsyncMock
 
 import pytest
 from pydantic import BaseModel
@@ -24,22 +25,19 @@ class TaskResult(BaseModel):
 
 @pytest.fixture
 def mock_state_backend(monkeypatch):
-    """Mock the state backend for queue operations."""
+    """Mock the queue ops for push operations."""
     queue_data = []
 
-    def mock_lpush(key, value):
-        queue_data.insert(0, value)
-        return len(queue_data)
-
-    def mock_rpush(key, value):
-        queue_data.append(value)
-        return len(queue_data)
+    async def mock_queue_push(queue_name, value, *, high_priority=False, partition_key=None):
+        if high_priority:
+            queue_data.append(value)
+        else:
+            queue_data.insert(0, value)
 
     def pop_right():
         return queue_data.pop() if queue_data else None
 
-    monkeypatch.setattr("agentexec.state.backend.lpush", mock_lpush)
-    monkeypatch.setattr("agentexec.state.backend.rpush", mock_rpush)
+    monkeypatch.setattr("agentexec.state.ops.queue_push", mock_queue_push)
 
     return {"queue": queue_data, "pop": pop_right}
 
@@ -55,8 +53,7 @@ def pool():
 
 async def test_enqueue_task(mock_state_backend, pool, monkeypatch) -> None:
     """Test that tasks can be enqueued."""
-    # Mock activity.create to avoid database dependency
-    def mock_create(*args, **kwargs):
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
@@ -89,7 +86,7 @@ async def test_enqueue_task(mock_state_backend, pool, monkeypatch) -> None:
 
 async def test_enqueue_high_priority_task(mock_state_backend, pool, monkeypatch) -> None:
     """Test that high priority tasks are enqueued to the front."""
-    def mock_create(*args, **kwargs):
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
@@ -111,7 +108,7 @@ async def test_enqueue_high_priority_task(mock_state_backend, pool, monkeypatch)
     ctx2 = SampleContext(message="high", value=2)
     task2 = await ax.enqueue("high_task", ctx2, priority=ax.Priority.HIGH)
 
-    # High priority task should be at the end (RPUSH) so it's processed first (BRPOP)
+    # High priority task should be at the end (popped first)
     task_json = mock_state_backend["pop"]()
     task_data = json.loads(task_json)
     assert task_data["agent_id"] == str(task2.agent_id)
@@ -119,7 +116,7 @@ async def test_enqueue_high_priority_task(mock_state_backend, pool, monkeypatch)
 
 async def test_add_task_registers_handler(mock_state_backend, pool, monkeypatch) -> None:
     """Test that pool.add_task() registers a task handler."""
-    def mock_create(*args, **kwargs):
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
@@ -260,15 +257,14 @@ async def test_worker_dequeue_task_returns_none_on_empty_queue(pool, monkeypatch
     assert task is None
 
 
-def test_worker_pool_shutdown_with_no_processes(pool, monkeypatch) -> None:
+async def test_worker_pool_shutdown_with_no_processes(pool) -> None:
     """Test shutdown when no processes have been started."""
-    # Mock the shutdown event to avoid Redis dependency
-    from unittest.mock import MagicMock
+    from unittest.mock import AsyncMock
 
-    pool._context.shutdown_event = MagicMock()
+    pool._context.shutdown_event = AsyncMock()
 
     # Should not raise even with empty process list
-    pool.shutdown(timeout=1)
+    await pool.shutdown(timeout=1)
 
     assert pool._processes == []
     pool._context.shutdown_event.set.assert_called_once()

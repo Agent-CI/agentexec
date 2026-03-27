@@ -99,14 +99,14 @@ class TestRunnerTools:
         assert report_fn.__doc__ is not None
         assert "progress" in report_fn.__doc__.lower()
 
-    def test_report_status_updates_activity(self, db_session, monkeypatch):
+    async def test_report_status_updates_activity(self, db_session, monkeypatch):
         """Test that report_status function calls activity.update."""
         agent_id = uuid.uuid4()
 
         # Track calls to activity.update
         update_calls = []
 
-        def mock_update(*args, **kwargs):
+        async def mock_update(*args, **kwargs):
             update_calls.append(kwargs)
             return True
 
@@ -115,7 +115,7 @@ class TestRunnerTools:
         tools = _RunnerTools(agent_id)
         report_fn = tools.report_status
 
-        result = report_fn("Working on task", 50)
+        result = await report_fn("Working on task", 50)
 
         assert result == "Status updated"
         assert len(update_calls) == 1

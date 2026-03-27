@@ -33,8 +33,8 @@ class ComplexResult(BaseModel):
 
 @pytest.fixture
 def mock_state():
-    """Mock the state module's aget_result function."""
-    with patch("agentexec.core.results.state") as mock:
+    """Mock the ops module's get_result function."""
+    with patch("agentexec.core.results.ops") as mock:
         yield mock
 
 
@@ -47,13 +47,13 @@ async def test_get_result_returns_deserialized_data(mock_state) -> None:
     )
     expected_result = SampleResult(status="success", value=42)
 
-    # Mock aget_result to return the expected result
-    mock_state.aget_result = AsyncMock(return_value=expected_result)
+    # Mock get_result to return the expected result
+    mock_state.get_result = AsyncMock(return_value=expected_result)
 
     result = await get_result(task, timeout=1)
 
     assert result == expected_result
-    mock_state.aget_result.assert_called_once_with(task.agent_id)
+    mock_state.get_result.assert_called_once_with(task.agent_id)
 
 
 async def test_get_result_polls_until_available(mock_state) -> None:
@@ -75,7 +75,7 @@ async def test_get_result_polls_until_available(mock_state) -> None:
             return None
         return expected_result
 
-    mock_state.aget_result = delayed_result
+    mock_state.get_result = delayed_result
 
     result = await get_result(task, timeout=5)
 
@@ -92,7 +92,7 @@ async def test_get_result_timeout(mock_state) -> None:
     )
 
     # Always return None to trigger timeout
-    mock_state.aget_result = AsyncMock(return_value=None)
+    mock_state.get_result = AsyncMock(return_value=None)
 
     with pytest.raises(TimeoutError, match=f"Result for {task.agent_id} not available"):
         await get_result(task, timeout=1)
@@ -115,14 +115,14 @@ async def test_gather_multiple_tasks(mock_state) -> None:
     result2 = SampleResult(status="task2", value=200)
 
     # Mock to return different results for different agent_ids
-    async def mock_aget_result(agent_id):
+    async def mock_get_result(agent_id):
         if agent_id == task1.agent_id:
             return result1
         elif agent_id == task2.agent_id:
             return result2
         return None
 
-    mock_state.aget_result = mock_aget_result
+    mock_state.get_result = mock_get_result
 
     results = await gather(task1, task2)
 
@@ -139,7 +139,7 @@ async def test_gather_single_task(mock_state) -> None:
     )
 
     expected = SampleResult(status="single", value=1)
-    mock_state.aget_result = AsyncMock(return_value=expected)
+    mock_state.get_result = AsyncMock(return_value=expected)
 
     results = await gather(task)
 
@@ -160,10 +160,10 @@ async def test_gather_preserves_order(mock_state) -> None:
     # Create results mapped to task agent_ids
     results_map = {task.agent_id: SampleResult(status=f"result_{i}", value=i) for i, task in enumerate(tasks)}
 
-    async def mock_aget_result(agent_id):
+    async def mock_get_result(agent_id):
         return results_map.get(agent_id)
 
-    mock_state.aget_result = mock_aget_result
+    mock_state.get_result = mock_get_result
 
     results = await gather(*tasks)
 
@@ -184,7 +184,7 @@ async def test_get_result_with_complex_object(mock_state) -> None:
         items=[{"a": 1}, {"b": 2}],
         nested={"key": [1, 2, 3]},
     )
-    mock_state.aget_result = AsyncMock(return_value=expected)
+    mock_state.get_result = AsyncMock(return_value=expected)
 
     result = await get_result(task, timeout=1)
 

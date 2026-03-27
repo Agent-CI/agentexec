@@ -1,11 +1,11 @@
 # cspell:ignore rpush lpush brpop RPUSH LPUSH BRPOP
-"""Redis state operations: KV, counters, pub/sub, locks, sorted sets, serialization."""
+"""Redis state operations: KV store, counters, pub/sub, locks, sorted index, serialization."""
 
 from __future__ import annotations
 
 import importlib
 import json
-from typing import Any, AsyncGenerator, Coroutine, Optional, TypedDict
+from typing import Any, AsyncGenerator, Optional, TypedDict
 
 from pydantic import BaseModel
 
@@ -18,76 +18,55 @@ from agentexec.state.redis_backend.connection import (
 )
 
 
-# -- Key-value operations -----------------------------------------------------
+# -- KV store -----------------------------------------------------------------
 
 
-def get(key: str) -> Optional[bytes]:
-    """Get value for key synchronously."""
-    client = get_sync_client()
-    return client.get(key)  # type: ignore[return-value]
-
-
-def aget(key: str) -> Coroutine[None, None, Optional[bytes]]:
-    """Get value for key asynchronously."""
+async def store_get(key: str) -> Optional[bytes]:
+    """Get value for key."""
     client = get_async_client()
-    return client.get(key)  # type: ignore[return-value]
+    return await client.get(key)  # type: ignore[return-value]
 
 
-def set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
-    """Set value for key synchronously with optional TTL."""
-    client = get_sync_client()
-    if ttl_seconds is not None:
-        return client.set(key, value, ex=ttl_seconds)  # type: ignore[return-value]
-    else:
-        return client.set(key, value)  # type: ignore[return-value]
-
-
-def aset(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> Coroutine[None, None, bool]:
-    """Set value for key asynchronously with optional TTL."""
+async def store_set(key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
+    """Set value for key with optional TTL."""
     client = get_async_client()
     if ttl_seconds is not None:
-        return client.set(key, value, ex=ttl_seconds)  # type: ignore[return-value]
+        return await client.set(key, value, ex=ttl_seconds)  # type: ignore[return-value]
     else:
-        return client.set(key, value)  # type: ignore[return-value]
+        return await client.set(key, value)  # type: ignore[return-value]
 
 
-def delete(key: str) -> int:
-    """Delete key synchronously."""
-    client = get_sync_client()
-    return client.delete(key)  # type: ignore[return-value]
-
-
-def adelete(key: str) -> Coroutine[None, None, int]:
-    """Delete key asynchronously."""
+async def store_delete(key: str) -> int:
+    """Delete key."""
     client = get_async_client()
-    return client.delete(key)  # type: ignore[return-value]
+    return await client.delete(key)  # type: ignore[return-value]
 
 
-# -- Atomic counters ----------------------------------------------------------
+# -- Counters -----------------------------------------------------------------
 
 
-def incr(key: str) -> int:
+async def counter_incr(key: str) -> int:
     """Atomically increment counter."""
-    client = get_sync_client()
-    return client.incr(key)  # type: ignore[return-value]
+    client = get_async_client()
+    return await client.incr(key)  # type: ignore[return-value]
 
 
-def decr(key: str) -> int:
+async def counter_decr(key: str) -> int:
     """Atomically decrement counter."""
-    client = get_sync_client()
-    return client.decr(key)  # type: ignore[return-value]
+    client = get_async_client()
+    return await client.decr(key)  # type: ignore[return-value]
 
 
 # -- Pub/sub ------------------------------------------------------------------
 
 
-def publish(channel: str, message: str) -> None:
-    """Publish message to a channel."""
+def log_publish(channel: str, message: str) -> None:
+    """Publish message to a channel. Sync for logging handler compatibility."""
     client = get_sync_client()
     client.publish(channel, message)
 
 
-async def subscribe(channel: str) -> AsyncGenerator[str, None]:
+async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
     """Subscribe to a channel and yield messages."""
     client = get_async_client()
     ps = client.pubsub()
@@ -108,7 +87,7 @@ async def subscribe(channel: str) -> AsyncGenerator[str, None]:
         set_pubsub(None)
 
 
-# -- Distributed locks --------------------------------------------------------
+# -- Locks --------------------------------------------------------------------
 
 
 async def acquire_lock(key: str, value: str, ttl_seconds: int) -> bool:
@@ -124,16 +103,16 @@ async def release_lock(key: str) -> int:
     return await client.delete(key)  # type: ignore[return-value]
 
 
-# -- Sorted sets --------------------------------------------------------------
+# -- Sorted index -------------------------------------------------------------
 
 
-def zadd(key: str, mapping: dict[str, float]) -> int:
+async def index_add(key: str, mapping: dict[str, float]) -> int:
     """Add members to a sorted set with scores."""
-    client = get_sync_client()
-    return client.zadd(key, mapping)  # type: ignore[return-value]
+    client = get_async_client()
+    return await client.zadd(key, mapping)  # type: ignore[return-value]
 
 
-async def zrangebyscore(
+async def index_range(
     key: str, min_score: float, max_score: float
 ) -> list[bytes]:
     """Get members with scores between min and max."""
@@ -141,10 +120,10 @@ async def zrangebyscore(
     return await client.zrangebyscore(key, min_score, max_score)  # type: ignore[return-value]
 
 
-def zrem(key: str, *members: str) -> int:
+async def index_remove(key: str, *members: str) -> int:
     """Remove members from a sorted set."""
-    client = get_sync_client()
-    return client.zrem(key, *members)  # type: ignore[return-value]
+    client = get_async_client()
+    return await client.zrem(key, *members)  # type: ignore[return-value]
 
 
 # -- Serialization ------------------------------------------------------------
@@ -193,23 +172,23 @@ def format_key(*args: str) -> str:
 # -- Cleanup ------------------------------------------------------------------
 
 
-def clear_keys() -> int:
+async def clear_keys() -> int:
     """Clear all Redis keys managed by this application."""
     if CONF.redis_url is None:
         return 0
 
-    client = get_sync_client()
+    client = get_async_client()
     deleted = 0
 
-    deleted += client.delete(CONF.queue_name)
+    deleted += await client.delete(CONF.queue_name)
 
     pattern = f"{CONF.key_prefix}:*"
     cursor = 0
 
     while True:
-        cursor, keys = client.scan(cursor=cursor, match=pattern, count=100)
+        cursor, keys = await client.scan(cursor=cursor, match=pattern, count=100)
         if keys:
-            deleted += client.delete(*keys)
+            deleted += await client.delete(*keys)
         if cursor == 0:
             break
 

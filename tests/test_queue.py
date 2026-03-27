@@ -20,22 +20,10 @@ class SampleContext(BaseModel):
 
 @pytest.fixture
 def fake_redis(monkeypatch):
-    """Setup fake redis for state backend with shared state."""
-    import fakeredis
+    """Setup fake redis for state backend."""
+    fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
 
-    # Create a shared FakeServer so sync and async clients share data
-    server = fakeredis.FakeServer()
-    fake_redis_sync = fakeredis.FakeRedis(server=server, decode_responses=False)
-    fake_redis = fake_aioredis.FakeRedis(server=server, decode_responses=False)
-
-    def get_fake_sync_client():
-        return fake_redis_sync
-
-    def get_fake_async_client():
-        return fake_redis
-
-    monkeypatch.setattr("agentexec.state.redis_backend._get_sync_client", get_fake_sync_client)
-    monkeypatch.setattr("agentexec.state.redis_backend._get_async_client", get_fake_async_client)
+    monkeypatch.setattr("agentexec.state.redis_backend.queue.get_async_client", lambda: fake_redis)
 
     yield fake_redis
 
@@ -44,7 +32,7 @@ def fake_redis(monkeypatch):
 def mock_activity_create(monkeypatch):
     """Mock activity.create to avoid database dependency."""
 
-    def mock_create(*args, **kwargs):
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)

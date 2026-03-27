@@ -1,12 +1,10 @@
 """Tests for task-level distributed locking."""
 
-import json
 import uuid
 
 import pytest
 from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
-from unittest.mock import AsyncMock, patch
 
 import agentexec as ax
 from agentexec import state
@@ -37,14 +35,10 @@ def pool():
 @pytest.fixture
 def fake_redis(monkeypatch):
     """Setup fake redis for state backend with shared state."""
-    import fakeredis
+    fake_redis_async = fake_aioredis.FakeRedis(decode_responses=False)
 
-    server = fakeredis.FakeServer()
-    fake_redis_sync = fakeredis.FakeRedis(server=server, decode_responses=False)
-    fake_redis_async = fake_aioredis.FakeRedis(server=server, decode_responses=False)
-
-    monkeypatch.setattr("agentexec.state.redis_backend._get_sync_client", lambda: fake_redis_sync)
-    monkeypatch.setattr("agentexec.state.redis_backend._get_async_client", lambda: fake_redis_async)
+    monkeypatch.setattr("agentexec.state.redis_backend.state.get_async_client", lambda: fake_redis_async)
+    monkeypatch.setattr("agentexec.state.redis_backend.queue.get_async_client", lambda: fake_redis_async)
 
     yield fake_redis_async
 
@@ -232,7 +226,7 @@ async def test_lock_key_uses_prefix(fake_redis):
 async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
     """requeue() pushes task to the back of the queue (lpush)."""
 
-    def mock_create(*args, **kwargs):
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
@@ -246,7 +240,7 @@ async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
         context=UserContext(user_id="2", message="requeued"),
         agent_id=uuid.uuid4(),
     )
-    requeue(task2)
+    await requeue(task2)
 
     # Dequeue should return task_1 first (from front/right), then task_2 (from back/left)
     from agentexec.core.queue import dequeue

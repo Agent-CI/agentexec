@@ -63,7 +63,7 @@ class ScheduledTask(BaseModel):
         return float(croniter(self.cron, dt).get_next(float))
 
 
-def register(
+async def register(
     task_name: str,
     every: str,
     context: BaseModel,
@@ -91,8 +91,8 @@ def register(
         metadata=metadata,
     )
 
-    ops.schedule_set(task_name, task.model_dump_json().encode())
-    ops.schedule_index_add(task_name, task.next_run)
+    await ops.schedule_set(task_name, task.model_dump_json().encode())
+    await ops.schedule_index_add(task_name, task.next_run)
     logger.info(f"Scheduled {task_name}")
 
 
@@ -104,7 +104,7 @@ async def tick() -> None:
     """
     for task_name in await ops.schedule_index_due(time.time()):
         try:
-            data = ops.schedule_get(task_name)
+            data = await ops.schedule_get(task_name)
             task = ScheduledTask.model_validate_json(data)
         except (ValidationError, TypeError):
             logger.warning(f"Failed to load schedule {task_name}, skipping")
@@ -117,10 +117,10 @@ async def tick() -> None:
         )
 
         if task.repeat == 0:
-            ops.schedule_index_remove(task_name)
-            ops.schedule_delete(task_name)
+            await ops.schedule_index_remove(task_name)
+            await ops.schedule_delete(task_name)
             logger.info(f"Schedule for '{task_name}' exhausted")
         else:
             task.advance()
-            ops.schedule_set(task_name, task.model_dump_json().encode())
-            ops.schedule_index_add(task_name, task.next_run)
+            await ops.schedule_set(task_name, task.model_dump_json().encode())
+            await ops.schedule_index_add(task_name, task.next_run)

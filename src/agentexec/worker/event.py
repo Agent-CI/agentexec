@@ -11,16 +11,13 @@ class StateEvent:
     This class is fully picklable (just stores name and optional id) and works
     across any process that can connect to the same state backend.
 
-    set() and clear() are synchronous for use from pool management code.
-    is_set() is async for use from worker event loops.
-
     Example:
         event = StateEvent("shutdown", "pool1")
 
-        # In pool (sync context)
-        event.set()
+        # Set the event
+        await event.set()
 
-        # In worker (async context)
+        # Check if set
         if await event.is_set():
             print("Shutdown signal received")
     """
@@ -35,14 +32,14 @@ class StateEvent:
         self.name = name
         self.id = id
 
-    def set(self) -> None:
+    async def set(self) -> None:
         """Set the event flag to True."""
-        ops.set_event(self.name, self.id)
+        await ops.set_event(self.name, self.id)
 
-    def clear(self) -> None:
+    async def clear(self) -> None:
         """Reset the event flag to False."""
-        ops.clear_event(self.name, self.id)
+        await ops.clear_event(self.name, self.id)
 
     async def is_set(self) -> bool:
         """Check if the event flag is True."""
-        return await ops.acheck_event(self.name, self.id)
+        return await ops.check_event(self.name, self.id)

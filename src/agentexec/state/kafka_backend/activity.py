@@ -16,7 +16,7 @@ from typing import Any
 from agentexec.state.kafka_backend.connection import (
     _cache_lock,
     activity_topic,
-    produce_sync,
+    produce,
 )
 
 # In-memory cache for activity records
@@ -28,14 +28,14 @@ def _now_iso() -> str:
     return datetime.now(UTC).isoformat()
 
 
-def _activity_produce(record: dict[str, Any]) -> None:
+async def _activity_produce(record: dict[str, Any]) -> None:
     """Persist an activity record to the compacted activity topic."""
     agent_id = record["agent_id"]
     data = json.dumps(record, default=str).encode("utf-8")
-    produce_sync(activity_topic(), data, key=str(agent_id))
+    await produce(activity_topic(), data, key=str(agent_id))
 
 
-def activity_create(
+async def activity_create(
     agent_id: uuid.UUID,
     agent_type: str,
     message: str,
@@ -60,10 +60,10 @@ def activity_create(
     }
     with _cache_lock:
         _activity_cache[str(agent_id)] = record
-    _activity_produce(record)
+    await _activity_produce(record)
 
 
-def activity_append_log(
+async def activity_append_log(
     agent_id: uuid.UUID,
     message: str,
     status: str,
@@ -85,10 +85,10 @@ def activity_append_log(
             raise ValueError(f"Activity not found for agent_id {agent_id}")
         record["logs"].append(log_entry)
         record["updated_at"] = now
-    _activity_produce(record)
+    await _activity_produce(record)
 
 
-def activity_get(
+async def activity_get(
     agent_id: uuid.UUID,
     metadata_filter: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
@@ -107,7 +107,7 @@ def activity_get(
     return record
 
 
-def activity_list(
+async def activity_list(
     page: int = 1,
     page_size: int = 50,
     metadata_filter: dict[str, Any] | None = None,
@@ -160,7 +160,7 @@ def activity_list(
     return items[offset:offset + page_size], total
 
 
-def activity_count_active() -> int:
+async def activity_count_active() -> int:
     """Count activities with QUEUED or RUNNING status."""
     count = 0
     with _cache_lock:
@@ -171,7 +171,7 @@ def activity_count_active() -> int:
     return count
 
 
-def activity_get_pending_ids() -> list[uuid.UUID]:
+async def activity_get_pending_ids() -> list[uuid.UUID]:
     """Get agent_ids for all activities with QUEUED or RUNNING status."""
     pending: list[uuid.UUID] = []
     with _cache_lock:
