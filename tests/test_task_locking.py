@@ -1,5 +1,3 @@
-"""Tests for task-level distributed locking."""
-
 import uuid
 
 import pytest
@@ -41,9 +39,6 @@ def fake_redis(monkeypatch):
     yield fake
 
 
-# --- TaskDefinition lock_key ---
-
-
 def test_task_definition_lock_key_default():
     """TaskDefinition.lock_key defaults to None."""
 
@@ -62,9 +57,6 @@ def test_task_definition_lock_key_set():
 
     defn = TaskDefinition(name="test", handler=handler, lock_key="user:{user_id}")
     assert defn.lock_key == "user:{user_id}"
-
-
-# --- Pool registration with lock_key ---
 
 
 def test_pool_task_decorator_with_lock_key(pool):
@@ -99,9 +91,6 @@ def test_pool_add_task_with_lock_key(pool):
 
     defn = pool._context.tasks["locked_task"]
     assert defn.lock_key == "user:{user_id}"
-
-
-# --- Task.get_lock_key() ---
 
 
 def test_get_lock_key_evaluates_template(pool):
@@ -177,9 +166,6 @@ def test_get_lock_key_raises_on_missing_field(pool):
         task.get_lock_key()
 
 
-# --- Redis lock acquire/release ---
-
-
 def _lock_key(name: str) -> str:
     return backend.format_key(*KEY_LOCK, name)
 
@@ -218,9 +204,6 @@ async def test_lock_key_uses_prefix(fake_redis):
 
     value = await fake_redis.get("agentexec:lock:user:42")
     assert value is not None
-
-
-# --- Requeue ---
 
 
 async def test_requeue_pushes_to_back(fake_redis, monkeypatch):

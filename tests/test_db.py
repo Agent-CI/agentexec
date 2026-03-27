@@ -1,5 +1,3 @@
-"""Test database session management."""
-
 import pytest
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import Session

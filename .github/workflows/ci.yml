@@ -104,7 +104,7 @@ jobs:
             -v --tb=long 2>&1 | tee /tmp/kafka_test_output.txt
           exit ${PIPESTATUS[0]}
         env:
-          AGENTEXEC_STATE_BACKEND: agentexec.state.kafka_backend
+          AGENTEXEC_STATE_BACKEND: agentexec.state.kafka
           KAFKA_BOOTSTRAP_SERVERS: localhost:9092
           AGENTEXEC_KAFKA_DEFAULT_PARTITIONS: "2"
           AGENTEXEC_KAFKA_REPLICATION_FACTOR: "1"

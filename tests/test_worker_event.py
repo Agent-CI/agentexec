@@ -1,5 +1,3 @@
-"""Test state-backed event for cross-process coordination."""
-
 import pytest
 from fakeredis import aioredis as fake_aioredis
 

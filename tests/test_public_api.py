@@ -1,5 +1,3 @@
-"""Test that the public API is properly exposed."""
-
 import uuid
 
 import pytest

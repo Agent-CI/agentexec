@@ -1,5 +1,3 @@
-"""Tests for scheduled task support."""
-
 import time
 import uuid
 from datetime import datetime
@@ -74,11 +72,6 @@ async def _force_due(fake_redis, task_name):
     await fake_redis.set(_schedule_key(task_name), st.model_dump_json().encode())
     await fake_redis.zadd(_queue_key(), {task_name: st.next_run})
     return st
-
-
-# ---------------------------------------------------------------------------
-# ScheduledTask model
-# ---------------------------------------------------------------------------
 
 
 class TestScheduledTaskModel:
@@ -167,11 +160,6 @@ class TestScheduledTaskModel:
         assert st.next_run > 0
 
 
-# ---------------------------------------------------------------------------
-# pool.add_schedule() — deferred registration
-# ---------------------------------------------------------------------------
-
-
 class TestPoolAddSchedule:
     def test_schedule_defers_registration(self, pool):
         """add_schedule stores config in _pending_schedules, not Redis."""
@@ -200,11 +188,6 @@ class TestPoolAddSchedule:
         assert pool._pending_schedules[0]["repeat"] == 3
 
 
-# ---------------------------------------------------------------------------
-# schedule.register() — direct registration to backend
-# ---------------------------------------------------------------------------
-
-
 class TestScheduleRegister:
     async def test_register_stores_in_redis(self, fake_redis):
         await register(
@@ -231,11 +214,6 @@ class TestScheduleRegister:
 
         members = await fake_redis.zrange(_queue_key(), 0, -1, withscores=True)
         assert len(members) == 1
-
-
-# ---------------------------------------------------------------------------
-# @pool.schedule() decorator
-# ---------------------------------------------------------------------------
 
 
 class TestPoolScheduleDecorator:
@@ -273,11 +251,6 @@ class TestPoolScheduleDecorator:
 
         assert callable(my_handler)
         assert my_handler.__name__ == "my_handler"
-
-
-# ---------------------------------------------------------------------------
-# tick — the scheduler heartbeat
-# ---------------------------------------------------------------------------
 
 
 class TestTick:
@@ -371,11 +344,6 @@ class TestTick:
         assert isinstance(ctx, RefreshContext)
         assert ctx.scope == "users"
         assert ctx.ttl == 999
-
-
-# ---------------------------------------------------------------------------
-# Timezone configuration
-# ---------------------------------------------------------------------------
 
 
 class TestTimezone:

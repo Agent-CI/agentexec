@@ -1,5 +1,3 @@
-"""Test task queue operations."""
-
 import json
 import uuid
 

@@ -8,7 +8,7 @@ Run locally:
 
     docker compose -f docker-compose.kafka.yml up -d
 
-    AGENTEXEC_STATE_BACKEND=agentexec.state.kafka_backend \\
+    AGENTEXEC_STATE_BACKEND=agentexec.state.kafka \\
     KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \\
     uv run pytest tests/test_kafka_integration.py -v
 
@@ -24,10 +24,6 @@ import uuid
 import pytest
 from pydantic import BaseModel
 
-# ---------------------------------------------------------------------------
-# Skip entire module if prerequisites not met
-# ---------------------------------------------------------------------------
-
 _skip_reason = None
 
 if not os.environ.get("KAFKA_BOOTSTRAP_SERVERS"):
@@ -42,20 +38,11 @@ if _skip_reason:
     pytest.skip(_skip_reason, allow_module_level=True)
 
 
-# ---------------------------------------------------------------------------
-# Imports that require Kafka (after skip check)
-# ---------------------------------------------------------------------------
-
 from agentexec.state import backend  # noqa: E402
-from agentexec.state.kafka_backend.backend import KafkaBackend  # noqa: E402
+from agentexec.state.kafka import Backend as KafkaBackend  # noqa: E402
 
-# Convenience aliases to keep test code concise
+# Convenience alias to keep test code concise
 _kb: KafkaBackend = backend  # type: ignore[assignment]
-
-
-# ---------------------------------------------------------------------------
-# Test models
-# ---------------------------------------------------------------------------
 
 
 class SampleResult(BaseModel):
@@ -65,11 +52,6 @@ class SampleResult(BaseModel):
 
 class TaskContext(BaseModel):
     query: str
-
-
-# ---------------------------------------------------------------------------
-# Fixtures
-# ---------------------------------------------------------------------------
 
 
 pytestmark = pytest.mark.asyncio(loop_scope="module")
@@ -92,11 +74,6 @@ async def close_connections():
     """Close all Kafka connections once after the module completes."""
     yield
     await _kb.close()
-
-
-# ---------------------------------------------------------------------------
-# State: KV store
-# ---------------------------------------------------------------------------
 
 
 class TestKVStore:
@@ -129,11 +106,6 @@ class TestKVStore:
         assert await _kb.state.get(key) == b"v2"
 
 
-# ---------------------------------------------------------------------------
-# State: Counters
-# ---------------------------------------------------------------------------
-
-
 class TestCounters:
     async def test_incr_from_zero(self):
         """Incrementing a non-existent counter starts at 1."""
@@ -156,11 +128,6 @@ class TestCounters:
         await _kb.state.counter_incr(key)
         result = await _kb.state.counter_decr(key)
         assert result == 1
-
-
-# ---------------------------------------------------------------------------
-# State: Sorted index
-# ---------------------------------------------------------------------------
 
 
 class TestSortedIndex:
@@ -187,11 +154,6 @@ class TestSortedIndex:
         assert "task_b" in names
 
 
-# ---------------------------------------------------------------------------
-# State: Serialization
-# ---------------------------------------------------------------------------
-
-
 class TestSerialization:
     def test_roundtrip(self):
         """serialize → deserialize preserves type and data."""
@@ -204,11 +166,6 @@ class TestSerialization:
     def test_format_key_joins_with_dots(self):
         """Kafka backend uses dots as key separators."""
         assert _kb.format_key("agentexec", "result", "123") == "agentexec.result.123"
-
-
-# ---------------------------------------------------------------------------
-# Queue: push / pop / commit
-# ---------------------------------------------------------------------------
 
 
 class TestQueue:
@@ -272,11 +229,6 @@ class TestQueue:
             received.append(result["agent_id"])
     
         assert received == ids
-
-
-# ---------------------------------------------------------------------------
-# Activity tracking
-# ---------------------------------------------------------------------------
 
 
 class TestActivity:
@@ -392,11 +344,6 @@ class TestActivity:
         assert result is None
 
 
-# ---------------------------------------------------------------------------
-# Pub/sub (log streaming)
-# ---------------------------------------------------------------------------
-
-
 class TestLogPubSub:
     async def test_publish_and_subscribe(self):
         """Published log messages arrive via subscribe."""
@@ -432,11 +379,6 @@ class TestLogPubSub:
         assert len(received) >= 2
         assert '{"level":"info","msg":"hello"}' in received
         assert '{"level":"info","msg":"world"}' in received
-
-
-# ---------------------------------------------------------------------------
-# Connection management
-# ---------------------------------------------------------------------------
 
 
 class TestConnection:

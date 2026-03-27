@@ -11,12 +11,10 @@ Pick one backend via AGENTEXEC_STATE_BACKEND:
 
 from __future__ import annotations
 
+import importlib
+
 from agentexec.config import CONF
 from agentexec.state.base import BaseBackend
-
-# ---------------------------------------------------------------------------
-# Key constants — used by domain modules to build namespaced keys
-# ---------------------------------------------------------------------------
 
 KEY_RESULT = (CONF.key_prefix, "result")
 KEY_EVENT = (CONF.key_prefix, "event")
@@ -25,30 +23,20 @@ KEY_SCHEDULE = (CONF.key_prefix, "schedule")
 KEY_SCHEDULE_QUEUE = (CONF.key_prefix, "schedule_queue")
 CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
-# ---------------------------------------------------------------------------
-# Backend instance — created once at import time
-# ---------------------------------------------------------------------------
 
-_BACKEND_CLASSES = {
-    "agentexec.state.redis_backend": "agentexec.state.redis_backend.backend:RedisBackend",
-    "agentexec.state.kafka_backend": "agentexec.state.kafka_backend.backend:KafkaBackend",
-}
+def _create_backend(state_backend: str) -> BaseBackend:
+    """Instantiate the given backend class.
 
-
-def _create_backend() -> BaseBackend:
-    """Instantiate the configured backend class."""
-    backend_path = _BACKEND_CLASSES.get(CONF.state_backend)
-    if backend_path is None:
-        raise ValueError(
-            f"Unknown state backend: {CONF.state_backend}. "
-            f"Valid options: {list(_BACKEND_CLASSES.keys())}"
-        )
-
-    module_path, class_name = backend_path.rsplit(":", 1)
-    import importlib
-    module = importlib.import_module(module_path)
-    cls = getattr(module, class_name)
-    return cls()
+    The state_backend string is a fully qualified module path containing
+    a Backend class (e.g. 'agentexec.state.kafka').
+    """
+    try:
+        module = importlib.import_module(state_backend)
+        return module.Backend()
+    except ImportError as e:
+        raise ImportError(f"Could not import backend {state_backend}: {e}")
+    except AttributeError:
+        raise ValueError(f"Backend module {state_backend} has no Backend class")
 
 
-backend: BaseBackend = _create_backend()
+backend: BaseBackend = _create_backend(CONF.state_backend)

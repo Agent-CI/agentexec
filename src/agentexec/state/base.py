@@ -1,5 +1,3 @@
-"""Abstract base classes for state backends."""
-
 from __future__ import annotations
 
 import importlib

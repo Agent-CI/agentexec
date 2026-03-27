@@ -1,12 +1,10 @@
-"""Tests for Redis state backend class."""
-
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 from pydantic import BaseModel
 
 from agentexec.state import backend
-from agentexec.state.redis_backend.backend import RedisBackend
+from agentexec.state.redis import Backend as RedisBackend
 
 
 class SampleModel(BaseModel):

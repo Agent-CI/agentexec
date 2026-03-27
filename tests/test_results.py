@@ -1,5 +1,3 @@
-"""Test task result storage and retrieval."""
-
 import asyncio
 import uuid
 from unittest.mock import AsyncMock, patch

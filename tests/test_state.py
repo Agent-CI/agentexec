@@ -1,5 +1,3 @@
-"""Tests for state backend interface."""
-
 from unittest.mock import AsyncMock, patch
 
 import pytest

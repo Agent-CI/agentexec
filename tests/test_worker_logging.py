@@ -1,5 +1,3 @@
-"""Test worker logging functionality."""
-
 import logging
 import time
 

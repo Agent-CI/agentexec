@@ -4,7 +4,7 @@
 #   docker compose -f docker-compose.kafka.yml up -d
 #
 #   KAFKA_BOOTSTRAP_SERVERS=localhost:9092 \
-#   AGENTEXEC_STATE_BACKEND=agentexec.state.kafka_backend \
+#   AGENTEXEC_STATE_BACKEND=agentexec.state.kafka \
 #   uv run pytest tests/test_kafka_integration.py -v
 #
 #   docker compose -f docker-compose.kafka.yml down

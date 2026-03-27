@@ -1,5 +1,3 @@
-"""Kafka backend — class-based implementation."""
-
 from __future__ import annotations
 
 import asyncio
@@ -19,7 +17,7 @@ from agentexec.config import CONF
 from agentexec.state.base import BaseActivityBackend, BaseBackend, BaseQueueBackend, BaseStateBackend
 
 
-class KafkaBackend(BaseBackend):
+class Backend(BaseBackend):
     """Kafka implementation of the agentexec backend."""
 
     def __init__(self) -> None:
@@ -60,8 +58,6 @@ class KafkaBackend(BaseBackend):
         if self._admin is not None:
             await self._admin.close()
             self._admin = None
-
-    # -- Connection helpers ---------------------------------------------------
 
     def _get_bootstrap_servers(self) -> str:
         if CONF.kafka_bootstrap_servers is None:
@@ -145,8 +141,6 @@ class KafkaBackend(BaseBackend):
                     ]
         return [TopicPartition(topic, 0)]
 
-    # -- Topic naming ---------------------------------------------------------
-
     def tasks_topic(self, queue_name: str) -> str:
         return f"{CONF.key_prefix}.tasks.{queue_name}"
 
@@ -163,7 +157,7 @@ class KafkaBackend(BaseBackend):
 class KafkaStateBackend(BaseStateBackend):
     """Kafka state: compacted topics + in-memory caches."""
 
-    def __init__(self, backend: KafkaBackend) -> None:
+    def __init__(self, backend: Backend) -> None:
         self.backend = backend
 
     async def get(self, key: str) -> Optional[bytes]:
@@ -290,7 +284,7 @@ class KafkaStateBackend(BaseStateBackend):
 class KafkaQueueBackend(BaseQueueBackend):
     """Kafka queue: consumer groups for reliable fan-out."""
 
-    def __init__(self, backend: KafkaBackend) -> None:
+    def __init__(self, backend: Backend) -> None:
         self.backend = backend
 
     async def _get_consumer(self, topic: str) -> AIOKafkaConsumer:
@@ -346,7 +340,7 @@ class KafkaQueueBackend(BaseQueueBackend):
 class KafkaActivityBackend(BaseActivityBackend):
     """Kafka activity: compacted topic + in-memory cache."""
 
-    def __init__(self, backend: KafkaBackend) -> None:
+    def __init__(self, backend: Backend) -> None:
         self.backend = backend
 
     def _now(self) -> str:

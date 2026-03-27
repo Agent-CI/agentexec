@@ -1,5 +1,3 @@
-"""Test runner base classes and functionality."""
-
 import uuid
 
 import pytest

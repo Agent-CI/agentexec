@@ -77,16 +77,10 @@ class Config(BaseSettings):
     )
 
     state_backend: str = Field(
-        default="agentexec.state.redis_backend",
-        description=(
-            "State backend module path. Pick one:\n"
-            "  - 'agentexec.state.redis_backend' (default)\n"
-            "  - 'agentexec.state.kafka_backend'"
-        ),
+        default="agentexec.state.redis",
+        description="State backend: 'agentexec.state.redis' or 'agentexec.state.kafka'",
         validation_alias="AGENTEXEC_STATE_BACKEND",
     )
-
-    # -- Kafka settings -------------------------------------------------------
 
     kafka_bootstrap_servers: str | None = Field(
         default=None,

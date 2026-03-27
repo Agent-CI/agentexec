@@ -1,5 +1,3 @@
-"""Test self-describing result serialization (pickle-like behavior with JSON)."""
-
 import uuid
 
 import pytest

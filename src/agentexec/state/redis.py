@@ -1,5 +1,3 @@
-"""Redis backend — class-based implementation."""
-
 from __future__ import annotations
 
 import uuid
@@ -13,7 +11,7 @@ from agentexec.config import CONF
 from agentexec.state.base import BaseActivityBackend, BaseBackend, BaseQueueBackend, BaseStateBackend
 
 
-class RedisBackend(BaseBackend):
+class Backend(BaseBackend):
     """Redis implementation of the agentexec backend."""
 
     def __init__(self) -> None:
@@ -55,7 +53,7 @@ class RedisBackend(BaseBackend):
 class RedisStateBackend(BaseStateBackend):
     """Redis state: direct Redis commands."""
 
-    def __init__(self, backend: RedisBackend) -> None:
+    def __init__(self, backend: Backend) -> None:
         self.backend = backend
 
     async def get(self, key: str) -> Optional[bytes]:
@@ -145,7 +143,7 @@ class RedisStateBackend(BaseStateBackend):
 class RedisQueueBackend(BaseQueueBackend):
     """Redis queue: list-based with BRPOP."""
 
-    def __init__(self, backend: RedisBackend) -> None:
+    def __init__(self, backend: Backend) -> None:
         self.backend = backend
 
     async def push(
@@ -180,7 +178,7 @@ class RedisQueueBackend(BaseQueueBackend):
 class RedisActivityBackend(BaseActivityBackend):
     """Redis activity: delegates to SQLAlchemy/Postgres."""
 
-    def __init__(self, backend: RedisBackend) -> None:
+    def __init__(self, backend: Backend) -> None:
         self.backend = backend
 
     async def create(

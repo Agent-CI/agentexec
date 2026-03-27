@@ -1,5 +1,3 @@
-"""Test Task data structure and serialization."""
-
 import json
 import uuid
 

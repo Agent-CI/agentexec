@@ -1,5 +1,3 @@
-"""Tests for activity tracking functionality."""
-
 import uuid
 
 import pytest
@@ -365,9 +363,6 @@ async def test_create_activity_with_string_agent_id(db_session: Session):
     )
 
     assert agent_id == custom_id
-
-
-# --- Metadata Tests ---
 
 
 async def test_create_activity_with_metadata(db_session: Session):

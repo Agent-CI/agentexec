@@ -1,5 +1,3 @@
-"""Test configuration handling."""
-
 import os
 
 import pytest

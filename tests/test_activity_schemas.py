@@ -1,5 +1,3 @@
-"""Test activity schema validation and computed fields."""
-
 import uuid
 from datetime import datetime, timedelta, UTC
 
