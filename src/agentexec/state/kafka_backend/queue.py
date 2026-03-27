@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any
-
-from aiokafka import TopicPartition
 
 from agentexec.config import CONF
 from agentexec.state.kafka_backend.connection import (
@@ -38,6 +37,19 @@ async def queue_push(
     )
 
 
+async def _discover_partitions(consumer, topic: str) -> list:  # type: ignore[no-untyped-def]
+    """Wait for partition metadata to become available."""
+    from aiokafka import TopicPartition
+
+    for _ in range(10):
+        partitions = consumer.partitions_for_topic(topic)
+        if partitions:
+            return [TopicPartition(topic, p) for p in sorted(partitions)]
+        await asyncio.sleep(0.5)
+    # Fallback: assume partition 0
+    return [TopicPartition(topic, 0)]
+
+
 async def queue_pop(
     queue_name: str,
     *,
@@ -62,25 +74,19 @@ async def queue_pop(
             enable_auto_commit=False,
             group_id=f"{CONF.key_prefix}-workers-{topic}",
         )
-        await consumer.start()  # type: ignore[union-attr]
+        await consumer.start()
 
         # Manually assign all partitions for this topic
-        partitions = consumer.partitions_for_topic(topic)  # type: ignore[union-attr]
-        if not partitions:
-            # Metadata may not be available yet — fetch it
-            await consumer.force_metadata_update()  # type: ignore[union-attr,unused-ignore]
-            partitions = consumer.partitions_for_topic(topic) or {0}  # type: ignore[union-attr]
-
-        tps = [TopicPartition(topic, p) for p in sorted(partitions)]
-        consumer.assign(tps)  # type: ignore[union-attr]
+        tps = await _discover_partitions(consumer, topic)
+        consumer.assign(tps)
 
         # Seek to committed offsets (or beginning if none committed)
         for tp in tps:
-            committed = await consumer.committed(tp)  # type: ignore[union-attr]
+            committed = await consumer.committed(tp)
             if committed is not None:
-                consumer.seek(tp, committed)  # type: ignore[union-attr]
+                consumer.seek(tp, committed)
             else:
-                await consumer.seek_to_beginning(tp)  # type: ignore[union-attr]
+                await consumer.seek_to_beginning(tp)
 
         consumers[consumer_key] = consumer
 
@@ -91,7 +97,7 @@ async def queue_pop(
     interval = min(1000, deadline)
     elapsed = 0
     while elapsed < deadline:
-        result = await consumer.getmany(timeout_ms=interval)  # type: ignore[union-attr]
+        result = await consumer.getmany(timeout_ms=interval)
         for tp, messages in result.items():
             for msg in messages:
                 return json.loads(msg.value.decode("utf-8"))
@@ -106,7 +112,7 @@ async def queue_commit(queue_name: str) -> None:
     consumer_key = f"worker:{topic}"
     consumers = get_consumers()
     if consumer_key in consumers:
-        await consumers[consumer_key].commit()  # type: ignore[union-attr]
+        await consumers[consumer_key].commit()
 
 
 async def queue_nack(queue_name: str) -> None:

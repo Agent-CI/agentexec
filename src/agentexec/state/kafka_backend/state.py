@@ -93,7 +93,9 @@ def log_publish(channel: str, message: str) -> None:
 
 async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
     """Consume log messages from the logs topic."""
-    from aiokafka import AIOKafkaConsumer, TopicPartition
+    from aiokafka import AIOKafkaConsumer
+
+    from agentexec.state.kafka_backend.queue import _discover_partitions
 
     topic = logs_topic()
     await ensure_topic(topic)
@@ -103,25 +105,20 @@ async def log_subscribe(channel: str) -> AsyncGenerator[str, None]:
         client_id=client_id("log-collector"),
         enable_auto_commit=False,
     )
-    await consumer.start()  # type: ignore[union-attr]
+    await consumer.start()
 
     # Manual partition assignment — no consumer group overhead
-    partitions = consumer.partitions_for_topic(topic)  # type: ignore[union-attr]
-    if not partitions:
-        await consumer.force_metadata_update()  # type: ignore[union-attr,unused-ignore]
-        partitions = consumer.partitions_for_topic(topic) or {0}  # type: ignore[union-attr]
-
-    tps = [TopicPartition(topic, p) for p in sorted(partitions)]
-    consumer.assign(tps)  # type: ignore[union-attr]
+    tps = await _discover_partitions(consumer, topic)
+    consumer.assign(tps)
 
     # Seek to end so we only see new messages
-    await consumer.seek_to_end(*tps)  # type: ignore[union-attr]
+    await consumer.seek_to_end(*tps)
 
     try:
-        async for msg in consumer:  # type: ignore[union-attr]
+        async for msg in consumer:
             yield msg.value.decode("utf-8")
     finally:
-        await consumer.stop()  # type: ignore[union-attr]
+        await consumer.stop()
 
 
 # -- Locks — no-op with Kafka ------------------------------------------------
