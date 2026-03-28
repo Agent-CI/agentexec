@@ -26,7 +26,7 @@ Example:
 from importlib.metadata import PackageNotFoundError, version
 
 from agentexec.config import CONF
-from agentexec.core.db import Base
+from agentexec.core.db import Base, DatabaseEngine, DatabaseSession
 from agentexec.core.queue import Priority, enqueue
 from agentexec.core.results import gather, get_result
 from agentexec.core.task import Task
@@ -45,6 +45,8 @@ __all__ = [
     "CONF",
     "Base",
     "BaseAgentRunner",
+    "DatabaseEngine",
+    "DatabaseSession",
     "Pipeline",
     "Tracker",
     "Pool",
