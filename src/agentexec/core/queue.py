@@ -1,4 +1,3 @@
-import json
 from enum import Enum
 from typing import Any
 
@@ -32,49 +31,24 @@ async def enqueue(
         metadata=metadata,
     )
 
-    partition_key = None
-    if task._definition is not None:
-        partition_key = task.get_lock_key()
-
     await backend.queue.push(
         queue_name or CONF.queue_name,
         task.model_dump_json(),
         high_priority=(priority == Priority.HIGH),
-        partition_key=partition_key,
     )
 
     logger.info(f"Enqueued task {task.task_name} with agent_id {task.agent_id}")
     return task
 
 
-async def requeue(
-    task: Task,
-    *,
-    queue_name: str | None = None,
-) -> None:
-    """Push a task back to the end of the queue."""
-    await backend.queue.push(
-        queue_name or CONF.queue_name,
-        task.model_dump_json(),
-        high_priority=False,
-    )
-
-
 async def dequeue(
-    tasks: dict[str, Any],
     *,
     queue_name: str | None = None,
     timeout: int = 1,
 ) -> Task | None:
-    """Dequeue and hydrate a task from the queue."""
+    """Dequeue a task from the queue. Returns raw Task (context is a dict)."""
     data = await backend.queue.pop(
         queue_name or CONF.queue_name,
         timeout=timeout,
     )
-    if data is None:
-        return None
-
-    return Task.from_serialized(
-        definition=tasks[data["task_name"]],
-        data=data,
-    )
+    return Task.model_validate(data) if data else None

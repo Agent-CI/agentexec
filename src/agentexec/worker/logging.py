@@ -1,8 +1,7 @@
 from __future__ import annotations
-import asyncio
 import logging
+import multiprocessing as mp
 from pydantic import BaseModel
-from agentexec.state import backend
 
 LOGGER_NAME = "agentexec"
 LOG_CHANNEL = "agentexec:logs"
@@ -10,7 +9,7 @@ DEFAULT_FORMAT = "[%(levelname)s/%(processName)s] %(name)s: %(message)s"
 
 
 class LogMessage(BaseModel):
-    """Schema for log messages sent via state backend pubsub."""
+    """Schema for log messages sent via the worker message queue."""
 
     name: str
     levelno: int
@@ -50,20 +49,18 @@ class LogMessage(BaseModel):
         return record
 
 
-class StateLogHandler(logging.Handler):
-    """Logging handler that publishes log records to state backend pubsub."""
+class QueueLogHandler(logging.Handler):
+    """Logging handler that sends log records to the pool via multiprocessing queue."""
 
-    def __init__(self, channel: str = LOG_CHANNEL):
+    def __init__(self, tx: mp.Queue):
         super().__init__()
-        self.channel = channel
+        self.tx = tx
 
     def emit(self, record: logging.LogRecord) -> None:
         try:
+            from agentexec.worker.pool import LogEntry
             message = LogMessage.from_log_record(record)
-            loop = asyncio.get_running_loop()
-            loop.create_task(backend.state.publish(self.channel, message.model_dump_json()))
-        except RuntimeError:
-            pass  # No running loop — discard silently
+            self.tx.put_nowait(LogEntry(record=message))
         except Exception:
             self.handleError(record)
 
@@ -71,14 +68,14 @@ class StateLogHandler(logging.Handler):
 _worker_logging_configured = False
 
 
-def get_worker_logger(name: str) -> logging.Logger:
+def get_worker_logger(name: str, tx: mp.Queue | None = None) -> logging.Logger:
     """Configure worker logging and return a logger."""
     global _worker_logging_configured
 
-    if not _worker_logging_configured:
+    if not _worker_logging_configured and tx is not None:
         root = logging.getLogger(LOGGER_NAME)
         root.setLevel(logging.INFO)
-        root.addHandler(StateLogHandler())
+        root.addHandler(QueueLogHandler(tx))
         root.propagate = False
         _worker_logging_configured = True
 

@@ -11,9 +11,11 @@ from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
 
 from agentexec.config import CONF
-from agentexec.state import KEY_LOCK, backend
+from agentexec.state import backend
+import queue as stdlib_queue
+
 from agentexec.core.db import remove_global_session, set_global_session
-from agentexec.core.queue import dequeue, enqueue, requeue
+from agentexec.core.queue import dequeue, enqueue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
 from agentexec.worker.event import StateEvent
@@ -27,6 +29,32 @@ __all__ = [
     "Worker",
     "Pool",
 ]
+
+
+class Message(BaseModel):
+    """Base event sent from a worker to the pool."""
+    pass
+
+
+class TaskCompleted(Message):
+    task: Task
+
+
+class TaskFailed(Message):
+    task: Task
+    error: str
+
+    @classmethod
+    def from_exception(cls, task: Task, exception: Exception) -> TaskFailed:
+        return cls(task=task, error=str(exception))
+
+
+class LockContention(Message):
+    task: Task
+
+
+class LogEntry(Message):
+    record: LogMessage
 
 
 class _EmptyContext(BaseModel):
@@ -48,6 +76,7 @@ class WorkerContext:
     shutdown_event: StateEvent
     tasks: dict[str, TaskDefinition]
     queue_name: str
+    tx: mp.Queue | None = None  # worker → pool message queue
 
 
 class Worker:
@@ -70,7 +99,7 @@ class Worker:
         """
         self._worker_id = worker_id
         self._context = context
-        self.logger = get_worker_logger(__name__)
+        self.logger = get_worker_logger(__name__, tx=context.tx)
 
     @classmethod
     def run_in_process(cls, worker_id: int, context: WorkerContext) -> None:
@@ -104,50 +133,41 @@ class Worker:
             remove_global_session()
             self.logger.info(f"Worker {self._worker_id} shutting down")
 
-    async def _run(self) -> None:
-        """Async main loop - polls queue and processes tasks."""
-        queue = self._context.queue_name
+    def _send(self, message: Message) -> None:
+        """Send a message to the pool via the multiprocessing queue."""
+        if self._context.tx is not None:
+            self._context.tx.put_nowait(message)
 
+    async def _run(self) -> None:
+        """Async main loop - polls queue and executes tasks.
+
+        All events are sent to the pool via _send. The worker never
+        manipulates the queue or writes to Postgres directly.
+        """
         while not await self._context.shutdown_event.is_set():
-            task = await dequeue(self._context.tasks, queue_name=queue)
+            task = await dequeue(queue_name=self._context.queue_name)
             if task is None:
                 continue
 
-            lock_key = task.get_lock_key()
+            definition = self._context.tasks[task.task_name]
 
-            if lock_key is not None:
-                lock_full_key = backend.format_key(*KEY_LOCK, lock_key)
-                acquired = await backend.state.acquire_lock(lock_full_key, task.agent_id, CONF.lock_ttl)
+            lock_key = definition.get_lock_key(task.context)
+            if lock_key:
+                acquired = await backend.state.acquire_lock(lock_key, task.agent_id)
                 if not acquired:
-                    self.logger.debug(
-                        f"Worker {self._worker_id} lock held for {task.task_name}, requeuing"
-                    )
-                    await requeue(task, queue_name=queue)
+                    self._send(LockContention(task=task))
                     continue
 
             try:
                 self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                await task.execute()
-                self.logger.info(
-                    f"Worker {self._worker_id} completed: {task.task_name}"
-                )
+                await definition.execute(task)
+                self.logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
+                self._send(TaskCompleted(task=task))
             except Exception as e:
-                if task.retry_count < CONF.max_task_retries:
-                    task.retry_count += 1
-                    await requeue(task, queue_name=queue)
-                    self.logger.warning(
-                        f"Worker {self._worker_id} task {task.task_name} failed "
-                        f"(attempt {task.retry_count}/{CONF.max_task_retries}), "
-                        f"will retry: {e}"
-                    )
-                else:
-                    self.logger.error(
-                        f"Worker {self._worker_id} task {task.task_name} failed "
-                        f"after {task.retry_count + 1} attempts, giving up: {e}"
-                    )
+                self._send(TaskFailed.from_exception(task, e))
             finally:
-                if lock_key is not None:
-                    await backend.state.release_lock(lock_full_key)
+                if lock_key:
+                    await backend.state.release_lock(lock_key)
 
 
 
@@ -198,11 +218,13 @@ class Pool:
         engine = engine or create_engine(database_url)  # type: ignore[arg-type]
         set_global_session(engine)
 
+        self._worker_queue: mp.Queue = mp.Queue()
         self._context = WorkerContext(
             database_url=database_url or engine.url.render_as_string(hide_password=False),
             shutdown_event=StateEvent("shutdown", _get_pool_id()),
             tasks={},
             queue_name=queue_name or CONF.queue_name,
+            tx=self._worker_queue,
         )
         self._processes = []
         self._log_handler = None
@@ -400,7 +422,7 @@ class Pool:
         from agentexec.activity.consumer import process_activity_stream
 
         await asyncio.gather(
-            self._process_log_stream(),
+            self._process_worker_events(),
             self._process_scheduled_tasks(),
             process_activity_stream(),
         )
@@ -439,17 +461,6 @@ class Pool:
             self._processes.append(process)
             print(f"Started worker {worker_id} (PID: {process.pid})")
 
-    async def _process_log_stream(self) -> None:
-        """Forward log messages from workers to the main process handler."""
-        assert self._log_handler, "Log handler not initialized"
-
-        logs_channel = backend.format_key(CONF.key_prefix, "logs")
-        async for message in backend.state.subscribe(logs_channel):
-            log_message = LogMessage.model_validate_json(message)
-            self._log_handler.emit(log_message.to_log_record())
-            if not any(p.is_alive() for p in self._processes):
-                break
-
     async def _process_scheduled_tasks(self) -> None:
         """Register pending schedules, then poll for due tasks and enqueue them."""
         for _schedule in self._pending_schedules:
@@ -471,6 +482,43 @@ class Pool:
                 else:
                     scheduled_task.advance()
                     await backend.schedule.register(scheduled_task)
+
+    async def _process_worker_events(self) -> None:
+        """Handle all events from worker processes via multiprocessing queue."""
+        assert self._log_handler, "Log handler not initialized"
+
+        while any(p.is_alive() for p in self._processes):
+            try:
+                message = self._worker_queue.get_nowait()
+            except stdlib_queue.Empty:
+                await asyncio.sleep(0.05)
+                continue
+
+            match message:
+                case LogEntry(record=record):
+                    self._log_handler.emit(record.to_log_record())
+
+                case TaskCompleted():
+                    pass
+
+                case TaskFailed(task=task, error=error):
+                    if task.retry_count < CONF.max_task_retries:
+                        task.retry_count += 1
+                        await backend.queue.push(
+                            self._context.queue_name,
+                            task.model_dump_json(),
+                        )
+                    else:
+                        print(
+                            f"Task {task.task_name} failed "
+                            f"after {task.retry_count + 1} attempts, giving up: {error}"
+                        )
+
+                case LockContention(task=task):
+                    await backend.queue.push(
+                        self._context.queue_name,
+                        task.model_dump_json(),
+                    )
 
     async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.

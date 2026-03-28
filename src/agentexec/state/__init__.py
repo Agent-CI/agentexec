@@ -18,7 +18,6 @@ from agentexec.state.base import BaseBackend
 
 KEY_RESULT = (CONF.key_prefix, "result")
 KEY_EVENT = (CONF.key_prefix, "event")
-KEY_LOCK = (CONF.key_prefix, "lock")
 
 
 def _create_backend(state_backend: str) -> BaseBackend:

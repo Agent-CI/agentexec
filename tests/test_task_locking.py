@@ -6,8 +6,7 @@ from pydantic import BaseModel
 
 import agentexec as ax
 from agentexec.config import CONF
-from agentexec.state import KEY_LOCK, backend
-from agentexec.core.queue import requeue
+from agentexec.state import backend
 from agentexec.core.task import TaskDefinition
 
 
@@ -94,113 +93,70 @@ def test_pool_add_task_with_lock_key(pool):
 
 
 def test_get_lock_key_evaluates_template(pool):
-    """get_lock_key() evaluates template against context fields."""
+    """definition.get_lock_key() evaluates template against context."""
 
     @pool.task("locked_task", lock_key="user:{user_id}")
     async def handler(agent_id: uuid.UUID, context: UserContext) -> TaskResult:
         return TaskResult(status="ok")
 
-    defn = pool._context.tasks["locked_task"]
-    task = ax.Task.from_serialized(
-        defn,
-        {
-            "task_name": "locked_task",
-            "context": {"user_id": "42", "message": "hello"},
-            "agent_id": str(uuid.uuid4()),
-        },
-    )
-
-    assert task.get_lock_key() == "user:42"
+    definition = pool._context.tasks["locked_task"]
+    assert definition.get_lock_key({"user_id": "42", "message": "hello"}) == "user:42"
 
 
 def test_get_lock_key_returns_none_when_no_lock(pool):
-    """get_lock_key() returns None when no lock_key configured."""
+    """definition.get_lock_key() returns None when no lock_key configured."""
 
     @pool.task("unlocked_task")
     async def handler(agent_id: uuid.UUID, context: UserContext) -> TaskResult:
         return TaskResult(status="ok")
 
-    defn = pool._context.tasks["unlocked_task"]
-    task = ax.Task.from_serialized(
-        defn,
-        {
-            "task_name": "unlocked_task",
-            "context": {"user_id": "42"},
-            "agent_id": str(uuid.uuid4()),
-        },
-    )
-
-    assert task.get_lock_key() is None
-
-
-def test_get_lock_key_raises_without_definition():
-    """get_lock_key() raises RuntimeError if task not bound to definition."""
-    task = ax.Task(
-        task_name="test",
-        context=UserContext(user_id="42"),
-        agent_id=uuid.uuid4(),
-    )
-
-    with pytest.raises(RuntimeError, match="must be bound to a definition"):
-        task.get_lock_key()
+    definition = pool._context.tasks["unlocked_task"]
+    assert definition.get_lock_key({"user_id": "42"}) is None
 
 
 def test_get_lock_key_raises_on_missing_field(pool):
-    """get_lock_key() raises KeyError if template references missing field."""
+    """definition.get_lock_key() raises KeyError if template references missing field."""
 
     @pool.task("bad_template", lock_key="org:{organization_id}")
     async def handler(agent_id: uuid.UUID, context: UserContext) -> TaskResult:
         return TaskResult(status="ok")
 
-    defn = pool._context.tasks["bad_template"]
-    task = ax.Task.from_serialized(
-        defn,
-        {
-            "task_name": "bad_template",
-            "context": {"user_id": "42"},
-            "agent_id": str(uuid.uuid4()),
-        },
-    )
-
+    definition = pool._context.tasks["bad_template"]
     with pytest.raises(KeyError):
-        task.get_lock_key()
-
-
-def _lock_key(name: str) -> str:
-    return backend.format_key(*KEY_LOCK, name)
+        definition.get_lock_key({"user_id": "42"})
 
 
 async def test_acquire_lock_success(fake_redis):
     """acquire_lock returns True when lock is free."""
-    result = await backend.state.acquire_lock(_lock_key("user:42"), uuid.UUID(int=1), CONF.lock_ttl)
+    result = await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
     assert result is True
 
 
 async def test_acquire_lock_already_held(fake_redis):
     """acquire_lock returns False when lock is already held."""
-    await backend.state.acquire_lock(_lock_key("user:42"), uuid.UUID(int=1), CONF.lock_ttl)
-    result = await backend.state.acquire_lock(_lock_key("user:42"), uuid.UUID(int=2), CONF.lock_ttl)
+    await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
+    result = await backend.state.acquire_lock("user:42", uuid.UUID(int=2))
     assert result is False
 
 
 async def test_release_lock(fake_redis):
     """release_lock frees the lock so it can be re-acquired."""
-    await backend.state.acquire_lock(_lock_key("user:42"), uuid.UUID(int=1), CONF.lock_ttl)
-    await backend.state.release_lock(_lock_key("user:42"))
+    await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
+    await backend.state.release_lock("user:42")
 
-    result = await backend.state.acquire_lock(_lock_key("user:42"), uuid.UUID(int=2), CONF.lock_ttl)
+    result = await backend.state.acquire_lock("user:42", uuid.UUID(int=2))
     assert result is True
 
 
 async def test_release_lock_nonexistent(fake_redis):
     """release_lock on a non-existent key returns 0."""
-    result = await backend.state.release_lock(_lock_key("nonexistent"))
+    result = await backend.state.release_lock("nonexistent")
     assert result == 0
 
 
 async def test_lock_key_uses_prefix(fake_redis):
     """Lock keys are prefixed with agentexec:lock:."""
-    await backend.state.acquire_lock(_lock_key("user:42"), uuid.UUID(int=1), CONF.lock_ttl)
+    await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
 
     value = await fake_redis.get("agentexec:lock:user:42")
     assert value is not None
@@ -217,16 +173,13 @@ async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
     # Enqueue a normal task first
     task1 = await ax.enqueue("task_1", UserContext(user_id="1", message="first"))
 
-    # Create and requeue a second task
+    # Push a second task directly (simulating a requeue)
     task2 = ax.Task(
         task_name="task_2",
-        context=UserContext(user_id="2", message="requeued"),
+        context={"user_id": "2", "message": "requeued"},
         agent_id=uuid.uuid4(),
     )
-    await requeue(task2)
-
-    # Dequeue should return task_1 first (from front/right), then task_2 (from back/left)
-    from agentexec.state import backend
+    await backend.queue.push(ax.CONF.queue_name, task2.model_dump_json())
 
     result1 = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
     assert result1 is not None

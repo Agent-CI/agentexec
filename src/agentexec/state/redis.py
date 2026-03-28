@@ -102,14 +102,17 @@ class RedisStateBackend(BaseStateBackend):
             await ps.close()
             self.backend._pubsub = None
 
-    async def acquire_lock(self, key: str, agent_id: UUID, ttl_seconds: int) -> bool:
+    def _lock_key(self, lock_key: str) -> str:
+        return self.backend.format_key(CONF.key_prefix, "lock", lock_key)
+
+    async def acquire_lock(self, lock_key: str, agent_id: UUID) -> bool:
         client = self.backend._get_client()
-        result = await client.set(key, str(agent_id), nx=True, ex=ttl_seconds)
+        result = await client.set(self._lock_key(lock_key), str(agent_id), nx=True, ex=CONF.lock_ttl)
         return result is not None
 
-    async def release_lock(self, key: str) -> int:
+    async def release_lock(self, lock_key: str) -> int:
         client = self.backend._get_client()
-        return await client.delete(key)  # type: ignore[return-value]
+        return await client.delete(self._lock_key(lock_key))  # type: ignore[return-value]
 
     async def index_add(self, key: str, mapping: dict[str, float]) -> int:
         client = self.backend._get_client()

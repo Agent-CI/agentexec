@@ -9,7 +9,7 @@ from agentexec.worker.logging import (
     LOG_CHANNEL,
     LOGGER_NAME,
     LogMessage,
-    StateLogHandler,
+    QueueLogHandler,
     get_worker_logger,
 )
 
@@ -133,40 +133,25 @@ class TestLogMessage:
         assert log_message.thread is None
 
 
-class TestStateLogHandler:
-    """Tests for StateLogHandler."""
-
-    @pytest.fixture
-    def fake_redis_backend(self, monkeypatch):
-        """Setup fake redis backend for state."""
-        from agentexec.state import backend
-        fake = fake_aioredis.FakeRedis(decode_responses=False)
-        monkeypatch.setattr(backend, "_client", fake)
-        return fake
+class TestQueueLogHandler:
+    """Tests for QueueLogHandler."""
 
     def test_handler_initialization(self):
-        """Test StateLogHandler initializes with default channel."""
-        handler = StateLogHandler()
-        assert handler.channel == LOG_CHANNEL
+        """Test QueueLogHandler initializes with a queue."""
+        import multiprocessing as mp
+        tx = mp.Queue()
+        handler = QueueLogHandler(tx)
+        assert handler.tx is tx
 
-    def test_handler_custom_channel(self):
-        """Test StateLogHandler with custom channel."""
-        handler = StateLogHandler(channel="custom:logs")
-        assert handler.channel == "custom:logs"
+    def test_handler_emit(self):
+        """Test QueueLogHandler.emit() puts LogEntry on the queue."""
+        import multiprocessing as mp
+        import time
+        from agentexec.worker.pool import LogEntry
 
-    async def test_handler_emit(self, fake_redis_backend):
-        """Test StateLogHandler.emit() publishes to state backend."""
-        import asyncio
+        tx = mp.Queue()
+        handler = QueueLogHandler(tx)
 
-        handler = StateLogHandler()
-
-        # Subscribe to the channel to capture the message
-        pubsub = fake_redis_backend.pubsub()
-        await pubsub.subscribe(LOG_CHANNEL)
-        # Get the subscribe confirmation
-        await pubsub.get_message()
-
-        # Create and emit a log record
         record = logging.LogRecord(
             name="emit.test",
             level=logging.INFO,
@@ -178,21 +163,12 @@ class TestStateLogHandler:
         )
 
         handler.emit(record)
+        time.sleep(0.1)  # mp.Queue uses a background thread to flush
 
-        # Let the scheduled task run
-        await asyncio.sleep(0.1)
-
-        # Get the published message
-        message = await pubsub.get_message()
-
-        assert message is not None
-        assert message["type"] == "message"
-        assert message["channel"] == LOG_CHANNEL.encode()
-
-        # Verify the message content
-        log_message = LogMessage.model_validate_json(message["data"])
-        assert log_message.msg == "Emitted message"
-        assert log_message.levelno == logging.INFO
+        message = tx.get_nowait()
+        assert isinstance(message, LogEntry)
+        assert message.record.msg == "Emitted message"
+        assert message.record.levelno == logging.INFO
 
 
 class TestGetWorkerLogger:
@@ -201,17 +177,10 @@ class TestGetWorkerLogger:
     @pytest.fixture(autouse=True)
     def reset_logging_state(self, monkeypatch):
         """Reset the worker logging configured state before each test."""
-        # Reset the global state
         monkeypatch.setattr("agentexec.worker.logging._worker_logging_configured", False)
-
-        # Setup fake redis backend
-        from agentexec.state import backend
-        fake_redis = fake_aioredis.FakeRedis(decode_responses=False)
-        monkeypatch.setattr(backend, "_client", fake_redis)
 
         yield
 
-        # Cleanup handlers added during tests
         root = logging.getLogger(LOGGER_NAME)
         root.handlers.clear()
 
@@ -235,18 +204,21 @@ class TestGetWorkerLogger:
         assert logger.name == f"{LOGGER_NAME}.submodule"
 
     def test_get_worker_logger_configures_handler(self):
-        """Test get_worker_logger adds StateLogHandler on first call."""
-        logger = get_worker_logger("first.call")
+        """Test get_worker_logger adds QueueLogHandler on first call."""
+        import multiprocessing as mp
+        tx = mp.Queue()
+        get_worker_logger("first.call", tx=tx)
 
         root = logging.getLogger(LOGGER_NAME)
         handler_types = [type(h).__name__ for h in root.handlers]
 
-        assert "StateLogHandler" in handler_types
+        assert "QueueLogHandler" in handler_types
 
     def test_get_worker_logger_idempotent(self):
         """Test get_worker_logger only configures once."""
-        # First call
-        get_worker_logger("first")
+        import multiprocessing as mp
+        tx = mp.Queue()
+        get_worker_logger("first", tx=tx)
 
         root = logging.getLogger(LOGGER_NAME)
         initial_handler_count = len(root.handlers)

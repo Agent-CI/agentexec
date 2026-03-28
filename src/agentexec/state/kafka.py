@@ -229,10 +229,10 @@ class KafkaStateBackend(BaseStateBackend):
         finally:
             await consumer.stop()
 
-    async def acquire_lock(self, key: str, agent_id: UUID, ttl_seconds: int) -> bool:
+    async def acquire_lock(self, lock_key: str, agent_id: UUID) -> bool:
         return True  # Partition assignment handles isolation
 
-    async def release_lock(self, key: str) -> int:
+    async def release_lock(self, lock_key: str) -> int:
         return 0
 
     async def index_add(self, key: str, mapping: dict[str, float]) -> int:

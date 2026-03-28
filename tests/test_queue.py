@@ -50,9 +50,8 @@ async def test_enqueue_creates_task(fake_redis, mock_activity_create) -> None:
     assert task is not None
     assert task.task_name == "test_task"
     assert isinstance(task.agent_id, uuid.UUID)
-    assert isinstance(task.context, SampleContext)
-    assert task.context.message == "test"
-    assert task.context.value == 42
+    assert task.context["message"] == "test"
+    assert task.context["value"] == 42
 
 
 async def test_enqueue_pushes_to_redis(fake_redis, mock_activity_create) -> None:

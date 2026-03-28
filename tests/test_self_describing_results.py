@@ -35,12 +35,12 @@ async def test_gather_without_task_definitions(monkeypatch) -> None:
     """Test that gather() works without needing TaskDefinitions."""
     task1 = ax.Task(
         task_name="research",
-        context=DummyContext(),
+        context={},
         agent_id=uuid.uuid4(),
     )
     task2 = ax.Task(
         task_name="analysis",
-        context=DummyContext(),
+        context={},
         agent_id=uuid.uuid4(),
     )
 

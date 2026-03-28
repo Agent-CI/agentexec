@@ -69,8 +69,7 @@ async def test_enqueue_task(mock_state_backend, pool, monkeypatch) -> None:
     assert task is not None
     assert isinstance(task.agent_id, uuid.UUID)
     assert task.task_name == "test_task"
-    assert isinstance(task.context, SampleContext)
-    assert task.context.message == "Hello World"
+    assert task.context["message"] == "Hello World"
 
     # Verify task was pushed to queue
     task_json = mock_state_backend["pop"]()
@@ -134,8 +133,7 @@ async def test_add_task_registers_handler(mock_state_backend, pool, monkeypatch)
 
     assert task is not None
     assert task.task_name == "added_task"
-    assert isinstance(task.context, SampleContext)
-    assert task.context.message == "Added via add_task"
+    assert task.context["message"] == "Added via add_task"
 
 
 def test_add_task_duplicate_raises(pool) -> None:
@@ -221,12 +219,11 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
     from agentexec.core.queue import dequeue
-    task = await dequeue(context.tasks, queue_name="test_queue", timeout=1)
+    task = await dequeue(queue_name="test_queue", timeout=1)
 
     assert task is not None
     assert task.task_name == "test_task"
-    assert isinstance(task.context, SampleContext)
-    assert task.context.message == "test"
+    assert task.context == {"message": "test", "value": 42}
     assert task.agent_id == agent_id
 
 
@@ -239,7 +236,7 @@ async def test_dequeue_returns_none_on_empty_queue(pool, monkeypatch) -> None:
     monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
     from agentexec.core.queue import dequeue
-    task = await dequeue(pool._context.tasks, queue_name="test_queue", timeout=1)
+    task = await dequeue(queue_name="test_queue", timeout=1)
 
     assert task is None
 

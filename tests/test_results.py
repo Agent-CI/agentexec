@@ -33,7 +33,7 @@ def mock_get_result():
 async def test_get_result_returns_deserialized_data(mock_get_result) -> None:
     task = ax.Task(
         task_name="test_task",
-        context=SampleContext(message="test"),
+        context={"message": "test"},
         agent_id=uuid.uuid4(),
     )
     expected_result = SampleResult(status="success", value=42)
@@ -48,7 +48,7 @@ async def test_get_result_returns_deserialized_data(mock_get_result) -> None:
 async def test_get_result_polls_until_available(mock_get_result) -> None:
     task = ax.Task(
         task_name="test_task",
-        context=SampleContext(message="test"),
+        context={"message": "test"},
         agent_id=uuid.uuid4(),
     )
     expected_result = SampleResult(status="delayed", value=100)
@@ -73,7 +73,7 @@ async def test_get_result_polls_until_available(mock_get_result) -> None:
 async def test_get_result_timeout(mock_get_result) -> None:
     task = ax.Task(
         task_name="test_task",
-        context=SampleContext(message="test"),
+        context={"message": "test"},
         agent_id=uuid.uuid4(),
     )
     mock_get_result.return_value = None
@@ -85,12 +85,12 @@ async def test_get_result_timeout(mock_get_result) -> None:
 async def test_gather_multiple_tasks(mock_get_result) -> None:
     task1 = ax.Task(
         task_name="task1",
-        context=SampleContext(message="test1"),
+        context={"message": "test1"},
         agent_id=uuid.uuid4(),
     )
     task2 = ax.Task(
         task_name="task2",
-        context=SampleContext(message="test2"),
+        context={"message": "test2"},
         agent_id=uuid.uuid4(),
     )
 
@@ -115,7 +115,7 @@ async def test_gather_multiple_tasks(mock_get_result) -> None:
 async def test_gather_single_task(mock_get_result) -> None:
     task = ax.Task(
         task_name="single_task",
-        context=SampleContext(message="test"),
+        context={"message": "test"},
         agent_id=uuid.uuid4(),
     )
 
@@ -131,7 +131,7 @@ async def test_gather_preserves_order(mock_get_result) -> None:
     tasks = [
         ax.Task(
             task_name=f"task{i}",
-            context=SampleContext(message=f"msg{i}"),
+            context={"message": f"msg{i}"},
             agent_id=uuid.uuid4(),
         )
         for i in range(5)
@@ -153,7 +153,7 @@ async def test_gather_preserves_order(mock_get_result) -> None:
 async def test_get_result_with_complex_object(mock_get_result) -> None:
     task = ax.Task(
         task_name="test_task",
-        context=SampleContext(message="test"),
+        context={"message": "test"},
         agent_id=uuid.uuid4(),
     )
 
