@@ -2,7 +2,7 @@
 
 Initializes the configured backend and exposes it as a public reference.
 All state operations go through ``backend.state``, ``backend.queue``,
-``backend.activity``, and ``backend.schedule`` directly.
+and ``backend.schedule`` directly. Activity uses Postgres directly.
 
 Pick one backend via AGENTEXEC_STATE_BACKEND:
   - 'agentexec.state.redis_backend'  (default)

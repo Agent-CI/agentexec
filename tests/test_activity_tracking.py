@@ -6,7 +6,54 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from agentexec import activity
 from agentexec.activity.models import Activity, ActivityLog, Base, Status
-from agentexec.activity.tracker import normalize_agent_id
+from agentexec.activity import normalize_agent_id
+
+
+@pytest.fixture(autouse=True)
+def direct_activity_writes(monkeypatch):
+    """Bypass pubsub — have the producer write directly to Postgres
+    by calling the consumer's handler inline."""
+    import json
+    from agentexec.activity import consumer, producer
+
+    async def direct_emit(event):
+        # Simulate what the consumer does when it receives an event
+        message = json.dumps(event, default=str)
+        event_data = json.loads(message)
+        from agentexec.activity.models import Activity, ActivityLog
+        from agentexec.activity.status import Status
+        from agentexec.core.db import get_global_session
+        db = get_global_session()
+
+        if event_data["type"] == "create":
+            from uuid import UUID
+            activity_record = Activity(
+                agent_id=UUID(event_data["agent_id"]),
+                agent_type=event_data["task_name"],
+                metadata_=event_data.get("metadata"),
+            )
+            db.add(activity_record)
+            db.flush()
+            log = ActivityLog(
+                activity_id=activity_record.id,
+                message=event_data["message"],
+                status=Status.QUEUED,
+                percentage=0,
+            )
+            db.add(log)
+            db.commit()
+
+        elif event_data["type"] == "append_log":
+            from uuid import UUID
+            Activity.append_log(
+                session=db,
+                agent_id=UUID(event_data["agent_id"]),
+                message=event_data["message"],
+                status=Status(event_data["status"]),
+                percentage=event_data.get("percentage"),
+            )
+
+    monkeypatch.setattr(producer, "_emit", direct_emit)
 
 
 @pytest.fixture

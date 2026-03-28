@@ -8,8 +8,6 @@ from uuid import UUID
 
 from pydantic import BaseModel
 
-from agentexec.activity.status import Status
-
 if TYPE_CHECKING:
     from agentexec.schedule import ScheduledTask
 
@@ -24,7 +22,6 @@ class BaseBackend(ABC):
 
     state: BaseStateBackend
     queue: BaseQueueBackend
-    activity: BaseActivityBackend
     schedule: BaseScheduleBackend
 
     @abstractmethod
@@ -72,10 +69,10 @@ class BaseStateBackend(ABC):
     async def counter_decr(self, key: str) -> int: ...
 
     @abstractmethod
-    async def log_publish(self, message: str) -> None: ...
+    async def publish(self, channel: str, message: str) -> None: ...
 
     @abstractmethod
-    async def log_subscribe(self) -> AsyncGenerator[str, None]: ...
+    async def subscribe(self, channel: str) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
     async def acquire_lock(self, key: str, agent_id: UUID, ttl_seconds: int) -> bool: ...
@@ -117,48 +114,6 @@ class BaseQueueBackend(ABC):
         timeout: int = 1,
     ) -> dict[str, Any] | None: ...
 
-
-class BaseActivityBackend(ABC):
-    """Task lifecycle tracking."""
-
-    @abstractmethod
-    async def create(
-        self,
-        agent_id: UUID,
-        agent_type: str,
-        message: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> None: ...
-
-    @abstractmethod
-    async def append_log(
-        self,
-        agent_id: UUID,
-        message: str,
-        status: Status,
-        percentage: int | None = None,
-    ) -> None: ...
-
-    @abstractmethod
-    async def get(
-        self,
-        agent_id: UUID,
-        metadata_filter: dict[str, Any] | None = None,
-    ) -> Any: ...
-
-    @abstractmethod
-    async def list(
-        self,
-        page: int = 1,
-        page_size: int = 50,
-        metadata_filter: dict[str, Any] | None = None,
-    ) -> tuple[list[Any], int]: ...
-
-    @abstractmethod
-    async def count_active(self) -> int: ...
-
-    @abstractmethod
-    async def get_pending_ids(self) -> list[UUID]: ...
 
 
 class BaseScheduleBackend(ABC):

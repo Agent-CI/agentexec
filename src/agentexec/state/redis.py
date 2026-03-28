@@ -7,9 +7,8 @@ from uuid import UUID
 import redis
 import redis.asyncio
 
-from agentexec.activity.status import Status
 from agentexec.config import CONF
-from agentexec.state.base import BaseActivityBackend, BaseBackend, BaseQueueBackend, BaseScheduleBackend, BaseStateBackend
+from agentexec.state.base import BaseBackend, BaseQueueBackend, BaseScheduleBackend, BaseStateBackend
 
 
 class Backend(BaseBackend):
@@ -21,7 +20,6 @@ class Backend(BaseBackend):
 
         self.state = RedisStateBackend(self)
         self.queue = RedisQueueBackend(self)
-        self.activity = RedisActivityBackend(self)
         self.schedule = RedisScheduleBackend(self)
 
     def format_key(self, *args: str) -> str:
@@ -81,18 +79,15 @@ class RedisStateBackend(BaseStateBackend):
         client = self.backend._get_client()
         return await client.decr(key)  # type: ignore[return-value]
 
-    def _logs_channel(self) -> str:
-        return self.backend.format_key(CONF.key_prefix, "logs")
-
-    async def log_publish(self, message: str) -> None:
+    async def publish(self, channel: str, message: str) -> None:
         client = self.backend._get_client()
-        await client.publish(self._logs_channel(), message)
+        await client.publish(channel, message)
 
-    async def log_subscribe(self) -> AsyncGenerator[str, None]:
+    async def subscribe(self, channel: str) -> AsyncGenerator[str, None]:
         client = self.backend._get_client()
         ps = client.pubsub()
         self.backend._pubsub = ps
-        await ps.subscribe(self._logs_channel())
+        await ps.subscribe(channel)
 
         try:
             async for message in ps.listen():
@@ -103,7 +98,7 @@ class RedisStateBackend(BaseStateBackend):
                     else:
                         yield data
         finally:
-            await ps.unsubscribe(self._logs_channel())
+            await ps.unsubscribe(channel)
             await ps.close()
             self.backend._pubsub = None
 
@@ -179,106 +174,6 @@ class RedisQueueBackend(BaseQueueBackend):
         _, value = result
         return json.loads(value.decode("utf-8"))
 
-
-class RedisActivityBackend(BaseActivityBackend):
-    """Redis activity: delegates to SQLAlchemy/Postgres."""
-
-    def __init__(self, backend: Backend) -> None:
-        self.backend = backend
-
-    async def create(
-        self,
-        agent_id: UUID,
-        agent_type: str,
-        message: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> None:
-        from agentexec.activity.models import Activity, ActivityLog
-        from agentexec.activity.status import Status
-        from agentexec.core.db import get_global_session
-
-        db = get_global_session()
-        activity_record = Activity(
-            agent_id=agent_id,
-            agent_type=agent_type,
-            metadata_=metadata,
-        )
-        db.add(activity_record)
-        db.flush()
-
-        log = ActivityLog(
-            activity_id=activity_record.id,
-            message=message,
-            status=Status.QUEUED,
-            percentage=0,
-        )
-        db.add(log)
-        db.commit()
-
-    async def append_log(
-        self,
-        agent_id: UUID,
-        message: str,
-        status: Status,
-        percentage: int | None = None,
-    ) -> None:
-        from agentexec.activity.models import Activity
-        from agentexec.core.db import get_global_session
-
-        db = get_global_session()
-        Activity.append_log(
-            session=db,
-            agent_id=agent_id,
-            message=message,
-            status=status,
-            percentage=percentage,
-        )
-
-    async def get(
-        self,
-        agent_id: UUID,
-        metadata_filter: dict[str, Any] | None = None,
-    ) -> Any:
-        from agentexec.activity.models import Activity
-        from agentexec.core.db import get_global_session
-
-        db = get_global_session()
-        return Activity.get_by_agent_id(db, agent_id, metadata_filter=metadata_filter)
-
-    async def list(
-        self,
-        page: int = 1,
-        page_size: int = 50,
-        metadata_filter: dict[str, Any] | None = None,
-    ) -> tuple[list[Any], int]:
-        from agentexec.activity.models import Activity
-        from agentexec.core.db import get_global_session
-
-        db = get_global_session()
-        query = db.query(Activity)
-        if metadata_filter:
-            for key, value in metadata_filter.items():
-                query = query.filter(Activity.metadata_[key].as_string() == str(value))
-        total = query.count()
-
-        rows = Activity.get_list(
-            db, page=page, page_size=page_size, metadata_filter=metadata_filter,
-        )
-        return rows, total
-
-    async def count_active(self) -> int:
-        from agentexec.activity.models import Activity
-        from agentexec.core.db import get_global_session
-
-        db = get_global_session()
-        return Activity.get_active_count(db)
-
-    async def get_pending_ids(self) -> list[UUID]:
-        from agentexec.activity.models import Activity
-        from agentexec.core.db import get_global_session
-
-        db = get_global_session()
-        return Activity.get_pending_ids(db)
 
 
 class RedisScheduleBackend(BaseScheduleBackend):

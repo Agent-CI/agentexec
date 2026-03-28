@@ -397,9 +397,12 @@ class Pool:
         self._log_handler = logging.StreamHandler()
         self._log_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
 
+        from agentexec.activity.consumer import process_activity_stream
+
         await asyncio.gather(
             self._process_log_stream(),
             self._process_scheduled_tasks(),
+            process_activity_stream(),
         )
 
     def run(self) -> None:
@@ -440,7 +443,8 @@ class Pool:
         """Forward log messages from workers to the main process handler."""
         assert self._log_handler, "Log handler not initialized"
 
-        async for message in backend.state.log_subscribe():
+        logs_channel = backend.format_key(CONF.key_prefix, "logs")
+        async for message in backend.state.subscribe(logs_channel):
             log_message = LogMessage.model_validate_json(message)
             self._log_handler.emit(log_message.to_log_record())
             if not any(p.is_alive() for p in self._processes):

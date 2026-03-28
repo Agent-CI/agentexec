@@ -103,11 +103,11 @@ class TestCounterOperations:
 
 
 class TestPubSubOperations:
-    async def test_log_publish(self, mock_client):
-        await backend.state.log_publish("log message")
-        mock_client.publish.assert_called_once()
+    async def test_publish(self, mock_client):
+        await backend.state.publish("test:channel", "log message")
+        mock_client.publish.assert_called_once_with("test:channel", "log message")
 
-    async def test_log_subscribe(self, mock_client):
+    async def test_subscribe(self, mock_client):
         mock_pubsub = AsyncMock()
         mock_client.pubsub = MagicMock(return_value=mock_pubsub)
 
@@ -119,7 +119,7 @@ class TestPubSubOperations:
         mock_pubsub.listen = MagicMock(return_value=mock_listen())
 
         messages = []
-        async for msg in backend.state.log_subscribe():
+        async for msg in backend.state.subscribe("test:channel"):
             messages.append(msg)
 
         assert messages == ["message1", "message2"]

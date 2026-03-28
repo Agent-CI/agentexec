@@ -61,7 +61,7 @@ class StateLogHandler(logging.Handler):
         try:
             message = LogMessage.from_log_record(record)
             loop = asyncio.get_running_loop()
-            loop.create_task(backend.state.log_publish(message.model_dump_json()))
+            loop.create_task(backend.state.publish(self.channel, message.model_dump_json()))
         except RuntimeError:
             pass  # No running loop — discard silently
         except Exception:
