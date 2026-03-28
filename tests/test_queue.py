@@ -61,7 +61,7 @@ async def test_enqueue_pushes_to_redis(fake_redis, mock_activity_create) -> None
     task = await enqueue("test_task", ctx)
 
     # Check Redis has the task
-    task_json = await fake_redis.rpop(ax.CONF.queue_name)
+    task_json = await fake_redis.rpop(ax.CONF.queue_prefix)
     assert task_json is not None
 
     task_data = json.loads(task_json)
@@ -78,7 +78,7 @@ async def test_enqueue_low_priority_lpush(fake_redis, mock_activity_create) -> N
 
     # LPUSH adds to left, RPOP takes from right
     # So we should use LPOP to see it
-    task_json = await fake_redis.lpop(ax.CONF.queue_name)
+    task_json = await fake_redis.lpop(ax.CONF.queue_prefix)
     assert task_json is not None
 
 
@@ -91,20 +91,10 @@ async def test_enqueue_high_priority_rpush(fake_redis, mock_activity_create) -> 
     await enqueue("high_task", SampleContext(message="high"), priority=Priority.HIGH)
 
     # High priority should be at the front (RPOP side)
-    task_json = await fake_redis.rpop(ax.CONF.queue_name)
+    task_json = await fake_redis.rpop(ax.CONF.queue_prefix)
     task_data = json.loads(task_json)
     assert task_data["task_name"] == "high_task"
 
-
-async def test_enqueue_custom_queue_name(fake_redis, mock_activity_create) -> None:
-    """Test enqueue with custom queue name."""
-    ctx = SampleContext(message="custom")
-
-    await enqueue("test_task", ctx, queue_name="custom_queue")
-
-    # Check custom queue
-    task_json = await fake_redis.rpop("custom_queue")
-    assert task_json is not None
 
 
 async def test_dequeue_returns_task_data(fake_redis) -> None:
@@ -115,10 +105,10 @@ async def test_dequeue_returns_task_data(fake_redis) -> None:
         "context": {"message": "dequeued", "value": 100},
         "agent_id": str(uuid.uuid4()),
     }
-    await fake_redis.lpush(ax.CONF.queue_name, json.dumps(task_data).encode())
+    await fake_redis.lpush(ax.CONF.queue_prefix, json.dumps(task_data).encode())
 
     # Dequeue
-    result = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
+    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
 
     assert result is not None
     assert result["task_name"] == "test_task"
@@ -129,24 +119,10 @@ async def test_dequeue_returns_task_data(fake_redis) -> None:
 async def test_dequeue_returns_none_on_empty_queue(fake_redis) -> None:
     """Test that dequeue returns None when queue is empty."""
     # timeout=1 because timeout=0 means block indefinitely in Redis BRPOP
-    result = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
+    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
 
     assert result is None
 
-
-async def test_dequeue_custom_queue_name(fake_redis) -> None:
-    """Test dequeue with custom queue name."""
-    task_data = {
-        "task_name": "custom_task",
-        "context": {"message": "test"},
-        "agent_id": str(uuid.uuid4()),
-    }
-    await fake_redis.lpush("custom_queue", json.dumps(task_data).encode())
-
-    result = await backend.queue.pop("custom_queue", timeout=1)
-
-    assert result is not None
-    assert result["task_name"] == "custom_task"
 
 
 async def test_dequeue_brpop_behavior(fake_redis) -> None:
@@ -155,11 +131,11 @@ async def test_dequeue_brpop_behavior(fake_redis) -> None:
     task1 = {"task_name": "first", "context": {}, "agent_id": str(uuid.uuid4())}
     task2 = {"task_name": "second", "context": {}, "agent_id": str(uuid.uuid4())}
 
-    await fake_redis.lpush(ax.CONF.queue_name, json.dumps(task1).encode())
-    await fake_redis.lpush(ax.CONF.queue_name, json.dumps(task2).encode())
+    await fake_redis.lpush(ax.CONF.queue_prefix, json.dumps(task1).encode())
+    await fake_redis.lpush(ax.CONF.queue_prefix, json.dumps(task2).encode())
 
     # BRPOP should get the first task (oldest) from the right
-    result = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
+    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
     assert result is not None
     assert result["task_name"] == "first"
 
@@ -172,7 +148,7 @@ async def test_enqueue_dequeue_roundtrip(fake_redis, mock_activity_create) -> No
     task = await enqueue("roundtrip_task", ctx)
 
     # Dequeue
-    result = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
+    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
 
     assert result is not None
     assert result["task_name"] == "roundtrip_task"
@@ -191,6 +167,6 @@ async def test_multiple_enqueue_fifo_order(fake_redis, mock_activity_create) -> 
 
     # Dequeue should be in FIFO order
     for i in range(3):
-        result = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
+        result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
         assert result is not None
         assert result["task_name"] == f"task_{i}"

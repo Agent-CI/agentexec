@@ -179,15 +179,6 @@ def test_pool_with_database_url() -> None:
     assert pool._processes == []
 
 
-def test_pool_with_custom_queue_name() -> None:
-    """Test that Pool can use a custom queue name."""
-    pool = ax.Pool(
-        database_url="sqlite:///:memory:",
-        queue_name="custom_queue",
-    )
-
-    assert pool._context.queue_name == "custom_queue"
-
 
 async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     """Test Worker._dequeue_task method."""
@@ -202,7 +193,6 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
         database_url="sqlite:///:memory:",
         shutdown_event=StateEvent("shutdown", "test-worker"),
         tasks=pool._context.tasks,
-        queue_name="test_queue",
     )
 
     # Mock queue_pop to return task data
@@ -219,7 +209,7 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
     from agentexec.core.queue import dequeue
-    task = await dequeue(queue_name="test_queue", timeout=1)
+    task = await dequeue(timeout=1)
 
     assert task is not None
     assert task.task_name == "test_task"
@@ -236,7 +226,7 @@ async def test_dequeue_returns_none_on_empty_queue(pool, monkeypatch) -> None:
     monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
     from agentexec.core.queue import dequeue
-    task = await dequeue(queue_name="test_queue", timeout=1)
+    task = await dequeue(timeout=1)
 
     assert task is None
 

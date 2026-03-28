@@ -179,12 +179,12 @@ async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
         context={"user_id": "2", "message": "requeued"},
         agent_id=uuid.uuid4(),
     )
-    await backend.queue.push(ax.CONF.queue_name, task2.model_dump_json())
+    await backend.queue.push(ax.CONF.queue_prefix, task2.model_dump_json())
 
-    result1 = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
+    result1 = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
     assert result1 is not None
     assert result1["task_name"] == "task_1"
 
-    result2 = await backend.queue.pop(ax.CONF.queue_name, timeout=1)
+    result2 = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
     assert result2 is not None
     assert result2["task_name"] == "task_2"

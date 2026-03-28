@@ -21,7 +21,6 @@ async def enqueue(
     context: BaseModel,
     *,
     priority: Priority = Priority.LOW,
-    queue_name: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Task:
     """Enqueue a task for background execution."""
@@ -32,7 +31,7 @@ async def enqueue(
     )
 
     await backend.queue.push(
-        queue_name or CONF.queue_name,
+        CONF.queue_prefix,
         task.model_dump_json(),
         high_priority=(priority == Priority.HIGH),
     )
@@ -41,14 +40,7 @@ async def enqueue(
     return task
 
 
-async def dequeue(
-    *,
-    queue_name: str | None = None,
-    timeout: int = 1,
-) -> Task | None:
+async def dequeue(*, timeout: int = 1) -> Task | None:
     """Dequeue a task from the queue. Returns raw Task (context is a dict)."""
-    data = await backend.queue.pop(
-        queue_name or CONF.queue_name,
-        timeout=timeout,
-    )
+    data = await backend.queue.pop(CONF.queue_prefix, timeout=timeout)
     return Task.model_validate(data) if data else None

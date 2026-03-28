@@ -131,7 +131,7 @@ class RedisStateBackend(BaseStateBackend):
             return 0
         client = self.backend._get_client()
         deleted = 0
-        deleted += await client.delete(CONF.queue_name)
+        deleted += await client.delete(CONF.queue_prefix)
         pattern = f"{CONF.key_prefix}:*"
         cursor = 0
         while True:
@@ -144,10 +144,23 @@ class RedisStateBackend(BaseStateBackend):
 
 
 class RedisQueueBackend(BaseQueueBackend):
-    """Redis queue: list-based with BRPOP."""
+    """Redis queue: partitioned lists with per-group locking.
+
+    Tasks with a partition_key go to queue:{partition_key} and are
+    serialized by a lock. Tasks without a partition_key go to the
+    default queue and execute concurrently.
+    """
 
     def __init__(self, backend: Backend) -> None:
         self.backend = backend
+
+    def _queue_key(self, partition_key: str | None, default_queue: str) -> str:
+        if partition_key:
+            return f"{default_queue}:{partition_key}"
+        return default_queue
+
+    def _lock_key(self, partition_key: str, default_queue: str) -> str:
+        return f"{default_queue}:{partition_key}:lock"
 
     async def push(
         self,
@@ -158,10 +171,16 @@ class RedisQueueBackend(BaseQueueBackend):
         partition_key: str | None = None,
     ) -> None:
         client = self.backend._get_client()
+        key = self._queue_key(partition_key, queue_name)
         if high_priority:
-            await client.rpush(queue_name, value)
+            await client.rpush(key, value)
         else:
-            await client.lpush(queue_name, value)
+            await client.lpush(key, value)
+
+    async def release_lock(self, queue_name: str, partition_key: str) -> None:
+        client = self.backend._get_client()
+        lock = f"{queue_name}:{partition_key}:lock"
+        await client.delete(lock)
 
     async def pop(
         self,
@@ -170,12 +189,43 @@ class RedisQueueBackend(BaseQueueBackend):
         timeout: int = 1,
     ) -> dict[str, Any] | None:
         import json
+
         client = self.backend._get_client()
-        result = await client.brpop([queue_name], timeout=timeout)  # type: ignore[misc]
-        if result is None:
-            return None
-        _, value = result
-        return json.loads(value.decode("utf-8"))
+        default_key = queue_name.encode()
+        lock_suffix = b":lock"
+        locks_seen: set[bytes] = set()
+   
+        def lock_key(key: bytes) -> bytes:
+            return key + lock_suffix
+
+        def needs_lock(key: bytes) -> bool:
+            return not (key == default_key)
+    
+        # SCAN returns keys in hash-table order (effectively random),
+        # so we don't need to collect all keys before choosing.
+        # We try each key eagerly and exit on the first successful pop.
+        async for key in client.scan_iter(match=queue_name.encode() + b"*", count=100):
+            if key.endswith(lock_suffix):
+                locks_seen.add(key)
+                continue
+
+            if needs_lock(key):
+                if lock_key(key) in locks_seen:
+                    continue  # already locked, find another
+
+                acquired = await client.set(lock_key(key), b"1", nx=True, ex=CONF.lock_ttl)
+                if not acquired:
+                    continue  # another worker holds this partition, find another
+
+            result = await client.rpop(key)
+            if result is None:
+                if needs_lock(key):
+                    # TODO this should never happen; we can improve on the ergonomics of recovery later.
+                    raise RuntimeError(f"Partition queue {key!r} was empty after lock acquired")
+
+                continue  # payload was grabbed in a race condition, find another
+            
+            return json.loads(result)
 
 
 
@@ -204,7 +254,7 @@ class RedisScheduleBackend(BaseScheduleBackend):
         raw = await client.zrangebyscore(self._queue_key(), 0, time.time())
         tasks = []
         for name in raw:
-            task_name = name.decode("utf-8") if isinstance(name, bytes) else name
+            task_name = name.decode("utf-8")
             data = await client.get(self._schedule_key(task_name))
             if data is None:
                 continue

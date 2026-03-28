@@ -17,10 +17,10 @@ class Config(BaseSettings):
         description="Prefix for database table names",
         validation_alias="AGENTEXEC_TABLE_PREFIX",
     )
-    queue_name: str = Field(
+    queue_prefix: str = Field(
         default="agentexec_tasks",
-        description="Name of the task queue (Redis list key or Kafka topic base name)",
-        validation_alias="AGENTEXEC_QUEUE_NAME",
+        description="Prefix for task queue keys. Partition queues are {prefix}:{lock_key}.",
+        validation_alias=AliasChoices("AGENTEXEC_QUEUE_PREFIX", "AGENTEXEC_QUEUE_NAME"),
     )
     num_workers: int = Field(
         default=4,

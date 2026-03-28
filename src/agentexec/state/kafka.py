@@ -349,6 +349,9 @@ class KafkaQueueBackend(BaseQueueBackend):
         except asyncio.TimeoutError:
             return None
 
+    async def release_lock(self, queue_name: str, partition_key: str) -> None:
+        pass  # Kafka uses partition assignment, no explicit locks
+
 
 class KafkaScheduleBackend(BaseScheduleBackend):
     """Kafka schedule: compacted topic + in-memory cache."""

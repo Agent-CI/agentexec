@@ -94,7 +94,7 @@ class BaseStateBackend(ABC):
 
 
 class BaseQueueBackend(ABC):
-    """Task queue with push/pop semantics."""
+    """Task queue with push/pop semantics and partition-level locking."""
 
     @abstractmethod
     async def push(
@@ -105,6 +105,9 @@ class BaseQueueBackend(ABC):
         high_priority: bool = False,
         partition_key: str | None = None,
     ) -> None: ...
+
+    @abstractmethod
+    async def release_lock(self, queue_name: str, partition_key: str) -> None: ...
 
     @abstractmethod
     async def pop(

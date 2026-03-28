@@ -275,13 +275,13 @@ class TestTick:
 
         await tick()
 
-        assert await fake_redis.llen(ax.CONF.queue_name) == 1
+        assert await fake_redis.llen(ax.CONF.queue_prefix) == 1
 
     async def test_tick_skips_future_tasks(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="all"))
         await tick()
 
-        assert await fake_redis.llen(ax.CONF.queue_name) == 0
+        assert await fake_redis.llen(ax.CONF.queue_prefix) == 0
 
     async def test_tick_removes_one_shot_schedule(self, fake_redis, mock_activity_create):
         await register("refresh_cache", "* * * * *", RefreshContext(scope="all"), repeat=0)
@@ -330,7 +330,7 @@ class TestTick:
         await tick()
 
         assert await fake_redis.zcard(_queue_key()) == 1
-        assert await fake_redis.llen(ax.CONF.queue_name) == 0
+        assert await fake_redis.llen(ax.CONF.queue_prefix) == 0
 
     async def test_tick_skips_missed_intervals(self, fake_redis, mock_activity_create):
         """After downtime, advance() skips to the next future run — no burst of catch-up tasks."""
@@ -344,11 +344,11 @@ class TestTick:
         await fake_redis.zadd(_queue_key(), {"refresh_cache": st.next_run})
 
         await tick()
-        assert await fake_redis.llen(ax.CONF.queue_name) == 1
+        assert await fake_redis.llen(ax.CONF.queue_prefix) == 1
 
         # Second tick should not enqueue again (next_run is in the future now)
         await tick()
-        assert await fake_redis.llen(ax.CONF.queue_name) == 1
+        assert await fake_redis.llen(ax.CONF.queue_prefix) == 1
 
     async def test_context_payload_preserved(self, fake_redis):
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="users", ttl=999))

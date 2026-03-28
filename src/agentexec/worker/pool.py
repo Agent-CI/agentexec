@@ -49,10 +49,6 @@ class TaskFailed(Message):
         return cls(task=task, error=str(exception))
 
 
-class LockContention(Message):
-    task: Task
-
-
 class LogEntry(Message):
     record: LogMessage
 
@@ -75,7 +71,6 @@ class WorkerContext:
     database_url: str
     shutdown_event: StateEvent
     tasks: dict[str, TaskDefinition]
-    queue_name: str
     tx: mp.Queue | None = None  # worker → pool message queue
 
 
@@ -143,20 +138,14 @@ class Worker:
 
         All events are sent to the pool via _send. The worker never
         manipulates the queue or writes to Postgres directly.
+        Locking is handled by the queue backend during pop.
         """
         while not await self._context.shutdown_event.is_set():
-            task = await dequeue(queue_name=self._context.queue_name)
+            task = await dequeue()
             if task is None:
                 continue
 
             definition = self._context.tasks[task.task_name]
-
-            lock_key = definition.get_lock_key(task.context)
-            if lock_key:
-                acquired = await backend.state.acquire_lock(lock_key, task.agent_id)
-                if not acquired:
-                    self._send(LockContention(task=task))
-                    continue
 
             try:
                 self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
@@ -165,9 +154,6 @@ class Worker:
                 self._send(TaskCompleted(task=task))
             except Exception as e:
                 self._send(TaskFailed.from_exception(task, e))
-            finally:
-                if lock_key:
-                    await backend.state.release_lock(lock_key)
 
 
 
@@ -199,14 +185,12 @@ class Pool:
         self,
         engine: Engine | None = None,
         database_url: str | None = None,
-        queue_name: str | None = None,
     ) -> None:
         """Initialize the worker pool.
 
         Args:
             engine: SQLAlchemy engine (URL will be extracted for workers).
             database_url: Database URL string. Alternative to passing engine.
-            queue_name: Redis queue name. Defaults to CONF.queue_name.
 
         Raises:
             ValueError: If neither engine nor database_url is provided.
@@ -223,7 +207,6 @@ class Pool:
             database_url=database_url or engine.url.render_as_string(hide_password=False),
             shutdown_event=StateEvent("shutdown", _get_pool_id()),
             tasks={},
-            queue_name=queue_name or CONF.queue_name,
             tx=self._worker_queue,
         )
         self._processes = []
@@ -483,6 +466,10 @@ class Pool:
                     scheduled_task.advance()
                     await backend.schedule.register(scheduled_task)
 
+    def _partition_key_for(self, task: Task) -> str | None:
+        """Derive the partition/lock key for a task from its definition."""
+        return self._context.tasks[task.task_name].get_lock_key(task.context)
+
     async def _process_worker_events(self) -> None:
         """Handle all events from worker processes via multiprocessing queue."""
         assert self._log_handler, "Log handler not initialized"
@@ -498,27 +485,29 @@ class Pool:
                 case LogEntry(record=record):
                     self._log_handler.emit(record.to_log_record())
 
-                case TaskCompleted():
-                    pass
+                case TaskCompleted(task=task):
+                    partition_key = self._partition_key_for(task)
+                    if partition_key:
+                        await backend.queue.release_lock(CONF.queue_prefix, partition_key)
 
                 case TaskFailed(task=task, error=error):
+                    partition_key = self._partition_key_for(task)
                     if task.retry_count < CONF.max_task_retries:
                         task.retry_count += 1
                         await backend.queue.push(
-                            self._context.queue_name,
+                            CONF.queue_prefix,
                             task.model_dump_json(),
+                            partition_key=partition_key,
+                            high_priority=True,
                         )
                     else:
+                        # TODO incorporate this messaging into the ax.activity stream.
                         print(
                             f"Task {task.task_name} failed "
                             f"after {task.retry_count + 1} attempts, giving up: {error}"
                         )
-
-                case LockContention(task=task):
-                    await backend.queue.push(
-                        self._context.queue_name,
-                        task.model_dump_json(),
-                    )
+                    if partition_key:
+                        await backend.queue.release_lock(CONF.queue_prefix, partition_key)
 
     async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.
