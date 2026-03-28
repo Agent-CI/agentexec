@@ -8,6 +8,8 @@
 #   uv run pytest tests/test_kafka_integration.py -v
 #
 #   docker compose -f docker-compose.kafka.yml down
+#
+# Kafka UI available at http://localhost:8080
 
 services:
   kafka:
@@ -15,14 +17,6 @@ services:
     ports:
       - "9092:9092"
     environment:
-
-      # -----------------------------------------------------------------
-      # Standard Kafka / KRaft bootstrap
-      #
-      # Boilerplate for running a single-node Kafka broker in KRaft mode
-      # (no Zookeeper). Any single-node Kafka setup looks like this.
-      # -----------------------------------------------------------------
-
       KAFKA_NODE_ID: "1"
       KAFKA_PROCESS_ROLES: broker,controller
       KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
@@ -32,17 +26,23 @@ services:
       KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT
       KAFKA_INTER_BROKER_LISTENER_NAME: PLAINTEXT
       CLUSTER_ID: "agentexec-dev-cluster-01"
-
-      # Single-node requires replication factor 1 for internal topics.
-      # In production (multi-broker), remove these — the defaults (3) are correct.
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: "1"
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: "1"
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: "1"
-
-
     healthcheck:
       test: /opt/kafka/bin/kafka-topics.sh --bootstrap-server localhost:9092 --list
       interval: 5s
       timeout: 10s
       retries: 15
       start_period: 15s
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    ports:
+      - "8080:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: agentexec
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:9092
+    depends_on:
+      kafka:
+        condition: service_healthy

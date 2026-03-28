@@ -4,18 +4,16 @@ import time
 from datetime import datetime
 from typing import Any
 from croniter import croniter
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
 from agentexec.config import CONF
 from agentexec.core.logging import get_logger
-from agentexec.core.queue import enqueue
-from agentexec.state import KEY_SCHEDULE, KEY_SCHEDULE_QUEUE, backend
+from agentexec.state import backend
 
 logger = get_logger(__name__)
 
 __all__ = [
     "register",
-    "tick",
 ]
 
 REPEAT_FOREVER: int = -1
@@ -50,14 +48,6 @@ class ScheduledTask(BaseModel):
         return float(croniter(self.cron, dt).get_next(float))
 
 
-def _schedule_key(task_name: str) -> str:
-    return backend.format_key(*KEY_SCHEDULE, task_name)
-
-
-def _queue_key() -> str:
-    return backend.format_key(*KEY_SCHEDULE_QUEUE)
-
-
 async def register(
     task_name: str,
     every: str,
@@ -74,36 +64,7 @@ async def register(
         repeat=repeat,
         metadata=metadata,
     )
-
-    await backend.state.set(_schedule_key(task_name), task.model_dump_json().encode())
-    await backend.state.index_add(_queue_key(), {task_name: task.next_run})
+    await backend.schedule.register(task)
     logger.info(f"Scheduled {task_name}")
 
 
-async def tick() -> None:
-    """Process all scheduled tasks that are due right now."""
-    raw = await backend.state.index_range(_queue_key(), 0, time.time())
-    due_names = [item.decode("utf-8") for item in raw]
-
-    for task_name in due_names:
-        try:
-            data = await backend.state.get(_schedule_key(task_name))
-            task = ScheduledTask.model_validate_json(data)
-        except (ValidationError, TypeError):
-            logger.warning(f"Failed to load schedule {task_name}, skipping")
-            continue
-
-        await enqueue(
-            task.task_name,
-            context=backend.deserialize(task.context),
-            metadata=task.metadata,
-        )
-
-        if task.repeat == 0:
-            await backend.state.index_remove(_queue_key(), task_name)
-            await backend.state.delete(_schedule_key(task_name))
-            logger.info(f"Schedule for '{task_name}' exhausted")
-        else:
-            task.advance()
-            await backend.state.set(_schedule_key(task_name), task.model_dump_json().encode())
-            await backend.state.index_add(_queue_key(), {task_name: task.next_run})

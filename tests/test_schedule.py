@@ -10,13 +10,28 @@ from pydantic import BaseModel
 
 import agentexec as ax
 from agentexec import state, schedule
+from agentexec.core.queue import enqueue
 from agentexec.schedule import (
     REPEAT_FOREVER,
     ScheduledTask,
     register,
-    tick,
 )
 from agentexec.state import backend
+
+
+async def tick():
+    """Test helper — replicates the pool's schedule tick logic."""
+    for task in await backend.schedule.get_due():
+        await enqueue(
+            task.task_name,
+            context=backend.deserialize(task.context),
+            metadata=task.metadata,
+        )
+        if task.repeat == 0:
+            await backend.schedule.remove(task.task_name)
+        else:
+            task.advance()
+            await backend.schedule.register(task)
 
 
 class RefreshContext(BaseModel):

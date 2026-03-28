@@ -121,6 +121,12 @@ class Config(BaseSettings):
         validation_alias="AGENTEXEC_KEY_PREFIX",
     )
 
+    scheduler_poll_interval: int = Field(
+        default=10,
+        description="Seconds between schedule polls",
+        validation_alias="AGENTEXEC_SCHEDULER_POLL_INTERVAL",
+    )
+
     scheduler_timezone: str = Field(
         default="UTC",
         description=(

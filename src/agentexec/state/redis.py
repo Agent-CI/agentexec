@@ -1,14 +1,15 @@
 from __future__ import annotations
 
 import uuid
-from typing import Any, AsyncGenerator, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional
 from uuid import UUID
 
 import redis
 import redis.asyncio
 
+from agentexec.activity.status import Status
 from agentexec.config import CONF
-from agentexec.state.base import BaseActivityBackend, BaseBackend, BaseQueueBackend, BaseStateBackend
+from agentexec.state.base import BaseActivityBackend, BaseBackend, BaseQueueBackend, BaseScheduleBackend, BaseStateBackend
 
 
 class Backend(BaseBackend):
@@ -21,6 +22,7 @@ class Backend(BaseBackend):
         self.state = RedisStateBackend(self)
         self.queue = RedisQueueBackend(self)
         self.activity = RedisActivityBackend(self)
+        self.schedule = RedisScheduleBackend(self)
 
     def format_key(self, *args: str) -> str:
         return ":".join(args)
@@ -79,15 +81,18 @@ class RedisStateBackend(BaseStateBackend):
         client = self.backend._get_client()
         return await client.decr(key)  # type: ignore[return-value]
 
-    async def log_publish(self, channel: str, message: str) -> None:
-        client = self.backend._get_client()
-        await client.publish(channel, message)
+    def _logs_channel(self) -> str:
+        return self.backend.format_key(CONF.key_prefix, "logs")
 
-    async def log_subscribe(self, channel: str) -> AsyncGenerator[str, None]:
+    async def log_publish(self, message: str) -> None:
+        client = self.backend._get_client()
+        await client.publish(self._logs_channel(), message)
+
+    async def log_subscribe(self) -> AsyncGenerator[str, None]:
         client = self.backend._get_client()
         ps = client.pubsub()
         self.backend._pubsub = ps
-        await ps.subscribe(channel)
+        await ps.subscribe(self._logs_channel())
 
         try:
             async for message in ps.listen():
@@ -98,7 +103,7 @@ class RedisStateBackend(BaseStateBackend):
                     else:
                         yield data
         finally:
-            await ps.unsubscribe(channel)
+            await ps.unsubscribe(self._logs_channel())
             await ps.close()
             self.backend._pubsub = None
 
@@ -188,7 +193,8 @@ class RedisActivityBackend(BaseActivityBackend):
         message: str,
         metadata: dict[str, Any] | None = None,
     ) -> None:
-        from agentexec.activity.models import Activity, ActivityLog, Status
+        from agentexec.activity.models import Activity, ActivityLog
+        from agentexec.activity.status import Status
         from agentexec.core.db import get_global_session
 
         db = get_global_session()
@@ -213,10 +219,10 @@ class RedisActivityBackend(BaseActivityBackend):
         self,
         agent_id: UUID,
         message: str,
-        status: str,
+        status: Status,
         percentage: int | None = None,
     ) -> None:
-        from agentexec.activity.models import Activity, Status as ActivityStatus
+        from agentexec.activity.models import Activity
         from agentexec.core.db import get_global_session
 
         db = get_global_session()
@@ -224,7 +230,7 @@ class RedisActivityBackend(BaseActivityBackend):
             session=db,
             agent_id=agent_id,
             message=message,
-            status=ActivityStatus(status),
+            status=status,
             percentage=percentage,
         )
 
@@ -273,3 +279,44 @@ class RedisActivityBackend(BaseActivityBackend):
 
         db = get_global_session()
         return Activity.get_pending_ids(db)
+
+
+class RedisScheduleBackend(BaseScheduleBackend):
+    """Redis schedule: sorted set index + KV store."""
+
+    def __init__(self, backend: Backend) -> None:
+        self.backend = backend
+
+    def _schedule_key(self, task_name: str) -> str:
+        return self.backend.format_key(CONF.key_prefix, "schedule", task_name)
+
+    def _queue_key(self) -> str:
+        return self.backend.format_key(CONF.key_prefix, "schedule_queue")
+
+    async def register(self, task: ScheduledTask) -> None:
+        client = self.backend._get_client()
+        await client.set(self._schedule_key(task.task_name), task.model_dump_json().encode())
+        await client.zadd(self._queue_key(), {task.task_name: task.next_run})
+
+    async def get_due(self) -> list[ScheduledTask]:
+        import time
+        from pydantic import ValidationError
+        from agentexec.schedule import ScheduledTask
+        client = self.backend._get_client()
+        raw = await client.zrangebyscore(self._queue_key(), 0, time.time())
+        tasks = []
+        for name in raw:
+            task_name = name.decode("utf-8") if isinstance(name, bytes) else name
+            data = await client.get(self._schedule_key(task_name))
+            if data is None:
+                continue
+            try:
+                tasks.append(ScheduledTask.model_validate_json(data))
+            except ValidationError:
+                continue
+        return tasks
+
+    async def remove(self, task_name: str) -> None:
+        client = self.backend._get_client()
+        await client.zrem(self._queue_key(), task_name)
+        await client.delete(self._schedule_key(task_name))

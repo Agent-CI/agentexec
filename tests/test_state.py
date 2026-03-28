@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 import pytest
 from pydantic import BaseModel
 
-from agentexec.state import KEY_RESULT, CHANNEL_LOGS, backend
+from agentexec.state import KEY_RESULT, backend
 
 
 class ResultModel(BaseModel):
@@ -30,9 +30,6 @@ class TestFormatKey:
         assert "result" in key
         assert "agent-123" in key
 
-    def test_logs_channel(self):
-        channel = backend.format_key(*CHANNEL_LOGS)
-        assert "logs" in channel
 
 
 class TestStateBackend:
@@ -65,20 +62,18 @@ class TestLogOperations:
 
     async def test_publish(self):
         with patch.object(backend.state, "log_publish", new_callable=AsyncMock) as mock:
-            channel = backend.format_key(*CHANNEL_LOGS)
-            await backend.state.log_publish(channel, "test message")
-            mock.assert_called_once_with(channel, "test message")
+            await backend.state.log_publish("test message")
+            mock.assert_called_once_with("test message")
 
     async def test_subscribe(self):
         messages = ["msg1", "msg2"]
 
-        async def mock_subscribe(channel):
+        async def mock_subscribe():
             for msg in messages:
                 yield msg
 
         with patch.object(backend.state, "log_subscribe", side_effect=mock_subscribe):
             received = []
-            channel = backend.format_key(*CHANNEL_LOGS)
-            async for msg in backend.state.log_subscribe(channel):
+            async for msg in backend.state.log_subscribe():
                 received.append(msg)
             assert received == messages

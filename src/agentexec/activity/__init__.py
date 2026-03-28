@@ -1,4 +1,5 @@
-from agentexec.activity.models import Activity, ActivityLog, Status
+from agentexec.activity.models import Activity, ActivityLog
+from agentexec.activity.status import Status
 from agentexec.activity.schemas import (
     ActivityDetailSchema,
     ActivityListItemSchema,

@@ -2,7 +2,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from pydantic import BaseModel
-from agentexec.state import CHANNEL_LOGS, backend
+from agentexec.state import backend
 
 LOGGER_NAME = "agentexec"
 LOG_CHANNEL = "agentexec:logs"
@@ -60,9 +60,8 @@ class StateLogHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             message = LogMessage.from_log_record(record)
-            channel = backend.format_key(*CHANNEL_LOGS)
             loop = asyncio.get_running_loop()
-            loop.create_task(backend.state.log_publish(channel, message.model_dump_json()))
+            loop.create_task(backend.state.log_publish(message.model_dump_json()))
         except RuntimeError:
             pass  # No running loop — discard silently
         except Exception:

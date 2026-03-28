@@ -4,7 +4,7 @@ from typing import Any
 
 from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 
-from agentexec.activity.models import Status
+from agentexec.activity.status import Status
 
 
 class ActivityLogSchema(BaseModel):

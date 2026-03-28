@@ -3,15 +3,54 @@ from __future__ import annotations
 import importlib
 import json
 from abc import ABC, abstractmethod
-from typing import Any, AsyncGenerator, Optional, TypedDict
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional, TypedDict
 from uuid import UUID
 
 from pydantic import BaseModel
+
+from agentexec.activity.status import Status
+
+if TYPE_CHECKING:
+    from agentexec.schedule import ScheduledTask
 
 
 class _SerializeWrapper(TypedDict):
     __type__: str
     data: dict[str, Any]
+
+
+class BaseBackend(ABC):
+    """Top-level backend interface with namespaced sub-backends."""
+
+    state: BaseStateBackend
+    queue: BaseQueueBackend
+    activity: BaseActivityBackend
+    schedule: BaseScheduleBackend
+
+    @abstractmethod
+    def format_key(self, *args: str) -> str: ...
+
+    @abstractmethod
+    def configure(self, **kwargs: Any) -> None: ...
+
+    @abstractmethod
+    async def close(self) -> None: ...
+
+    def serialize(self, obj: BaseModel) -> bytes:
+        """Serialize a Pydantic model to bytes with type information."""
+        wrapper: _SerializeWrapper = {
+            "__type__": f"{type(obj).__module__}.{type(obj).__qualname__}",
+            "data": obj.model_dump(mode="json"),
+        }
+        return json.dumps(wrapper).encode("utf-8")
+
+    def deserialize(self, data: bytes) -> BaseModel:
+        """Deserialize bytes back to a typed Pydantic model."""
+        wrapper: _SerializeWrapper = json.loads(data.decode("utf-8"))
+        module_path, class_name = wrapper["__type__"].rsplit(".", 1)
+        module = importlib.import_module(module_path)
+        cls = getattr(module, class_name)
+        return cls.model_validate(wrapper["data"])
 
 
 class BaseStateBackend(ABC):
@@ -33,10 +72,10 @@ class BaseStateBackend(ABC):
     async def counter_decr(self, key: str) -> int: ...
 
     @abstractmethod
-    async def log_publish(self, channel: str, message: str) -> None: ...
+    async def log_publish(self, message: str) -> None: ...
 
     @abstractmethod
-    async def log_subscribe(self, channel: str) -> AsyncGenerator[str, None]: ...
+    async def log_subscribe(self) -> AsyncGenerator[str, None]: ...
 
     @abstractmethod
     async def acquire_lock(self, key: str, agent_id: UUID, ttl_seconds: int) -> bool: ...
@@ -96,7 +135,7 @@ class BaseActivityBackend(ABC):
         self,
         agent_id: UUID,
         message: str,
-        status: str,
+        status: Status,
         percentage: int | None = None,
     ) -> None: ...
 
@@ -122,34 +161,20 @@ class BaseActivityBackend(ABC):
     async def get_pending_ids(self) -> list[UUID]: ...
 
 
-class BaseBackend(ABC):
-    """Top-level backend interface with namespaced sub-backends."""
-
-    state: BaseStateBackend
-    queue: BaseQueueBackend
-    activity: BaseActivityBackend
+class BaseScheduleBackend(ABC):
+    """Schedule storage and retrieval."""
 
     @abstractmethod
-    def format_key(self, *args: str) -> str: ...
+    async def register(self, task: ScheduledTask) -> None:
+        """Store a scheduled task definition."""
+        ...
 
     @abstractmethod
-    def configure(self, **kwargs: Any) -> None: ...
+    async def get_due(self) -> list[ScheduledTask]:
+        """Return all scheduled tasks that are due to fire."""
+        ...
 
     @abstractmethod
-    async def close(self) -> None: ...
-
-    def serialize(self, obj: BaseModel) -> bytes:
-        """Serialize a Pydantic model to bytes with type information."""
-        wrapper: _SerializeWrapper = {
-            "__type__": f"{type(obj).__module__}.{type(obj).__qualname__}",
-            "data": obj.model_dump(mode="json"),
-        }
-        return json.dumps(wrapper).encode("utf-8")
-
-    def deserialize(self, data: bytes) -> BaseModel:
-        """Deserialize bytes back to a typed Pydantic model."""
-        wrapper: _SerializeWrapper = json.loads(data.decode("utf-8"))
-        module_path, class_name = wrapper["__type__"].rsplit(".", 1)
-        module = importlib.import_module(module_path)
-        cls = getattr(module, class_name)
-        return cls.model_validate(wrapper["data"])
+    async def remove(self, task_name: str) -> None:
+        """Remove a schedule entirely."""
+        ...

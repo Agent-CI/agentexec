@@ -11,9 +11,9 @@ from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
 
 from agentexec.config import CONF
-from agentexec.state import CHANNEL_LOGS, KEY_LOCK, backend
+from agentexec.state import KEY_LOCK, backend
 from agentexec.core.db import remove_global_session, set_global_session
-from agentexec.core.queue import dequeue, requeue
+from agentexec.core.queue import dequeue, enqueue, requeue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
 from agentexec.worker.event import StateEvent
@@ -381,50 +381,41 @@ class Pool:
         ))
 
     async def start(self) -> None:
-        """Start worker processes (non-blocking).
+        """Start workers and run until they exit.
 
-        Spawns N worker processes that poll the queue and execute
-        tasks from this pool's registry. Registers any pending schedules
-        with the backend before spawning workers.
+        Spawns worker processes, forwards logs, and processes scheduled
+        tasks. This is the foreground entry point — it blocks until all
+        workers finish. Use ``run()`` for a daemonized version that
+        handles KeyboardInterrupt and cleanup.
         """
-        # Clear any stale shutdown signal
         await self._context.shutdown_event.clear()
 
-        # Register pending schedules with the backend
-        for sched in self._pending_schedules:
-            await schedule.register(**sched)
-        self._pending_schedules.clear()
-
-        # Spawn workers BEFORE setting up log handler to avoid pickling issues
-        # (StreamHandler has a lock that can't be pickled)
+        # Spawn workers before log handler to avoid pickling issues
         self._spawn_workers()
 
-        # Set up log handler for receiving worker logs
         # TODO make this configurable
         self._log_handler = logging.StreamHandler()
         self._log_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
 
+        await asyncio.gather(
+            self._process_log_stream(),
+            self._process_scheduled_tasks(),
+        )
+
     def run(self) -> None:
-        """Start workers and run log collector until interrupted.
+        """Start workers in a managed event loop with graceful shutdown.
 
-        Spawns worker processes and runs an async event loop in the main
-        process that collects logs from workers via pubsub.
-        The scheduler loop also runs automatically alongside the workers,
-        polling for due scheduled tasks and enqueuing them.
-
-        Blocks until all workers exit or KeyboardInterrupt, then shuts
-        down gracefully.
+        Calls ``start()`` inside ``asyncio.run()`` and handles
+        KeyboardInterrupt, shutdown, and connection cleanup.
         """
 
         async def _loop() -> None:
-            await self.start()
             try:
-                await self._collect_logs()
+                await self.start()
             except asyncio.CancelledError:
                 pass
             finally:
                 await self.shutdown()
-                await backend.close()
 
         try:
             asyncio.run(_loop())
@@ -445,32 +436,37 @@ class Pool:
             self._processes.append(process)
             print(f"Started worker {worker_id} (PID: {process.pid})")
 
-    async def _collect_logs(self) -> None:
-        """Listen for log messages from workers and run scheduler ticks."""
-        assert self._log_handler, "Log handler not initialized"
-
-        # Create task to subscribe to logs
-        log_task = asyncio.create_task(self._process_log_stream())
-
-        try:
-            # Poll worker processes and run scheduler
-            while any(p.is_alive() for p in self._processes):
-                await asyncio.sleep(0.1)
-                await schedule.tick()
-        finally:
-            log_task.cancel()
-            try:
-                await log_task
-            except asyncio.CancelledError:
-                pass
-
     async def _process_log_stream(self) -> None:
-        """Process log messages from the state backend."""
+        """Forward log messages from workers to the main process handler."""
         assert self._log_handler, "Log handler not initialized"
 
-        async for message in backend.state.log_subscribe(backend.format_key(*CHANNEL_LOGS)):
+        async for message in backend.state.log_subscribe():
             log_message = LogMessage.model_validate_json(message)
             self._log_handler.emit(log_message.to_log_record())
+            if not any(p.is_alive() for p in self._processes):
+                break
+
+    async def _process_scheduled_tasks(self) -> None:
+        """Register pending schedules, then poll for due tasks and enqueue them."""
+        for _schedule in self._pending_schedules:
+            await schedule.register(**_schedule)
+        self._pending_schedules.clear()
+
+        while any(p.is_alive() for p in self._processes):
+            await asyncio.sleep(CONF.scheduler_poll_interval)
+
+            for scheduled_task in await backend.schedule.get_due():
+                await enqueue(
+                    scheduled_task.task_name,
+                    context=backend.deserialize(scheduled_task.context),
+                    metadata=scheduled_task.metadata,
+                )
+
+                if scheduled_task.repeat == 0:
+                    await backend.schedule.remove(scheduled_task.task_name)
+                else:
+                    scheduled_task.advance()
+                    await backend.schedule.register(scheduled_task)
 
     async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.
@@ -494,4 +490,5 @@ class Pool:
                 process.join(timeout=5)
 
         self._processes.clear()
+        await backend.close()
         print("Worker pool shutdown complete")

@@ -1,8 +1,8 @@
 """State management layer.
 
 Initializes the configured backend and exposes it as a public reference.
-All state operations go through ``backend.state``, ``backend.queue``, and
-``backend.activity`` directly. No ops passthrough layer.
+All state operations go through ``backend.state``, ``backend.queue``,
+``backend.activity``, and ``backend.schedule`` directly.
 
 Pick one backend via AGENTEXEC_STATE_BACKEND:
   - 'agentexec.state.redis_backend'  (default)
@@ -19,9 +19,6 @@ from agentexec.state.base import BaseBackend
 KEY_RESULT = (CONF.key_prefix, "result")
 KEY_EVENT = (CONF.key_prefix, "event")
 KEY_LOCK = (CONF.key_prefix, "lock")
-KEY_SCHEDULE = (CONF.key_prefix, "schedule")
-KEY_SCHEDULE_QUEUE = (CONF.key_prefix, "schedule_queue")
-CHANNEL_LOGS = (CONF.key_prefix, "logs")
 
 
 def _create_backend(state_backend: str) -> BaseBackend:

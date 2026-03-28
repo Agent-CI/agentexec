@@ -4,6 +4,7 @@ import asyncio
 import json
 import os
 import socket
+import time
 import threading
 from collections import defaultdict
 from datetime import UTC, datetime
@@ -13,8 +14,10 @@ from uuid import UUID
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
 
+from agentexec.activity.status import Status
 from agentexec.config import CONF
-from agentexec.state.base import BaseActivityBackend, BaseBackend, BaseQueueBackend, BaseStateBackend
+from agentexec.state.base import BaseActivityBackend, BaseBackend, BaseQueueBackend, BaseScheduleBackend, BaseStateBackend
+
 
 
 class Backend(BaseBackend):
@@ -33,12 +36,12 @@ class Backend(BaseBackend):
         self._kv_cache: dict[str, bytes] = {}
         self._counter_cache: dict[str, int] = {}
         self._sorted_set_cache: dict[str, dict[str, float]] = defaultdict(dict)
-        self._activity_cache: dict[str, dict[str, Any]] = {}
 
         # Sub-backends
         self.state = KafkaStateBackend(self)
         self.queue = KafkaQueueBackend(self)
         self.activity = KafkaActivityBackend(self)
+        self.schedule = KafkaScheduleBackend(self)
 
     def format_key(self, *args: str) -> str:
         return ".".join(args)
@@ -94,13 +97,20 @@ class Backend(BaseBackend):
             await self._admin.start()
         return self._admin
 
-    async def produce(self, topic: str, value: bytes | None, key: str | bytes | None = None) -> None:
+    async def produce(
+        self,
+        topic: str,
+        value: bytes | None,
+        key: str | bytes | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> None:
         producer = await self._get_producer()
         if isinstance(key, str):
             key_bytes = key.encode("utf-8")
         else:
             key_bytes = key
-        await producer.send_and_wait(topic, value=value, key=key_bytes)
+        header_list = [(k, v.encode("utf-8")) for k, v in headers.items()] if headers else None
+        await producer.send_and_wait(topic, value=value, key=key_bytes, headers=header_list)
 
     async def ensure_topic(self, topic: str, *, compact: bool = True) -> None:
         if topic in self._initialized_topics:
@@ -153,6 +163,9 @@ class Backend(BaseBackend):
     def activity_topic(self) -> str:
         return f"{CONF.key_prefix}.activity"
 
+    def schedule_topic(self) -> str:
+        return f"{CONF.key_prefix}.schedules"
+
 
 class KafkaStateBackend(BaseStateBackend):
     """Kafka state: compacted topics + in-memory caches."""
@@ -199,12 +212,12 @@ class KafkaStateBackend(BaseStateBackend):
         await self.backend.produce(topic, str(val).encode("utf-8"), key=f"counter:{key}")
         return val
 
-    async def log_publish(self, channel: str, message: str) -> None:
+    async def log_publish(self, message: str) -> None:
         topic = self.backend.logs_topic()
         await self.backend.ensure_topic(topic, compact=False)
         await self.backend.produce(topic, message.encode("utf-8"))
 
-    async def log_subscribe(self, channel: str) -> AsyncGenerator[str, None]:
+    async def log_subscribe(self) -> AsyncGenerator[str, None]:
         topic = self.backend.logs_topic()
         tps = await self.backend._get_topic_partitions(topic)
 
@@ -272,12 +285,11 @@ class KafkaStateBackend(BaseStateBackend):
         with self.backend._cache_lock:
             count = (
                 len(self.backend._kv_cache) + len(self.backend._counter_cache)
-                + len(self.backend._sorted_set_cache) + len(self.backend._activity_cache)
+                + len(self.backend._sorted_set_cache)
             )
             self.backend._kv_cache.clear()
             self.backend._counter_cache.clear()
             self.backend._sorted_set_cache.clear()
-            self.backend._activity_cache.clear()
         return count
 
 
@@ -316,7 +328,15 @@ class KafkaQueueBackend(BaseQueueBackend):
     ) -> None:
         topic = self.backend.tasks_topic(queue_name)
         await self.backend.ensure_topic(topic, compact=False)
-        await self.backend.produce(topic, value.encode("utf-8"), key=partition_key)
+
+        # Extract metadata for headers without altering the payload
+        task_data = json.loads(value)
+        headers = {
+            "ax_task_name": task_data.get("task_name", ""),
+            "ax_agent_id": task_data.get("agent_id", ""),
+            "ax_retry_count": str(task_data.get("retry_count", 0)),
+        }
+        await self.backend.produce(topic, value.encode("utf-8"), key=partition_key, headers=headers)
 
     async def pop(
         self,
@@ -338,20 +358,95 @@ class KafkaQueueBackend(BaseQueueBackend):
 
 
 class KafkaActivityBackend(BaseActivityBackend):
-    """Kafka activity: compacted topic + in-memory cache."""
+    """Kafka activity: compacted topic, read from Kafka directly."""
+
+    BATCH_SIZE = 100
 
     def __init__(self, backend: Backend) -> None:
         self.backend = backend
+        self._consumer: AIOKafkaConsumer | None = None
+        self._tps: list[TopicPartition] = []
 
     def _now(self) -> str:
         return datetime.now(UTC).isoformat()
 
+    async def _ensure_consumer(self) -> AIOKafkaConsumer:
+        topic = self.backend.activity_topic()
+        await self.backend.ensure_topic(topic)
+
+        if self._consumer is None:
+            self._tps = await self.backend._get_topic_partitions(topic)
+            self._consumer = AIOKafkaConsumer(
+                bootstrap_servers=self.backend._get_bootstrap_servers(),
+                client_id=self.backend._client_id("activity"),
+                enable_auto_commit=False,
+            )
+            await self._consumer.start()
+            self._consumer.assign(self._tps)
+
+        return self._consumer
+
+    def _current_status(self, record: dict[str, Any]) -> str:
+        logs = record.get("logs", [])
+        return logs[-1]["status"] if logs else "queued"
+
     async def _produce(self, record: dict[str, Any]) -> None:
         topic = self.backend.activity_topic()
         await self.backend.ensure_topic(topic)
-        agent_id = record["agent_id"]
         data = json.dumps(record, default=str).encode("utf-8")
-        await self.backend.produce(topic, data, key=str(agent_id))
+        headers = {
+            "ax_agent_id": str(record["agent_id"]),
+            "ax_task_name": record.get("agent_type", ""),
+            "ax_status": self._current_status(record),
+        }
+        await self.backend.produce(topic, data, key=str(record["agent_id"]), headers=headers)
+
+    async def _find_record(self, agent_id: UUID) -> dict[str, Any] | None:
+        """Scan backwards from the end of the activity topic for a specific agent_id."""
+        consumer = await self._ensure_consumer()
+        key = str(agent_id).encode("utf-8")
+
+        end_offsets = await consumer.end_offsets(self._tps)
+
+        for tp in self._tps:
+            end = end_offsets[tp]
+            if end == 0:
+                continue
+
+            pos = max(0, end - self.BATCH_SIZE)
+            while pos >= 0:
+                consumer.seek(tp, pos)
+                records = await consumer.getmany(tp, timeout_ms=1000)
+                for msg in reversed(records.get(tp, [])):
+                    if msg.key == key and msg.value is not None:
+                        return json.loads(msg.value)
+                if pos == 0:
+                    break
+                pos = max(0, pos - self.BATCH_SIZE)
+
+        return None
+
+    async def _read_page(self, offset_from_end: int, count: int) -> list[dict[str, Any]]:
+        """Read a page of records from the end of the activity topic."""
+        consumer = await self._ensure_consumer()
+        end_offsets = await consumer.end_offsets(self._tps)
+
+        results = []
+        for tp in self._tps:
+            end = end_offsets[tp]
+            if end == 0:
+                continue
+            start = max(0, end - offset_from_end - count)
+            consumer.seek(tp, start)
+            records = await consumer.getmany(tp, timeout_ms=1000, max_records=count + offset_from_end)
+            msgs = records.get(tp, [])
+            for msg in msgs:
+                if msg.value is not None:
+                    results.append(json.loads(msg.value))
+
+        # Reverse so most recent is first, then slice the page
+        results.reverse()
+        return results[offset_from_end:offset_from_end + count]
 
     async def create(
         self,
@@ -364,43 +459,40 @@ class KafkaActivityBackend(BaseActivityBackend):
         record = {
             "agent_id": str(agent_id),
             "agent_type": agent_type,
-            "status": "queued",
+            "status": Status.QUEUED,
             "metadata": metadata or {},
             "created_at": now,
             "updated_at": now,
             "logs": [
                 {
                     "message": message,
-                    "status": "queued",
+                    "status": Status.QUEUED,
                     "percentage": None,
                     "timestamp": now,
                 }
             ],
         }
-        with self.backend._cache_lock:
-            self.backend._activity_cache[str(agent_id)] = record
         await self._produce(record)
 
     async def append_log(
         self,
         agent_id: UUID,
         message: str,
-        status: str,
+        status: Status,
         percentage: int | None = None,
     ) -> None:
+        record = await self._find_record(agent_id)
+        if record is None:
+            raise ValueError(f"Activity not found for agent_id {agent_id}")
+
         now = self._now()
-        log_entry = {
+        record["logs"].append({
             "message": message,
             "status": status,
             "percentage": percentage,
             "timestamp": now,
-        }
-        with self.backend._cache_lock:
-            record = self.backend._activity_cache.get(str(agent_id))
-            if record is None:
-                raise ValueError(f"Activity not found for agent_id {agent_id}")
-            record["logs"].append(log_entry)
-            record["updated_at"] = now
+        })
+        record["updated_at"] = now
         await self._produce(record)
 
     async def get(
@@ -408,8 +500,7 @@ class KafkaActivityBackend(BaseActivityBackend):
         agent_id: UUID,
         metadata_filter: dict[str, Any] | None = None,
     ) -> Any:
-        with self.backend._cache_lock:
-            record = self.backend._activity_cache.get(str(agent_id))
+        record = await self._find_record(agent_id)
         if record is None:
             return None
         if metadata_filter:
@@ -424,31 +515,125 @@ class KafkaActivityBackend(BaseActivityBackend):
         page_size: int = 50,
         metadata_filter: dict[str, Any] | None = None,
     ) -> tuple[list[Any], int]:
-        with self.backend._cache_lock:
-            all_records = list(self.backend._activity_cache.values())
+        # TODO: metadata_filter requires scanning all records — consider
+        # a secondary index if filtered queries become common
+        consumer = await self._ensure_consumer()
+        end_offsets = await consumer.end_offsets(self._tps)
+        total = sum(end_offsets.values())
+
+        offset_from_end = (page - 1) * page_size
+        records = await self._read_page(offset_from_end, page_size)
 
         if metadata_filter:
-            all_records = [
-                r for r in all_records
+            records = [
+                r for r in records
                 if all(r.get("metadata", {}).get(k) == v for k, v in metadata_filter.items())
             ]
 
-        total = len(all_records)
-        start = (page - 1) * page_size
-        end = start + page_size
-        return all_records[start:end], total
+        return records, total
+
+    def _get_header(self, msg: Any, name: str) -> str | None:
+        """Extract a header value from a Kafka message."""
+        if msg.headers is None:
+            return None
+        for key, value in msg.headers:
+            if key == name:
+                return value.decode("utf-8")
+        return None
+
+    async def _scan_by_status(self, *statuses: str) -> list[Any]:
+        """Scan the topic using headers only — no body deserialization."""
+        consumer = await self._ensure_consumer()
+        await consumer.seek_to_beginning(*self._tps)
+
+        matches = []
+        records = await consumer.getmany(*self._tps, timeout_ms=1000)
+        for partition_records in records.values():
+            for msg in partition_records:
+                if msg.value is None:
+                    continue
+                status = self._get_header(msg, "ax_status")
+                if status in statuses:
+                    matches.append(msg)
+
+        return matches
 
     async def count_active(self) -> int:
-        with self.backend._cache_lock:
-            return sum(
-                1 for r in self.backend._activity_cache.values()
-                if r.get("logs") and r["logs"][-1].get("status") in ("queued", "running")
-            )
+        return len(await self._scan_by_status("queued", "running"))
 
     async def get_pending_ids(self) -> list[UUID]:
-        with self.backend._cache_lock:
-            return [
-                UUID(r["agent_id"])
-                for r in self.backend._activity_cache.values()
-                if r.get("logs") and r["logs"][-1].get("status") in ("queued", "running")
-            ]
+        messages = await self._scan_by_status("queued", "running")
+        return [
+            UUID(self._get_header(msg, "ax_agent_id"))
+            for msg in messages
+            if self._get_header(msg, "ax_agent_id")
+        ]
+
+
+class KafkaScheduleBackend(BaseScheduleBackend):
+    """Kafka schedule: compacted topic + in-memory cache."""
+
+    def __init__(self, backend: Backend) -> None:
+        self.backend = backend
+        self._consumer: AIOKafkaConsumer | None = None
+        self._tps: list[TopicPartition] = []
+
+    async def _ensure_consumer(self) -> AIOKafkaConsumer:
+        topic = self.backend.schedule_topic()
+        await self.backend.ensure_topic(topic)
+
+        if self._consumer is None:
+            self._tps = await self.backend._get_topic_partitions(topic)
+            self._consumer = AIOKafkaConsumer(
+                bootstrap_servers=self.backend._get_bootstrap_servers(),
+                client_id=self.backend._client_id("scheduler"),
+                enable_auto_commit=False,
+            )
+            await self._consumer.start()
+            self._consumer.assign(self._tps)
+
+        return self._consumer
+
+    async def register(self, task: ScheduledTask) -> None:
+        topic = self.backend.schedule_topic()
+        await self.backend.ensure_topic(topic)
+        data = task.model_dump_json().encode("utf-8")
+        headers = {
+            "ax_task_name": task.task_name,
+            "ax_cron": task.cron,
+            "ax_next_run": str(task.next_run),
+            "ax_repeat": str(task.repeat),
+        }
+        await self.backend.produce(topic, data, key=task.task_name, headers=headers)
+
+    async def get_due(self) -> list[ScheduledTask]:
+        # TODO: this replays the entire compacted topic on every poll —
+        # seek, iterate, deserialize, compare for each schedule. Consider
+        # caching with invalidation or using message timestamps to skip
+        # schedules that aren't close to due.
+        from agentexec.schedule import ScheduledTask
+        from pydantic import ValidationError
+
+        consumer = await self._ensure_consumer()
+        await consumer.seek_to_beginning(*self._tps)
+
+        now = time.time()
+        due = []
+        records = await consumer.getmany(*self._tps, timeout_ms=1000)
+        for tp_records in records.values():
+            for msg in tp_records:
+                if msg.value is None:
+                    continue
+                try:
+                    task = ScheduledTask.model_validate_json(msg.value)
+                    if task.next_run <= now:
+                        due.append(task)
+                except ValidationError:
+                    continue
+
+        return due
+
+    async def remove(self, task_name: str) -> None:
+        topic = self.backend.schedule_topic()
+        await self.backend.ensure_topic(topic)
+        await self.backend.produce(topic, None, key=task_name)

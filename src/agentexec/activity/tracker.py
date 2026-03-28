@@ -1,7 +1,8 @@
 import uuid
+import warnings
 from typing import Any
 
-from agentexec.activity.models import Status
+from agentexec.activity.status import Status
 from agentexec.activity.schemas import (
     ActivityDetailSchema,
     ActivityListItemSchema,
@@ -59,6 +60,8 @@ async def create(
     Returns:
         The agent_id (as UUID object) of the created record
     """
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
     await backend.activity.create(agent_id, task_name, message, metadata)
     return agent_id
@@ -88,9 +91,10 @@ async def update(
     Raises:
         ValueError: If agent_id not found
     """
-    status_value = (status if status else Status.RUNNING).value
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     await backend.activity.append_log(
-        normalize_agent_id(agent_id), message, status_value, percentage,
+        normalize_agent_id(agent_id), message, status or Status.RUNNING, percentage,
     )
     return True
 
@@ -115,8 +119,10 @@ async def complete(
     Raises:
         ValueError: If agent_id not found
     """
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     await backend.activity.append_log(
-        normalize_agent_id(agent_id), message, Status.COMPLETE.value, percentage,
+        normalize_agent_id(agent_id), message, Status.COMPLETE, percentage,
     )
     return True
 
@@ -141,8 +147,10 @@ async def error(
     Raises:
         ValueError: If agent_id not found
     """
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     await backend.activity.append_log(
-        normalize_agent_id(agent_id), message, Status.ERROR.value, percentage,
+        normalize_agent_id(agent_id), message, Status.ERROR, percentage,
     )
     return True
 
@@ -157,10 +165,12 @@ async def cancel_pending(
     Returns:
         Number of agents that were canceled
     """
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     pending_agent_ids = await backend.activity.get_pending_ids()
     for agent_id in pending_agent_ids:
         await backend.activity.append_log(
-            agent_id, "Canceled due to shutdown", Status.CANCELED.value, None,
+            agent_id, "Canceled due to shutdown", Status.CANCELED, None,
         )
     return len(pending_agent_ids)
 
@@ -184,6 +194,8 @@ async def list(
     Returns:
         ActivityList with list of ActivityListItemSchema items
     """
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     rows, total = await backend.activity.list(page, page_size, metadata_filter)
     return ActivityListSchema(
         items=[ActivityListItemSchema.model_validate(row) for row in rows],
@@ -211,6 +223,8 @@ async def detail(
         ActivityDetailSchema with full log history, or None if not found
         or if metadata doesn't match
     """
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     if agent_id is None:
         return None
     item = await backend.activity.get(normalize_agent_id(agent_id), metadata_filter)
@@ -228,4 +242,6 @@ async def count_active(session: Any = None) -> int:
     Returns:
         Count of agents with QUEUED or RUNNING status
     """
+    if session is not None:
+        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
     return await backend.activity.count_active()
