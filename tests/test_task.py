@@ -218,3 +218,161 @@ async def test_definition_execute_error(pool, monkeypatch) -> None:
     assert len(activity_updates) == 2
     assert activity_updates[1]["status"] == Status.ERROR
     assert "Task failed!" in activity_updates[1]["message"]
+
+
+async def test_definition_execute_none_result_not_stored(pool, monkeypatch) -> None:
+    """Handler returning None does not write to result storage."""
+    state_set_calls = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    async def mock_state_set(key, value, ttl_seconds=None):
+        state_set_calls.append(key)
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
+
+    @pool.task("void_task")
+    async def void_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        pass
+
+    definition = pool._context.tasks["void_task"]
+    task = ax.Task(
+        task_name="void_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
+    )
+
+    result = await definition.execute(task)
+    assert result is None
+    assert len(state_set_calls) == 0
+
+
+async def test_definition_execute_stores_result_with_ttl(pool, monkeypatch) -> None:
+    """Handler result is stored in state with the configured TTL."""
+    from agentexec.config import CONF
+
+    state_set_calls = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    async def mock_state_set(key, value, ttl_seconds=None):
+        state_set_calls.append({"key": key, "ttl_seconds": ttl_seconds})
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
+
+    @pool.task("result_task")
+    async def result_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult(status="done")
+
+    definition = pool._context.tasks["result_task"]
+    task = ax.Task(
+        task_name="result_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
+    )
+
+    await definition.execute(task)
+    assert len(state_set_calls) == 1
+    assert state_set_calls[0]["ttl_seconds"] == CONF.result_ttl
+    assert str(task.agent_id) in state_set_calls[0]["key"]
+
+
+async def test_definition_execute_hydrates_context(pool, monkeypatch) -> None:
+    """execute() passes a typed context model to the handler, not a raw dict."""
+    received_context = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("typed_task")
+    async def typed_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        received_context.append(context)
+
+    definition = pool._context.tasks["typed_task"]
+    task = ax.Task(
+        task_name="typed_task",
+        context={"message": "typed", "value": 7},
+        agent_id=uuid.uuid4(),
+    )
+
+    await definition.execute(task)
+    assert len(received_context) == 1
+    assert isinstance(received_context[0], SampleContext)
+    assert received_context[0].message == "typed"
+    assert received_context[0].value == 7
+
+
+async def test_definition_execute_passes_agent_id(pool, monkeypatch) -> None:
+    """execute() passes the task's agent_id to the handler."""
+    received_ids = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("id_task")
+    async def id_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        received_ids.append(agent_id)
+
+    definition = pool._context.tasks["id_task"]
+    expected_id = uuid.uuid4()
+    task = ax.Task(
+        task_name="id_task",
+        context={"message": "test"},
+        agent_id=expected_id,
+    )
+
+    await definition.execute(task)
+    assert received_ids == [expected_id]
+
+
+async def test_definition_execute_error_reraises(pool, monkeypatch) -> None:
+    """execute() re-raises the original exception after marking activity as errored."""
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("reraise_task")
+    async def bad_handler(agent_id: uuid.UUID, context: SampleContext):
+        raise RuntimeError("original error")
+
+    definition = pool._context.tasks["reraise_task"]
+    task = ax.Task(
+        task_name="reraise_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(RuntimeError, match="original error"):
+        await definition.execute(task)
+
+
+async def test_definition_execute_bad_context_raises(pool, monkeypatch) -> None:
+    """execute() raises ValidationError when context doesn't match the registered type."""
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("strict_task")
+    async def strict_handler(agent_id: uuid.UUID, context: SampleContext):
+        pass
+
+    definition = pool._context.tasks["strict_task"]
+    task = ax.Task(
+        task_name="strict_task",
+        context={"wrong_field": "oops"},  # missing required 'message'
+        agent_id=uuid.uuid4(),
+    )
+
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        await definition.execute(task)

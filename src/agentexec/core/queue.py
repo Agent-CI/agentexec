@@ -22,7 +22,26 @@ async def enqueue(
     priority: Priority = Priority.LOW,
     metadata: dict[str, Any] | None = None,
 ) -> Task:
-    """Enqueue a task for background execution."""
+    """Enqueue a task for background execution.
+
+    Creates an activity record, serializes the context, and pushes the
+    task to the queue for workers to process.
+
+    Args:
+        task_name: Name of the registered task (must match a ``@pool.task()``).
+        context: Pydantic model with the task's input data.
+        priority: ``Priority.HIGH`` pushes to the front of the queue.
+        metadata: Optional dict attached to the activity record (e.g.
+            ``{"organization_id": "org-123"}`` for multi-tenancy).
+
+    Returns:
+        The created Task with its ``agent_id`` for tracking.
+
+    Example::
+
+        task = await ax.enqueue("research", ResearchContext(company="Acme"))
+        print(task.agent_id)  # UUID for tracking
+    """
     task = await Task.create(
         task_name=task_name,
         context=context,

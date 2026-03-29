@@ -1,72 +1,72 @@
-"""Activity event producer — called by workers to emit lifecycle events.
+"""Activity event producer — the public API for activity lifecycle.
 
-Events are sent via the multiprocessing queue to the pool, which writes
-them to Postgres. Workers never touch the database directly.
+All activity methods emit typed events routed through ``activity.handler``.
+By default, events are written directly to Postgres. In worker processes,
+the handler is swapped to send events via IPC to the pool.
+
+See ``activity.handlers`` for the handler implementations.
 """
 
 from __future__ import annotations
 
-import multiprocessing as mp
 import uuid
-import warnings
 from typing import Any
 
+from sqlalchemy.orm import Session
+
+import agentexec.activity as activity
+from agentexec.activity.events import ActivityCreated, ActivityUpdated
 from agentexec.activity.status import Status
 
 
-_tx: mp.Queue | None = None
-
-
-def configure(tx: mp.Queue | None) -> None:
-    """Set the multiprocessing queue for activity events."""
-    global _tx
-    _tx = tx
-
-
-def _send(message: Any) -> None:
-    """Send a message to the pool via the multiprocessing queue."""
-    if _tx is not None:
-        _tx.put_nowait(message)
-
-
 def generate_agent_id() -> uuid.UUID:
-    """Generate a new UUID for an agent."""
+    """Generate a new UUID4 agent identifier."""
     return uuid.uuid4()
 
 
 def normalize_agent_id(agent_id: str | uuid.UUID) -> uuid.UUID:
-    """Normalize agent_id to UUID object."""
+    """Coerce a string or UUID to a UUID object."""
     if isinstance(agent_id, str):
         return uuid.UUID(agent_id)
     return agent_id
+
+
 
 
 async def create(
     task_name: str,
     message: str = "Agent queued",
     agent_id: str | uuid.UUID | None = None,
-    session: Any = None,
+    session: Session | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> uuid.UUID:
-    """Create a new agent activity record with initial queued status.
+    """Create a new activity record with an initial "queued" log entry.
 
-    Writes directly to Postgres — this runs on the API server / pool
-    process, not on a worker.
+    Called during ``ax.enqueue()`` to register the task in the activity
+    stream before it hits the queue.
+
+    Args:
+        task_name: The registered task name (e.g. ``"research"``).
+        message: Initial log message.
+        agent_id: Optional pre-generated agent ID. Auto-generated if omitted.
+        session: Unused — kept for backwards compatibility.
+        metadata: Arbitrary key-value pairs attached to the activity
+            (e.g. ``{"organization_id": "org-123"}``).
+
+    Returns:
+        The agent_id (UUID) of the created record.
+
+    Example::
+
+        agent_id = await activity.create("research", metadata={"org": "acme"})
     """
-    if session is not None:
-        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
-
-    from agentexec.activity.models import Activity, ActivityLog
-    from agentexec.activity.status import Status as ActivityStatus
-    from agentexec.core.db import get_global_session
-
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
-    db = get_global_session()
-    record = Activity(agent_id=agent_id, agent_type=task_name, metadata_=metadata)
-    db.add(record)
-    db.flush()
-    db.add(ActivityLog(activity_id=record.id, message=message, status=ActivityStatus.QUEUED, percentage=0))
-    db.commit()
+    activity.handler(ActivityCreated(
+        agent_id=agent_id,
+        task_name=task_name,
+        message=message,
+        metadata=metadata,
+    ))
     return agent_id
 
 
@@ -75,15 +75,24 @@ async def update(
     message: str,
     percentage: int | None = None,
     status: Status | None = None,
-    session: Any = None,
+    session: Session | None = None,
 ) -> bool:
-    """Update an agent's activity by adding a new log message."""
-    if session is not None:
-        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
+    """Append a log entry to an existing activity record.
 
-    from agentexec.worker.pool import ActivityUpdated
+    Defaults to ``Status.RUNNING`` if no status is provided.
 
-    _send(ActivityUpdated(
+    Args:
+        agent_id: The agent to update.
+        message: Log message describing the current state.
+        percentage: Optional completion percentage (0-100).
+        status: Optional status override (default: ``RUNNING``).
+        session: Unused — kept for backwards compatibility.
+
+    Example::
+
+        await activity.update(agent_id, "Fetching data", percentage=30)
+    """
+    activity.handler(ActivityUpdated(
         agent_id=normalize_agent_id(agent_id),
         message=message,
         status=(status or Status.RUNNING).value,
@@ -96,15 +105,21 @@ async def complete(
     agent_id: str | uuid.UUID,
     message: str = "Agent completed",
     percentage: int = 100,
-    session: Any = None,
+    session: Session | None = None,
 ) -> bool:
-    """Mark an agent activity as complete."""
-    if session is not None:
-        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
+    """Mark an activity as complete.
 
-    from agentexec.worker.pool import ActivityUpdated
+    Args:
+        agent_id: The agent to mark complete.
+        message: Completion log message.
+        percentage: Final percentage (default: 100).
+        session: Unused — kept for backwards compatibility.
 
-    _send(ActivityUpdated(
+    Example::
+
+        await activity.complete(agent_id)
+    """
+    activity.handler(ActivityUpdated(
         agent_id=normalize_agent_id(agent_id),
         message=message,
         status=Status.COMPLETE.value,
@@ -117,15 +132,21 @@ async def error(
     agent_id: str | uuid.UUID,
     message: str = "Agent failed",
     percentage: int = 100,
-    session: Any = None,
+    session: Session | None = None,
 ) -> bool:
-    """Mark an agent activity as failed."""
-    if session is not None:
-        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
+    """Mark an activity as failed.
 
-    from agentexec.worker.pool import ActivityUpdated
+    Args:
+        agent_id: The agent to mark as errored.
+        message: Error log message.
+        percentage: Final percentage (default: 100).
+        session: Unused — kept for backwards compatibility.
 
-    _send(ActivityUpdated(
+    Example::
+
+        await activity.error(agent_id, "Connection timeout")
+    """
+    activity.handler(ActivityUpdated(
         agent_id=normalize_agent_id(agent_id),
         message=message,
         status=Status.ERROR.value,
@@ -134,26 +155,25 @@ async def error(
     return True
 
 
-async def cancel_pending(session: Any = None) -> int:
-    """Mark all queued and running agents as canceled.
+async def cancel_pending(session: Session | None = None) -> int:
+    """Cancel all queued and running activities.
 
-    NOTE: This runs on the pool process (not a worker), so it
-    writes to Postgres directly.
+    Typically called during pool shutdown to mark in-flight tasks as
+    canceled. Reads pending IDs from Postgres and emits cancel events.
+
+    Returns:
+        Number of activities canceled.
     """
-    if session is not None:
-        warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
-
     from agentexec.activity.models import Activity
-    from agentexec.core.db import get_global_session
+    from agentexec.core.db import get_session
 
-    db = get_global_session()
-    pending_ids = Activity.get_pending_ids(db)
-    for agent_id in pending_ids:
-        Activity.append_log(
-            session=db,
-            agent_id=agent_id,
-            message="Canceled due to shutdown",
-            status=Status.CANCELED,
-            percentage=None,
-        )
-    return len(pending_ids)
+    with session or get_session() as db:
+        pending_ids = Activity.get_pending_ids(db)
+        for agent_id in pending_ids:
+            activity.handler(ActivityUpdated(
+                agent_id=agent_id,
+                message="Canceled due to shutdown",
+                status=Status.CANCELED.value,
+                percentage=None,
+            ))
+        return len(pending_ids)

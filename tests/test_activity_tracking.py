@@ -9,41 +9,17 @@ from agentexec.activity.models import Activity, ActivityLog, Base, Status
 from agentexec.activity import normalize_agent_id
 
 
-@pytest.fixture(autouse=True)
-def direct_activity_writes(monkeypatch):
-    """Bypass multiprocessing queue — write directly to Postgres
-    when the producer sends activity update events."""
-    from agentexec.activity import producer
-    from agentexec.worker.pool import ActivityUpdated
-
-    def direct_send(message):
-        from agentexec.activity.models import Activity
-        from agentexec.activity.status import Status
-        from agentexec.core.db import get_global_session
-
-        match message:
-            case ActivityUpdated(agent_id=agent_id, message=msg, status=status, percentage=pct):
-                db = get_global_session()
-                Activity.append_log(session=db, agent_id=agent_id, message=msg, status=Status(status), percentage=pct)
-
-    monkeypatch.setattr(producer, "_send", direct_send)
-
 
 @pytest.fixture
 def db_session():
     """Set up an in-memory SQLite database for testing."""
-    from agentexec.core.db import set_global_session, remove_global_session
+    from agentexec.core.db import configure_engine
 
     engine = create_engine("sqlite:///:memory:", echo=False)
-
-    # Create tables
     Base.metadata.create_all(bind=engine)
+    configure_engine(engine)
 
-    # Set up the global session so backend functions can find it
-    set_global_session(engine)
-
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    session = SessionLocal()
+    session = sessionmaker(bind=engine)()
     try:
         yield session
         session.commit()
@@ -52,7 +28,7 @@ def db_session():
         raise
     finally:
         session.close()
-        remove_global_session()
+        engine.dispose()
         engine.dispose()
 
 

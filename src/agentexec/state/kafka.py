@@ -6,9 +6,8 @@ import os
 import socket
 import time
 import threading
-from collections import defaultdict
 from datetime import UTC, datetime
-from typing import Any, AsyncGenerator, Optional
+from typing import Any, Optional
 from uuid import UUID
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
@@ -29,12 +28,10 @@ class Backend(BaseBackend):
 
         self._cache_lock = threading.Lock()
         self._initialized_topics: set[str] = set()
-        self._worker_id: str | None = None
 
         # In-memory caches
         self._kv_cache: dict[str, bytes] = {}
         self._counter_cache: dict[str, int] = {}
-        self._sorted_set_cache: dict[str, dict[str, float]] = defaultdict(dict)
 
         # Sub-backends
         self.state = KafkaStateBackend(self)
@@ -43,9 +40,6 @@ class Backend(BaseBackend):
 
     def format_key(self, *args: str) -> str:
         return ".".join(args)
-
-    def configure(self, **kwargs: Any) -> None:
-        self._worker_id = kwargs.get("worker_id")
 
     async def close(self) -> None:
         if self._producer is not None:
@@ -69,10 +63,7 @@ class Backend(BaseBackend):
         return CONF.kafka_bootstrap_servers
 
     def _client_id(self, role: str = "worker") -> str:
-        base = f"{CONF.key_prefix}-{role}-{socket.gethostname()}"
-        if self._worker_id is not None:
-            return f"{base}-{self._worker_id}"
-        return base
+        return f"{CONF.key_prefix}-{role}-{socket.gethostname()}-{os.getpid()}"
 
     async def _get_producer(self) -> AIOKafkaProducer:
         if self._producer is None:
@@ -206,78 +197,6 @@ class KafkaStateBackend(BaseStateBackend):
         await self.backend.produce(topic, str(val).encode("utf-8"), key=f"counter:{key}")
         return val
 
-    async def publish(self, channel: str, message: str) -> None:
-        await self.backend.ensure_topic(channel, compact=False)
-        await self.backend.produce(channel, message.encode("utf-8"))
-
-    async def subscribe(self, channel: str) -> AsyncGenerator[str, None]:
-        await self.backend.ensure_topic(channel, compact=False)
-        topic_partitions = await self.backend._get_topic_partitions(channel)
-
-        consumer = AIOKafkaConsumer(
-            bootstrap_servers=self.backend._get_bootstrap_servers(),
-            client_id=self.backend._client_id("subscriber"),
-            enable_auto_commit=False,
-        )
-        await consumer.start()
-        consumer.assign(topic_partitions)
-        await consumer.seek_to_end(*topic_partitions)
-
-        try:
-            async for msg in consumer:
-                yield msg.value.decode("utf-8")
-        finally:
-            await consumer.stop()
-
-    async def index_add(self, key: str, mapping: dict[str, float]) -> int:
-        topic = self.backend.kv_topic()
-        await self.backend.ensure_topic(topic)
-        added = 0
-        with self.backend._cache_lock:
-            if key not in self.backend._sorted_set_cache:
-                self.backend._sorted_set_cache[key] = {}
-            for member, score in mapping.items():
-                if member not in self.backend._sorted_set_cache[key]:
-                    added += 1
-                self.backend._sorted_set_cache[key][member] = score
-        data = json.dumps(self.backend._sorted_set_cache[key]).encode("utf-8")
-        await self.backend.produce(topic, data, key=f"zset:{key}")
-        return added
-
-    async def index_range(self, key: str, min_score: float, max_score: float) -> list[bytes]:
-        with self.backend._cache_lock:
-            members = self.backend._sorted_set_cache.get(key, {})
-            return [
-                member.encode("utf-8")
-                for member, score in members.items()
-                if min_score <= score <= max_score
-            ]
-
-    async def index_remove(self, key: str, *members: str) -> int:
-        removed = 0
-        with self.backend._cache_lock:
-            if key in self.backend._sorted_set_cache:
-                for member in members:
-                    if member in self.backend._sorted_set_cache[key]:
-                        del self.backend._sorted_set_cache[key][member]
-                        removed += 1
-        if removed > 0:
-            topic = self.backend.kv_topic()
-            await self.backend.ensure_topic(topic)
-            data = json.dumps(self.backend._sorted_set_cache.get(key, {})).encode("utf-8")
-            await self.backend.produce(topic, data, key=f"zset:{key}")
-        return removed
-
-    async def clear(self) -> int:
-        with self.backend._cache_lock:
-            count = (
-                len(self.backend._kv_cache) + len(self.backend._counter_cache)
-                + len(self.backend._sorted_set_cache)
-            )
-            self.backend._kv_cache.clear()
-            self.backend._counter_cache.clear()
-            self.backend._sorted_set_cache.clear()
-        return count
 
 
 class KafkaQueueBackend(BaseQueueBackend):
@@ -381,7 +300,7 @@ class KafkaScheduleBackend(BaseScheduleBackend):
             "ax_next_run": str(task.next_run),
             "ax_repeat": str(task.repeat),
         }
-        await self.backend.produce(topic, data, key=task.task_name, headers=headers)
+        await self.backend.produce(topic, data, key=task.key, headers=headers)
 
     async def get_due(self) -> list[ScheduledTask]:
         # TODO: this replays the entire compacted topic on every poll —
@@ -410,7 +329,7 @@ class KafkaScheduleBackend(BaseScheduleBackend):
 
         return due
 
-    async def remove(self, task_name: str) -> None:
+    async def remove(self, key: str) -> None:
         topic = self.backend.schedule_topic()
         await self.backend.ensure_topic(topic)
-        await self.backend.produce(topic, None, key=task_name)
+        await self.backend.produce(topic, None, key=key)

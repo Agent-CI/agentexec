@@ -9,12 +9,16 @@ from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
 from agentexec.config import CONF
 from agentexec.state import backend
 import queue as stdlib_queue
 
-from agentexec.core.db import get_global_session, remove_global_session, set_global_session
+from agentexec import activity
+from agentexec.activity.events import ActivityUpdated
+from agentexec.activity.handlers import IPCHandler
+from agentexec.core.db import configure_engine
 from agentexec.core.queue import enqueue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
@@ -36,10 +40,6 @@ class Message(BaseModel):
     pass
 
 
-class TaskCompleted(Message):
-    task: Task
-
-
 class TaskFailed(Message):
     task: Task
     error: str
@@ -49,19 +49,8 @@ class TaskFailed(Message):
         return cls(task=task, error=str(exception))
 
 
-class ActivityUpdated(Message):
-    agent_id: UUID
-    message: str
-    status: str
-    percentage: int | None = None
-
-
 class LogEntry(Message):
     record: LogMessage
-
-
-# Resolve forward references from __future__ annotations
-ActivityUpdated.model_rebuild()
 
 
 class _EmptyContext(BaseModel):
@@ -79,17 +68,16 @@ def _get_pool_id() -> str:
 class WorkerContext:
     """Shared context passed from Pool to Worker processes."""
 
-    database_url: str
     shutdown_event: StateEvent
     tasks: dict[str, TaskDefinition]
-    tx: mp.Queue | None = None  # worker → pool message queue
+    tx: mp.Queue
 
 
 class Worker:
     """Individual worker process with isolated state.
 
     Each worker configures the scoped Session factory on startup.
-    Task handlers can use get_global_session() to get the process-local session.
+    Workers don't have database access — all persistence goes through the pool.
     """
 
     _worker_id: int
@@ -107,8 +95,7 @@ class Worker:
         self._context = context
         self.logger = get_worker_logger(__name__, tx=context.tx)
 
-        from agentexec.activity import producer as activity_producer
-        activity_producer.configure(context.tx)
+        activity.handler = IPCHandler(context.tx)
 
     @classmethod
     def run_in_process(cls, worker_id: int, context: WorkerContext) -> None:
@@ -125,48 +112,41 @@ class Worker:
         """Main worker entry point - sets up async loop and runs."""
         self.logger.info(f"Worker {self._worker_id} starting")
 
-        backend.configure(worker_id=str(self._worker_id))
-
-        # TODO: Make postgres session conditional on backend — not all backends
-        # need it (e.g. Kafka). An empty/unset DATABASE_URL could skip this.
-        engine = create_engine(self._context.database_url)
-        set_global_session(engine)
-
         try:
             asyncio.run(self._run())
         except Exception as e:
             self.logger.exception(f"Worker {self._worker_id} fatal error: {e}")
             raise
         finally:
-            asyncio.run(backend.close())  # TODO: avoid second asyncio.run — maybe fold into _run's finally
-            remove_global_session()
+            asyncio.run(backend.close())
             self.logger.info(f"Worker {self._worker_id} shutting down")
 
     def _send(self, message: Message) -> None:
         """Send a message to the pool via the multiprocessing queue."""
-        if self._context.tx is not None:
-            self._context.tx.put_nowait(message)
+        self._context.tx.put_nowait(message)
 
     async def _run(self) -> None:
         """Async main loop - dequeue, execute, complete."""
         while not await self._context.shutdown_event.is_set():
-            data = await backend.queue.pop(timeout=1)
-            if data is None:
-                continue
-
-            task = Task.model_validate(data)
-            definition = self._context.tasks[task.task_name]
-            partition_key = definition.get_lock_key(task.context)
-
             try:
-                self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                await definition.execute(task)
-                self.logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
-                self._send(TaskCompleted(task=task))
+                data = await backend.queue.pop(timeout=1)
+                if data is None:
+                    continue
+
+                task = Task.model_validate(data)
+                definition = self._context.tasks[task.task_name]
+                partition_key = definition.get_lock_key(task.context)
+
+                try:
+                    self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
+                    await definition.execute(task)
+                    self.logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
+                except Exception as e:
+                    self._send(TaskFailed.from_exception(task, e))
+                finally:
+                    await backend.queue.complete(partition_key)
             except Exception as e:
-                self._send(TaskFailed.from_exception(task, e))
-            finally:
-                await backend.queue.complete(partition_key)
+                self.logger.exception(f"Worker {self._worker_id} error: {e}")
 
 
 
@@ -213,11 +193,9 @@ class Pool:
             raise ValueError("Either engine or database_url must be provided")
 
         engine = engine or create_engine(database_url)  # type: ignore[arg-type]
-        set_global_session(engine)
-
+        configure_engine(engine)
         self._worker_queue: mp.Queue = mp.Queue()
         self._context = WorkerContext(
-            database_url=database_url or engine.url.render_as_string(hide_password=False),
             shutdown_event=StateEvent("shutdown", _get_pool_id()),
             tasks={},
             tx=self._worker_queue,
@@ -471,7 +449,7 @@ class Pool:
                 )
 
                 if scheduled_task.repeat == 0:
-                    await backend.schedule.remove(scheduled_task.task_name)
+                    await backend.schedule.remove(scheduled_task.key)
                 else:
                     scheduled_task.advance()
                     await backend.schedule.register(scheduled_task)
@@ -495,9 +473,6 @@ class Pool:
                 case LogEntry(record=record):
                     self._log_handler.emit(record.to_log_record())
 
-                case TaskCompleted():
-                    pass
-
                 case TaskFailed(task=task, error=error):
                     if task.retry_count < CONF.max_task_retries:
                         task.retry_count += 1
@@ -513,11 +488,8 @@ class Pool:
                             f"after {task.retry_count + 1} attempts, giving up: {error}"
                         )
 
-                case ActivityUpdated(agent_id=agent_id, message=message, status=status, percentage=percentage):
-                    from agentexec.activity.models import Activity
-                    from agentexec.activity.status import Status
-                    db = get_global_session()
-                    Activity.append_log(session=db, agent_id=agent_id, message=message, status=Status(status), percentage=percentage)
+                case ActivityUpdated():
+                    activity.handler(message)
 
     async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.

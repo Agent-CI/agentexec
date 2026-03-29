@@ -30,6 +30,13 @@ class ScheduledTask(BaseModel):
     created_at: float = Field(default_factory=lambda: time.time())
     metadata: dict[str, Any] | None = None
 
+    @property
+    def key(self) -> str:
+        """Unique identity: task_name + cron + context hash."""
+        import hashlib
+        context_hash = hashlib.md5(self.context).hexdigest()[:8]
+        return f"{self.task_name}:{self.cron}:{context_hash}"
+
     def model_post_init(self, __context: Any) -> None:
         if self.next_run == 0:
             self.next_run = self._next_after(self.created_at)

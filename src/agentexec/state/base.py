@@ -26,9 +26,6 @@ class BaseBackend(ABC):
     def format_key(self, *args: str) -> str: ...
 
     @abstractmethod
-    def configure(self, **kwargs: Any) -> None: ...
-
-    @abstractmethod
     async def close(self) -> None: ...
 
     def serialize(self, obj: BaseModel) -> bytes:
@@ -65,18 +62,6 @@ class BaseStateBackend(ABC):
 
     @abstractmethod
     async def counter_decr(self, key: str) -> int: ...
-
-    @abstractmethod
-    async def index_add(self, key: str, mapping: dict[str, float]) -> int: ...
-
-    @abstractmethod
-    async def index_range(self, key: str, min_score: float, max_score: float) -> list[bytes]: ...
-
-    @abstractmethod
-    async def index_remove(self, key: str, *members: str) -> int: ...
-
-    @abstractmethod
-    async def clear(self) -> int: ...
 
 
 class BaseQueueBackend(ABC):
@@ -115,6 +100,6 @@ class BaseScheduleBackend(ABC):
         ...
 
     @abstractmethod
-    async def remove(self, task_name: str) -> None:
-        """Remove a schedule entirely."""
+    async def remove(self, key: str) -> None:
+        """Remove a schedule by its key."""
         ...
