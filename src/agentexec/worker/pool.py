@@ -5,7 +5,7 @@ import logging
 import multiprocessing as mp
 from dataclasses import dataclass
 from typing import Any, Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
@@ -14,8 +14,8 @@ from agentexec.config import CONF
 from agentexec.state import backend
 import queue as stdlib_queue
 
-from agentexec.core.db import remove_global_session, set_global_session
-from agentexec.core.queue import dequeue, enqueue
+from agentexec.core.db import get_global_session, remove_global_session, set_global_session
+from agentexec.core.queue import enqueue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
 from agentexec.worker.event import StateEvent
@@ -49,8 +49,19 @@ class TaskFailed(Message):
         return cls(task=task, error=str(exception))
 
 
+class ActivityUpdated(Message):
+    agent_id: UUID
+    message: str
+    status: str
+    percentage: int | None = None
+
+
 class LogEntry(Message):
     record: LogMessage
+
+
+# Resolve forward references from __future__ annotations
+ActivityUpdated.model_rebuild()
 
 
 class _EmptyContext(BaseModel):
@@ -96,6 +107,9 @@ class Worker:
         self._context = context
         self.logger = get_worker_logger(__name__, tx=context.tx)
 
+        from agentexec.activity import producer as activity_producer
+        activity_producer.configure(context.tx)
+
     @classmethod
     def run_in_process(cls, worker_id: int, context: WorkerContext) -> None:
         """Entry point for running a worker in a new process.
@@ -134,18 +148,15 @@ class Worker:
             self._context.tx.put_nowait(message)
 
     async def _run(self) -> None:
-        """Async main loop - polls queue and executes tasks.
-
-        All events are sent to the pool via _send. The worker never
-        manipulates the queue or writes to Postgres directly.
-        Locking is handled by the queue backend during pop.
-        """
+        """Async main loop - dequeue, execute, complete."""
         while not await self._context.shutdown_event.is_set():
-            task = await dequeue()
-            if task is None:
+            data = await backend.queue.pop(timeout=1)
+            if data is None:
                 continue
 
+            task = Task.model_validate(data)
             definition = self._context.tasks[task.task_name]
+            partition_key = definition.get_lock_key(task.context)
 
             try:
                 self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
@@ -154,6 +165,8 @@ class Worker:
                 self._send(TaskCompleted(task=task))
             except Exception as e:
                 self._send(TaskFailed.from_exception(task, e))
+            finally:
+                await backend.queue.complete(partition_key)
 
 
 
@@ -402,12 +415,9 @@ class Pool:
         self._log_handler = logging.StreamHandler()
         self._log_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
 
-        from agentexec.activity.consumer import process_activity_stream
-
         await asyncio.gather(
             self._process_worker_events(),
             self._process_scheduled_tasks(),
-            process_activity_stream(),
         )
 
     def run(self) -> None:
@@ -485,19 +495,15 @@ class Pool:
                 case LogEntry(record=record):
                     self._log_handler.emit(record.to_log_record())
 
-                case TaskCompleted(task=task):
-                    partition_key = self._partition_key_for(task)
-                    if partition_key:
-                        await backend.queue.release_lock(CONF.queue_prefix, partition_key)
+                case TaskCompleted():
+                    pass
 
                 case TaskFailed(task=task, error=error):
-                    partition_key = self._partition_key_for(task)
                     if task.retry_count < CONF.max_task_retries:
                         task.retry_count += 1
                         await backend.queue.push(
-                            CONF.queue_prefix,
                             task.model_dump_json(),
-                            partition_key=partition_key,
+                            partition_key=self._partition_key_for(task),
                             high_priority=True,
                         )
                     else:
@@ -506,8 +512,12 @@ class Pool:
                             f"Task {task.task_name} failed "
                             f"after {task.retry_count + 1} attempts, giving up: {error}"
                         )
-                    if partition_key:
-                        await backend.queue.release_lock(CONF.queue_prefix, partition_key)
+
+                case ActivityUpdated(agent_id=agent_id, message=message, status=status, percentage=percentage):
+                    from agentexec.activity.models import Activity
+                    from agentexec.activity.status import Status
+                    db = get_global_session()
+                    Activity.append_log(session=db, agent_id=agent_id, message=message, status=Status(status), percentage=percentage)
 
     async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.

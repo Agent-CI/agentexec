@@ -1,29 +1,32 @@
 """Activity event producer — called by workers to emit lifecycle events.
 
-Events are sent via the state backend's transport (Redis pubsub or Kafka topic).
-The pool's activity consumer receives these and writes them to Postgres.
+Events are sent via the multiprocessing queue to the pool, which writes
+them to Postgres. Workers never touch the database directly.
 """
 
 from __future__ import annotations
 
-import json
+import multiprocessing as mp
 import uuid
 import warnings
 from typing import Any
 
 from agentexec.activity.status import Status
-from agentexec.config import CONF
-from agentexec.state import backend
 
 
-ACTIVITY_CHANNEL = None
+_tx: mp.Queue | None = None
 
 
-def _channel() -> str:
-    global ACTIVITY_CHANNEL
-    if ACTIVITY_CHANNEL is None:
-        ACTIVITY_CHANNEL = backend.format_key(CONF.key_prefix, "activity")
-    return ACTIVITY_CHANNEL
+def configure(tx: mp.Queue | None) -> None:
+    """Set the multiprocessing queue for activity events."""
+    global _tx
+    _tx = tx
+
+
+def _send(message: Any) -> None:
+    """Send a message to the pool via the multiprocessing queue."""
+    if _tx is not None:
+        _tx.put_nowait(message)
 
 
 def generate_agent_id() -> uuid.UUID:
@@ -38,11 +41,6 @@ def normalize_agent_id(agent_id: str | uuid.UUID) -> uuid.UUID:
     return agent_id
 
 
-async def _emit(event: dict[str, Any]) -> None:
-    """Emit an activity event via the backend transport."""
-    await backend.state.publish(_channel(), json.dumps(event, default=str))
-
-
 async def create(
     task_name: str,
     message: str = "Agent queued",
@@ -50,18 +48,25 @@ async def create(
     session: Any = None,
     metadata: dict[str, Any] | None = None,
 ) -> uuid.UUID:
-    """Create a new agent activity record with initial queued status."""
+    """Create a new agent activity record with initial queued status.
+
+    Writes directly to Postgres — this runs on the API server / pool
+    process, not on a worker.
+    """
     if session is not None:
         warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
 
+    from agentexec.activity.models import Activity, ActivityLog
+    from agentexec.activity.status import Status as ActivityStatus
+    from agentexec.core.db import get_global_session
+
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
-    await _emit({
-        "type": "create",
-        "agent_id": str(agent_id),
-        "task_name": task_name,
-        "message": message,
-        "metadata": metadata,
-    })
+    db = get_global_session()
+    record = Activity(agent_id=agent_id, agent_type=task_name, metadata_=metadata)
+    db.add(record)
+    db.flush()
+    db.add(ActivityLog(activity_id=record.id, message=message, status=ActivityStatus.QUEUED, percentage=0))
+    db.commit()
     return agent_id
 
 
@@ -76,13 +81,14 @@ async def update(
     if session is not None:
         warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
 
-    await _emit({
-        "type": "append_log",
-        "agent_id": str(normalize_agent_id(agent_id)),
-        "message": message,
-        "status": (status or Status.RUNNING).value,
-        "percentage": percentage,
-    })
+    from agentexec.worker.pool import ActivityUpdated
+
+    _send(ActivityUpdated(
+        agent_id=normalize_agent_id(agent_id),
+        message=message,
+        status=(status or Status.RUNNING).value,
+        percentage=percentage,
+    ))
     return True
 
 
@@ -96,13 +102,14 @@ async def complete(
     if session is not None:
         warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
 
-    await _emit({
-        "type": "append_log",
-        "agent_id": str(normalize_agent_id(agent_id)),
-        "message": message,
-        "status": Status.COMPLETE.value,
-        "percentage": percentage,
-    })
+    from agentexec.worker.pool import ActivityUpdated
+
+    _send(ActivityUpdated(
+        agent_id=normalize_agent_id(agent_id),
+        message=message,
+        status=Status.COMPLETE.value,
+        percentage=percentage,
+    ))
     return True
 
 
@@ -116,21 +123,22 @@ async def error(
     if session is not None:
         warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)
 
-    await _emit({
-        "type": "append_log",
-        "agent_id": str(normalize_agent_id(agent_id)),
-        "message": message,
-        "status": Status.ERROR.value,
-        "percentage": percentage,
-    })
+    from agentexec.worker.pool import ActivityUpdated
+
+    _send(ActivityUpdated(
+        agent_id=normalize_agent_id(agent_id),
+        message=message,
+        status=Status.ERROR.value,
+        percentage=percentage,
+    ))
     return True
 
 
 async def cancel_pending(session: Any = None) -> int:
     """Mark all queued and running agents as canceled.
 
-    NOTE: This queries Postgres directly since only the pool calls it
-    during shutdown (when the consumer is still running).
+    NOTE: This runs on the pool process (not a worker), so it
+    writes to Postgres directly.
     """
     if session is not None:
         warnings.warn("session is deprecated and will be removed", DeprecationWarning, stacklevel=2)

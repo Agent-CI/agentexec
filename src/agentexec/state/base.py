@@ -3,9 +3,7 @@ from __future__ import annotations
 import importlib
 import json
 from abc import ABC, abstractmethod
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Optional, TypedDict
-from uuid import UUID
-
+from typing import TYPE_CHECKING, Any, Optional, TypedDict
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
@@ -69,18 +67,6 @@ class BaseStateBackend(ABC):
     async def counter_decr(self, key: str) -> int: ...
 
     @abstractmethod
-    async def publish(self, channel: str, message: str) -> None: ...
-
-    @abstractmethod
-    async def subscribe(self, channel: str) -> AsyncGenerator[str, None]: ...
-
-    @abstractmethod
-    async def acquire_lock(self, lock_key: str, agent_id: UUID) -> bool: ...
-
-    @abstractmethod
-    async def release_lock(self, lock_key: str) -> int: ...
-
-    @abstractmethod
     async def index_add(self, key: str, mapping: dict[str, float]) -> int: ...
 
     @abstractmethod
@@ -99,7 +85,6 @@ class BaseQueueBackend(ABC):
     @abstractmethod
     async def push(
         self,
-        queue_name: str,
         value: str,
         *,
         high_priority: bool = False,
@@ -107,15 +92,12 @@ class BaseQueueBackend(ABC):
     ) -> None: ...
 
     @abstractmethod
-    async def release_lock(self, queue_name: str, partition_key: str) -> None: ...
+    async def pop(self, *, timeout: int = 1) -> dict[str, Any] | None: ...
 
     @abstractmethod
-    async def pop(
-        self,
-        queue_name: str,
-        *,
-        timeout: int = 1,
-    ) -> dict[str, Any] | None: ...
+    async def complete(self, partition_key: str | None) -> None:
+        """Signal that the current task for this partition is done."""
+        ...
 
 
 

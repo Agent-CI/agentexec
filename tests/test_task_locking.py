@@ -5,7 +5,6 @@ from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
 
 import agentexec as ax
-from agentexec.config import CONF
 from agentexec.state import backend
 from agentexec.core.task import TaskDefinition
 
@@ -127,39 +126,28 @@ def test_get_lock_key_raises_on_missing_field(pool):
 
 
 async def test_acquire_lock_success(fake_redis):
-    """acquire_lock returns True when lock is free."""
-    result = await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
+    """Queue backend acquire_lock returns True when lock is free."""
+    queue_key = backend.queue._queue_key("user:42").encode()
+    result = await backend.queue._acquire_lock(queue_key)
     assert result is True
 
 
 async def test_acquire_lock_already_held(fake_redis):
-    """acquire_lock returns False when lock is already held."""
-    await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
-    result = await backend.state.acquire_lock("user:42", uuid.UUID(int=2))
+    """Queue backend acquire_lock returns False when already held."""
+    queue_key = backend.queue._queue_key("user:42").encode()
+    await backend.queue._acquire_lock(queue_key)
+    result = await backend.queue._acquire_lock(queue_key)
     assert result is False
 
 
 async def test_release_lock(fake_redis):
     """release_lock frees the lock so it can be re-acquired."""
-    await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
-    await backend.state.release_lock("user:42")
+    queue_key = backend.queue._queue_key("user:42").encode()
+    await backend.queue._acquire_lock(queue_key)
+    await backend.queue.complete("user:42")
 
-    result = await backend.state.acquire_lock("user:42", uuid.UUID(int=2))
+    result = await backend.queue._acquire_lock(queue_key)
     assert result is True
-
-
-async def test_release_lock_nonexistent(fake_redis):
-    """release_lock on a non-existent key returns 0."""
-    result = await backend.state.release_lock("nonexistent")
-    assert result == 0
-
-
-async def test_lock_key_uses_prefix(fake_redis):
-    """Lock keys are prefixed with agentexec:lock:."""
-    await backend.state.acquire_lock("user:42", uuid.UUID(int=1))
-
-    value = await fake_redis.get("agentexec:lock:user:42")
-    assert value is not None
 
 
 async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
@@ -179,12 +167,12 @@ async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
         context={"user_id": "2", "message": "requeued"},
         agent_id=uuid.uuid4(),
     )
-    await backend.queue.push(ax.CONF.queue_prefix, task2.model_dump_json())
+    await backend.queue.push(task2.model_dump_json())
 
-    result1 = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
+    result1 = await backend.queue.pop(timeout=1)
     assert result1 is not None
     assert result1["task_name"] == "task_1"
 
-    result2 = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
+    result2 = await backend.queue.pop(timeout=1)
     assert result2 is not None
     assert result2["task_name"] == "task_2"

@@ -102,48 +102,18 @@ class TestCounterOperations:
         assert result == 3
 
 
-class TestPubSubOperations:
-    async def test_publish(self, mock_client):
-        await backend.state.publish("test:channel", "log message")
-        mock_client.publish.assert_called_once_with("test:channel", "log message")
-
-    async def test_subscribe(self, mock_client):
-        mock_pubsub = AsyncMock()
-        mock_client.pubsub = MagicMock(return_value=mock_pubsub)
-
-        async def mock_listen():
-            yield {"type": "subscribe"}
-            yield {"type": "message", "data": b"message1"}
-            yield {"type": "message", "data": "message2"}
-
-        mock_pubsub.listen = MagicMock(return_value=mock_listen())
-
-        messages = []
-        async for msg in backend.state.subscribe("test:channel"):
-            messages.append(msg)
-
-        assert messages == ["message1", "message2"]
-        mock_pubsub.subscribe.assert_called_once()
-
-
 class TestConnectionManagement:
     async def test_close_all_connections(self):
         mock_client = AsyncMock()
-        mock_ps = AsyncMock()
-
         backend._client = mock_client
-        backend._pubsub = mock_ps
 
         await backend.close()
 
-        mock_ps.close.assert_called_once()
         mock_client.aclose.assert_called_once()
         assert backend._client is None
-        assert backend._pubsub is None
 
     async def test_close_handles_none_clients(self):
         backend._client = None
-        backend._pubsub = None
 
         await backend.close()
 

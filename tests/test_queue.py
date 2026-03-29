@@ -108,7 +108,7 @@ async def test_dequeue_returns_task_data(fake_redis) -> None:
     await fake_redis.lpush(ax.CONF.queue_prefix, json.dumps(task_data).encode())
 
     # Dequeue
-    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
+    result = await backend.queue.pop(timeout=1)
 
     assert result is not None
     assert result["task_name"] == "test_task"
@@ -119,7 +119,7 @@ async def test_dequeue_returns_task_data(fake_redis) -> None:
 async def test_dequeue_returns_none_on_empty_queue(fake_redis) -> None:
     """Test that dequeue returns None when queue is empty."""
     # timeout=1 because timeout=0 means block indefinitely in Redis BRPOP
-    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
+    result = await backend.queue.pop(timeout=1)
 
     assert result is None
 
@@ -135,7 +135,7 @@ async def test_dequeue_brpop_behavior(fake_redis) -> None:
     await fake_redis.lpush(ax.CONF.queue_prefix, json.dumps(task2).encode())
 
     # BRPOP should get the first task (oldest) from the right
-    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
+    result = await backend.queue.pop(timeout=1)
     assert result is not None
     assert result["task_name"] == "first"
 
@@ -148,7 +148,7 @@ async def test_enqueue_dequeue_roundtrip(fake_redis, mock_activity_create) -> No
     task = await enqueue("roundtrip_task", ctx)
 
     # Dequeue
-    result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
+    result = await backend.queue.pop(timeout=1)
 
     assert result is not None
     assert result["task_name"] == "roundtrip_task"
@@ -167,6 +167,6 @@ async def test_multiple_enqueue_fifo_order(fake_redis, mock_activity_create) -> 
 
     # Dequeue should be in FIFO order
     for i in range(3):
-        result = await backend.queue.pop(ax.CONF.queue_prefix, timeout=1)
+        result = await backend.queue.pop(timeout=1)
         assert result is not None
         assert result["task_name"] == f"task_{i}"

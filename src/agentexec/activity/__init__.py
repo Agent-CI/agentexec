@@ -15,8 +15,6 @@ from agentexec.activity.producer import (
     generate_agent_id,
     normalize_agent_id,
 )
-from agentexec.activity.consumer import process_activity_stream
-
 import uuid
 from typing import Any
 
@@ -88,7 +86,6 @@ __all__ = [
     "cancel_pending",
     "generate_agent_id",
     "normalize_agent_id",
-    "process_activity_stream",
     "list",
     "detail",
     "count_active",

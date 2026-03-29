@@ -229,12 +229,6 @@ class KafkaStateBackend(BaseStateBackend):
         finally:
             await consumer.stop()
 
-    async def acquire_lock(self, lock_key: str, agent_id: UUID) -> bool:
-        return True  # Partition assignment handles isolation
-
-    async def release_lock(self, lock_key: str) -> int:
-        return 0
-
     async def index_add(self, key: str, mapping: dict[str, float]) -> int:
         topic = self.backend.kv_topic()
         await self.backend.ensure_topic(topic)
@@ -349,7 +343,7 @@ class KafkaQueueBackend(BaseQueueBackend):
         except asyncio.TimeoutError:
             return None
 
-    async def release_lock(self, queue_name: str, partition_key: str) -> None:
+    async def complete(self, partition_key: str | None) -> None:
         pass  # Kafka uses partition assignment, no explicit locks
 
 

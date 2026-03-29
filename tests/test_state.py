@@ -57,23 +57,3 @@ class TestStateBackend:
             assert result is None
 
 
-class TestLogOperations:
-    """Tests for log pub/sub."""
-
-    async def test_publish(self):
-        with patch.object(backend.state, "publish", new_callable=AsyncMock) as mock:
-            await backend.state.publish("test:channel", "test message")
-            mock.assert_called_once_with("test:channel", "test message")
-
-    async def test_subscribe(self):
-        messages = ["msg1", "msg2"]
-
-        async def mock_subscribe(channel):
-            for msg in messages:
-                yield msg
-
-        with patch.object(backend.state, "subscribe", side_effect=mock_subscribe):
-            received = []
-            async for msg in backend.state.subscribe("test:channel"):
-                received.append(msg)
-            assert received == messages

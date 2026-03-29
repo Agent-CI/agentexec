@@ -3,7 +3,6 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from agentexec.config import CONF
 from agentexec.core.logging import get_logger
 from agentexec.core.task import Task
 from agentexec.state import backend
@@ -31,7 +30,6 @@ async def enqueue(
     )
 
     await backend.queue.push(
-        CONF.queue_prefix,
         task.model_dump_json(),
         high_priority=(priority == Priority.HIGH),
     )
@@ -40,7 +38,3 @@ async def enqueue(
     return task
 
 
-async def dequeue(*, timeout: int = 1) -> Task | None:
-    """Dequeue a task from the queue. Returns raw Task (context is a dict)."""
-    data = await backend.queue.pop(CONF.queue_prefix, timeout=timeout)
-    return Task.model_validate(data) if data else None

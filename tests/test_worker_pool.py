@@ -6,6 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 import agentexec as ax
+from agentexec.state import backend
 
 
 class SampleContext(BaseModel):
@@ -26,7 +27,7 @@ def mock_state_backend(monkeypatch):
     """Mock the queue ops for push operations."""
     queue_data = []
 
-    async def mock_queue_push(queue_name, value, *, high_priority=False, partition_key=None):
+    async def mock_queue_push(value, *, high_priority=False, partition_key=None):
         if high_priority:
             queue_data.append(value)
         else:
@@ -208,27 +209,25 @@ async def test_worker_dequeue_task(pool, monkeypatch) -> None:
 
     monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
-    from agentexec.core.queue import dequeue
-    task = await dequeue(timeout=1)
+    data = await backend.queue.pop(timeout=1)
+    assert data is not None
 
-    assert task is not None
+    task = ax.Task.model_validate(data)
     assert task.task_name == "test_task"
     assert task.context == {"message": "test", "value": 42}
     assert task.agent_id == agent_id
 
 
 async def test_dequeue_returns_none_on_empty_queue(pool, monkeypatch) -> None:
-    """Test dequeue returns None when queue is empty."""
+    """Test pop returns None when queue is empty."""
 
     async def mock_queue_pop(*args, **kwargs):
         return None
 
     monkeypatch.setattr("agentexec.state.backend.queue.pop", mock_queue_pop)
 
-    from agentexec.core.queue import dequeue
-    task = await dequeue(timeout=1)
-
-    assert task is None
+    data = await backend.queue.pop(timeout=1)
+    assert data is None
 
 
 async def test_worker_pool_shutdown_with_no_processes(pool) -> None:
