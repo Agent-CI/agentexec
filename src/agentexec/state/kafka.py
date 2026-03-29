@@ -5,10 +5,7 @@ import json
 import os
 import socket
 import time
-import threading
-from datetime import UTC, datetime
 from typing import Any, Optional
-from uuid import UUID
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
@@ -26,12 +23,7 @@ class Backend(BaseBackend):
         self._consumers: dict[str, AIOKafkaConsumer] = {}
         self._admin: AIOKafkaAdminClient | None = None
 
-        self._cache_lock = threading.Lock()
         self._initialized_topics: set[str] = set()
-
-        # In-memory caches
-        self._kv_cache: dict[str, bytes] = {}
-        self._counter_cache: dict[str, int] = {}
 
         # Sub-backends
         self.state = KafkaStateBackend(self)
@@ -143,59 +135,32 @@ class Backend(BaseBackend):
     def tasks_topic(self, queue_name: str) -> str:
         return f"{CONF.key_prefix}.tasks.{queue_name}"
 
-    def kv_topic(self) -> str:
-        return f"{CONF.key_prefix}.state"
-
-
-
     def schedule_topic(self) -> str:
         return f"{CONF.key_prefix}.schedules"
 
 
 class KafkaStateBackend(BaseStateBackend):
-    """Kafka state: compacted topics + in-memory caches."""
+    """Kafka state: not supported.
 
-    def __init__(self, backend: Backend) -> None:
-        self.backend = backend
+    Kafka is not a key-value store. State operations (get/set, counters)
+    require a proper KV backend like Redis. Use Kafka for queue and
+    schedule only.
+    """
 
     async def get(self, key: str) -> Optional[bytes]:
-        with self.backend._cache_lock:
-            return self.backend._kv_cache.get(key)
+        raise NotImplementedError("Kafka backend does not support KV state operations")
 
     async def set(self, key: str, value: bytes, ttl_seconds: Optional[int] = None) -> bool:
-        topic = self.backend.kv_topic()
-        await self.backend.ensure_topic(topic)
-        with self.backend._cache_lock:
-            self.backend._kv_cache[key] = value
-        await self.backend.produce(topic, value, key=key)
-        return True
+        raise NotImplementedError("Kafka backend does not support KV state operations")
 
     async def delete(self, key: str) -> int:
-        topic = self.backend.kv_topic()
-        await self.backend.ensure_topic(topic)
-        with self.backend._cache_lock:
-            existed = 1 if key in self.backend._kv_cache else 0
-            self.backend._kv_cache.pop(key, None)
-        await self.backend.produce(topic, None, key=key)  # Tombstone
-        return existed
+        raise NotImplementedError("Kafka backend does not support KV state operations")
 
     async def counter_incr(self, key: str) -> int:
-        topic = self.backend.kv_topic()
-        await self.backend.ensure_topic(topic)
-        with self.backend._cache_lock:
-            val = self.backend._counter_cache.get(key, 0) + 1
-            self.backend._counter_cache[key] = val
-        await self.backend.produce(topic, str(val).encode("utf-8"), key=f"counter:{key}")
-        return val
+        raise NotImplementedError("Kafka backend does not support counter operations")
 
     async def counter_decr(self, key: str) -> int:
-        topic = self.backend.kv_topic()
-        await self.backend.ensure_topic(topic)
-        with self.backend._cache_lock:
-            val = self.backend._counter_cache.get(key, 0) - 1
-            self.backend._counter_cache[key] = val
-        await self.backend.produce(topic, str(val).encode("utf-8"), key=f"counter:{key}")
-        return val
+        raise NotImplementedError("Kafka backend does not support counter operations")
 
 
 
