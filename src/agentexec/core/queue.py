@@ -11,6 +11,12 @@ logger = get_logger(__name__)
 
 
 class Priority(str, Enum):
+    """Task priority levels.
+
+    HIGH: Push to front of queue (processed first).
+    LOW: Push to back of queue (processed later).
+    """
+
     HIGH = "high"
     LOW = "low"
 

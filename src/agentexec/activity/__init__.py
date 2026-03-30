@@ -79,13 +79,16 @@ async def count_active(session: Session | None = None) -> int:
 
 
 __all__ = [
+    # Models
     "Activity",
     "ActivityLog",
     "Status",
+    # Schemas
     "ActivityLogSchema",
     "ActivityDetailSchema",
     "ActivityListItemSchema",
     "ActivityListSchema",
+    # Lifecycle API
     "create",
     "update",
     "complete",
@@ -93,6 +96,7 @@ __all__ = [
     "cancel_pending",
     "generate_agent_id",
     "normalize_agent_id",
+    # Query API
     "list",
     "detail",
     "count_active",

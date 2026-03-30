@@ -40,6 +40,9 @@ class _AsyncTaskHandler(Protocol[ContextT, ResultT]):
 
 
 # TODO: Using Any,Any here because of contravariance limitations with function parameters.
+# A function accepting MyContext (specific) is not statically assignable to one expecting
+# BaseModel (general). Runtime validation in TaskDefinition._infer_context_type catches
+# invalid context/return types. Revisit if Python typing evolves to support this pattern.
 TaskHandler: TypeAlias = _SyncTaskHandler[Any, Any] | _AsyncTaskHandler[Any, Any]
 
 
@@ -65,6 +68,21 @@ class TaskDefinition:
         result_type: type[BaseModel] | None = None,
         lock_key: str | None = None,
     ) -> None:
+        """Initialize task definition.
+
+        Args:
+            name: Task type name.
+            handler: Handler function (sync or async).
+            context_type: Explicit context type (inferred from annotations if omitted).
+            result_type: Explicit result type (inferred from annotations if omitted).
+            lock_key: String template for distributed locking, evaluated against
+                context fields (e.g. ``"user:{user_id}"``). When set, only one task
+                with the same evaluated lock key can run at a time.
+
+        Raises:
+            TypeError: If handler doesn't have a typed ``context`` parameter
+                with a BaseModel subclass.
+        """
         self.name = name
         self.handler = handler
         self.context_type = context_type or self._infer_context_type(handler)
@@ -168,7 +186,20 @@ class Task(BaseModel):
         context: BaseModel,
         metadata: dict[str, Any] | None = None,
     ) -> Task:
-        """Create a new task with automatic activity tracking."""
+        """Create a new task with automatic activity tracking.
+
+        Creates an activity record and returns a Task ready to be
+        serialized and pushed to the queue.
+
+        Args:
+            task_name: Name of the registered task.
+            context: Pydantic model with the task's input data.
+            metadata: Optional dict attached to the activity record
+                (e.g. ``{"organization_id": "org-123"}``).
+
+        Returns:
+            Task instance with ``agent_id`` set for tracking.
+        """
         agent_id = await activity.create(
             task_name=task_name,
             message=CONF.activity_message_create,
