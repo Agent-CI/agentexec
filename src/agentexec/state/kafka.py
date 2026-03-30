@@ -26,7 +26,7 @@ class Backend(BaseBackend):
         self._initialized_topics: set[str] = set()
 
         # Sub-backends
-        self.state = KafkaStateBackend(self)
+        self.state = KafkaStateBackend()
         self.queue = KafkaQueueBackend(self)
         self.schedule = KafkaScheduleBackend(self)
 
