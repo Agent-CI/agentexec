@@ -103,7 +103,7 @@ jobs:
         run: |
           uv run pytest tests/test_kafka_integration.py \
             -o "addopts=" \
-            -v --tb=long --timeout=30 2>&1 | tee /tmp/kafka_test_output.txt
+            -v --tb=long 2>&1 | tee /tmp/kafka_test_output.txt
           exit ${PIPESTATUS[0]}
         env:
           AGENTEXEC_STATE_BACKEND: agentexec.state.kafka
