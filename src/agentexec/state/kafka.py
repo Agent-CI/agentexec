@@ -191,13 +191,12 @@ class KafkaQueueBackend(BaseQueueBackend):
 
     async def push(
         self,
-        queue_name: str,
         value: str,
         *,
         high_priority: bool = False,
         partition_key: str | None = None,
     ) -> None:
-        topic = self.backend.tasks_topic(queue_name)
+        topic = self.backend.tasks_topic(CONF.queue_prefix)
         await self.backend.ensure_topic(topic, compact=False)
 
         # Extract metadata for headers without altering the payload
@@ -211,11 +210,10 @@ class KafkaQueueBackend(BaseQueueBackend):
 
     async def pop(
         self,
-        queue_name: str,
         *,
         timeout: int = 1,
     ) -> dict[str, Any] | None:
-        consumer = await self._get_consumer(self.backend.tasks_topic(queue_name))
+        consumer = await self._get_consumer(self.backend.tasks_topic(CONF.queue_prefix))
 
         try:
             msg = await asyncio.wait_for(
