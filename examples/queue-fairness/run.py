@@ -1,7 +1,12 @@
-"""Queue fairness test.
+"""Queue fairness benchmark.
 
 Validates that tasks distributed across many partition queues get
 roughly equal treatment under the scan-based dequeue strategy.
+
+Measures two dimensions of fairness:
+  - Worker fairness: are tasks spread evenly across workers?
+  - Partition fairness: are partitions served in a balanced order,
+    or do some starve while others get picked up immediately?
 
 Usage:
     uv run python examples/queue-fairness/run.py
@@ -15,12 +20,11 @@ import asyncio
 import json
 import statistics
 import time
-from uuid import UUID, uuid4
+from uuid import uuid4
 
 from pydantic import BaseModel
 
 import agentexec as ax
-from agentexec.config import CONF
 from agentexec.state import backend
 
 
@@ -46,7 +50,6 @@ async def enqueue_tasks(partitions: int, tasks_per_partition: int) -> int:
                 agent_id=uuid4(),
             )
             await backend.queue.push(
-                CONF.queue_prefix,
                 task.model_dump_json(),
                 partition_key=partition_key,
             )
@@ -62,9 +65,8 @@ async def worker(
 ):
     """Simulated worker that pops tasks and records timing."""
     while not stop_event.is_set():
-        data = await backend.queue.pop(CONF.queue_prefix, timeout=1)
+        data = await backend.queue.pop(timeout=1)
         if data is None:
-            # Check if we should stop
             await asyncio.sleep(0.1)
             continue
 
@@ -86,7 +88,7 @@ async def worker(
 
         # Release the partition lock
         partition_key = f"partition:{context.get('partition_id')}"
-        await backend.queue.release_lock(CONF.queue_prefix, partition_key)
+        await backend.queue.complete(partition_key)
 
 
 async def run(
@@ -95,9 +97,11 @@ async def run(
     num_workers: int,
     work_duration: float,
 ):
-    print(f"Enqueueing {partitions} partitions x {tasks_per_partition} tasks = {partitions * tasks_per_partition} total")
-    total = await enqueue_tasks(partitions, tasks_per_partition)
-    print(f"Enqueued {total} tasks")
+    total = partitions * tasks_per_partition
+    print(f"Enqueueing {partitions} partitions x {tasks_per_partition} tasks = {total} total")
+    enqueue_start = time.time()
+    await enqueue_tasks(partitions, tasks_per_partition)
+    print(f"Enqueued {total} tasks in {time.time() - enqueue_start:.1f}s")
 
     results: list[dict] = []
     stop_event = asyncio.Event()
@@ -110,7 +114,6 @@ async def run(
         for i in range(num_workers)
     ]
 
-    # Wait until all tasks are processed
     while len(results) < total:
         await asyncio.sleep(0.5)
         elapsed = time.time() - start
@@ -118,51 +121,76 @@ async def run(
 
     elapsed = time.time() - start
     stop_event.set()
-
-    # Let workers drain
     await asyncio.gather(*workers, return_exceptions=True)
 
     print(f"\n\nCompleted {len(results)} tasks in {elapsed:.1f}s")
     print(f"Throughput: {len(results) / elapsed:.1f} tasks/sec")
 
-    # Analyze fairness per partition
-    partition_times: dict[int, list[float]] = {}
-    for r in results:
-        pid = r["partition_id"]
-        if pid not in partition_times:
-            partition_times[pid] = []
-        partition_times[pid].append(r["wait_time"])
-
-    avg_per_partition = {
-        pid: statistics.mean(times) for pid, times in partition_times.items()
-    }
-
+    # --- Wait time analysis ---
     all_waits = [r["wait_time"] for r in results]
-    all_avgs = list(avg_per_partition.values())
+    print(f"\nWait time (enqueue → pickup):")
+    print(f"  Mean:   {statistics.mean(all_waits):.3f}s")
+    print(f"  Median: {statistics.median(all_waits):.3f}s")
+    print(f"  Stdev:  {statistics.stdev(all_waits):.3f}s")
+    print(f"  Min:    {min(all_waits):.3f}s")
+    print(f"  Max:    {max(all_waits):.3f}s")
 
-    print(f"\nWait time (seconds from enqueue to pickup):")
-    print(f"  Overall mean:   {statistics.mean(all_waits):.3f}s")
-    print(f"  Overall median: {statistics.median(all_waits):.3f}s")
-    print(f"  Overall stdev:  {statistics.stdev(all_waits):.3f}s")
-    print(f"  Min:            {min(all_waits):.3f}s")
-    print(f"  Max:            {max(all_waits):.3f}s")
-
-    print(f"\nFairness across {len(partition_times)} partitions:")
-    print(f"  Mean of partition averages: {statistics.mean(all_avgs):.3f}s")
-    print(f"  Stdev of partition averages: {statistics.stdev(all_avgs):.3f}s")
-    print(f"  Min partition avg:  {min(all_avgs):.3f}s")
-    print(f"  Max partition avg:  {max(all_avgs):.3f}s")
-    print(f"  Spread (max-min):   {max(all_avgs) - min(all_avgs):.3f}s")
-
-    # Worker distribution
+    # --- Worker fairness ---
     worker_counts: dict[int, int] = {}
     for r in results:
         wid = r["worker_id"]
         worker_counts[wid] = worker_counts.get(wid, 0) + 1
 
-    print(f"\nWorker distribution:")
+    worker_vals = list(worker_counts.values())
+    ideal_per_worker = total / num_workers
+
+    print(f"\nWorker fairness ({num_workers} workers, ideal {ideal_per_worker:.0f} each):")
     for wid in sorted(worker_counts):
-        print(f"  Worker {wid}: {worker_counts[wid]} tasks")
+        count = worker_counts[wid]
+        pct = count / total * 100
+        print(f"  Worker {wid}: {count} tasks ({pct:.1f}%)")
+    if len(worker_vals) > 1:
+        print(f"  Stdev: {statistics.stdev(worker_vals):.1f}")
+
+    # --- Partition fairness ---
+    # For each partition, when was its first task picked up (relative to start)?
+    # A fair system serves all partitions at roughly the same pace.
+    partition_first_pickup: dict[int, float] = {}
+    partition_waits: dict[int, list[float]] = {}
+    for r in results:
+        pid = r["partition_id"]
+        pickup_offset = r["picked_up_at"] - start
+        if pid not in partition_first_pickup or pickup_offset < partition_first_pickup[pid]:
+            partition_first_pickup[pid] = pickup_offset
+        if pid not in partition_waits:
+            partition_waits[pid] = []
+        partition_waits[pid].append(r["wait_time"])
+
+    first_pickups = list(partition_first_pickup.values())
+    avg_waits = [statistics.mean(w) for w in partition_waits.values()]
+
+    print(f"\nPartition fairness ({len(partition_first_pickup)} partitions):")
+
+    print(f"  First-task pickup time (seconds after start):")
+    print(f"    Mean:   {statistics.mean(first_pickups):.3f}s")
+    print(f"    Median: {statistics.median(first_pickups):.3f}s")
+    print(f"    Stdev:  {statistics.stdev(first_pickups):.3f}s")
+    print(f"    Min:    {min(first_pickups):.3f}s")
+    print(f"    Max:    {max(first_pickups):.3f}s")
+    print(f"    Spread: {max(first_pickups) - min(first_pickups):.3f}s")
+
+    print(f"  Average wait per partition:")
+    print(f"    Mean:   {statistics.mean(avg_waits):.3f}s")
+    print(f"    Stdev:  {statistics.stdev(avg_waits):.3f}s")
+    print(f"    Spread: {max(avg_waits) - min(avg_waits):.3f}s")
+
+    # Identify starved partitions (first pickup > 2x median)
+    median_pickup = statistics.median(first_pickups)
+    starved = [pid for pid, t in partition_first_pickup.items() if t > median_pickup * 2]
+    if starved:
+        print(f"  Starved partitions (first pickup > 2x median): {len(starved)}/{partitions}")
+    else:
+        print(f"  No starved partitions detected")
 
     await backend.close()
 
