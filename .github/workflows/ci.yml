@@ -66,6 +66,7 @@ jobs:
             -e KAFKA_NUM_PARTITIONS=1 \
             -e KAFKA_AUTO_CREATE_TOPICS_ENABLE=true \
             -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
             -e CLUSTER_ID=ciTestCluster0001 \
             apache/kafka:3.9.0
 
@@ -98,10 +99,11 @@ jobs:
           exit 1
 
       - name: Run Kafka integration tests
+        timeout-minutes: 2
         run: |
           uv run pytest tests/test_kafka_integration.py \
             -o "addopts=" \
-            -v --tb=long 2>&1 | tee /tmp/kafka_test_output.txt
+            -v --tb=long --timeout=30 2>&1 | tee /tmp/kafka_test_output.txt
           exit ${PIPESTATUS[0]}
         env:
           AGENTEXEC_STATE_BACKEND: agentexec.state.kafka
