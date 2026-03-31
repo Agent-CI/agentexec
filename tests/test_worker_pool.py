@@ -1,3 +1,4 @@
+import asyncio
 import json
 import multiprocessing as mp
 import uuid
@@ -423,6 +424,13 @@ class TestPoolRetryLogic:
         monkeypatch.setattr("agentexec.state.backend.queue.push", mock_push)
         monkeypatch.setattr(ax.CONF, "max_task_retries", 3)
 
+        backoff_calls = []
+
+        async def mock_backoff(_self, retry_count):
+            backoff_calls.append(retry_count)
+
+        monkeypatch.setattr(ax.Pool, "_retry_backoff", mock_backoff)
+
         # Put a TaskFailed message in the worker queue
         pool._worker_queue.put_nowait(TaskFailed(task=task, error="boom"))
 
@@ -445,6 +453,7 @@ class TestPoolRetryLogic:
         requeued = json.loads(pushed[0]["value"])
         assert requeued["retry_count"] == 1
         assert pushed[0]["high_priority"] is True
+        assert backoff_calls == [1]
 
     async def test_gives_up_after_max_retries(self, pool, monkeypatch, capsys):
         """Failed task at max retries is not requeued."""
@@ -517,6 +526,7 @@ class TestPoolRetryLogic:
 
         monkeypatch.setattr("agentexec.state.backend.queue.push", mock_push)
         monkeypatch.setattr(ax.CONF, "max_task_retries", 3)
+        monkeypatch.setattr(ax.Pool, "_retry_backoff", AsyncMock())
 
         pool._worker_queue.put_nowait(TaskFailed(task=task, error="transient"))
 
@@ -534,3 +544,20 @@ class TestPoolRetryLogic:
         await pool._process_worker_events()
 
         assert pushed[0]["partition_key"] == "msg:hello"
+
+    async def test_exponential_backoff_delay(self, pool, monkeypatch):
+        """_retry_backoff sleeps with exponential backoff: base * 2^(retry-1)."""
+        sleep_delays = []
+        _original_sleep = asyncio.sleep
+
+        async def mock_sleep(delay):
+            sleep_delays.append(delay)
+
+        monkeypatch.setattr("asyncio.sleep", mock_sleep)
+        monkeypatch.setattr(ax.CONF, "task_retry_backoff_base", 2.0)
+
+        for retry_count in [1, 2, 3, 4]:
+            await ax.Pool._retry_backoff(retry_count)
+
+        # Delays: 2*2^0=2, 2*2^1=4, 2*2^2=8, 2*2^3=16
+        assert sleep_delays == [2.0, 4.0, 8.0, 16.0]

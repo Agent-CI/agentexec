@@ -145,6 +145,15 @@ class Config(BaseSettings):
         ),
         validation_alias="AGENTEXEC_MAX_TASK_RETRIES",
     )
+    task_retry_backoff_base: float = Field(
+        default=2.0,
+        description=(
+            "Base delay in seconds for exponential backoff between task retries. "
+            "The delay before retry N is: base * 2^(N-1). For example, with "
+            "the default base of 2.0, delays are 2s, 4s, 8s, 16s, etc."
+        ),
+        validation_alias="AGENTEXEC_TASK_RETRY_BACKOFF_BASE",
+    )
 
     lock_ttl: int = Field(
         default=1800,

@@ -458,6 +458,12 @@ class Pool:
         """Derive the partition/lock key for a task from its definition."""
         return self._context.tasks[task.task_name].get_lock_key(task.context)
 
+    @staticmethod
+    async def _retry_backoff(retry_count: int) -> None:
+        """Sleep with exponential backoff before requeueing a failed task."""
+        delay = CONF.task_retry_backoff_base * (2 ** (retry_count - 1))
+        await asyncio.sleep(delay)
+
     async def _process_worker_events(self) -> None:
         """Handle all events from worker processes via multiprocessing queue."""
         assert self._log_handler, "Log handler not initialized"
@@ -476,6 +482,7 @@ class Pool:
                 case TaskFailed(task=task, error=error):
                     if task.retry_count < CONF.max_task_retries:
                         task.retry_count += 1
+                        await self._retry_backoff(task.retry_count)
                         await backend.queue.push(
                             task.model_dump_json(),
                             partition_key=self._partition_key_for(task),
