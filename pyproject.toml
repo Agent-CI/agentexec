@@ -28,6 +28,11 @@ dependencies = [
     "croniter>=6.0.0",
 ]
 
+[project.optional-dependencies]
+kafka = [
+    "aiokafka>=0.11.0",
+]
+
 
 [project.urls]
 Homepage = "https://github.com/Agent-CI/agentexec"

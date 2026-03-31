@@ -1,5 +1,5 @@
 from __future__ import annotations
-from enum import Enum as PyEnum
+
 import uuid
 from datetime import UTC, datetime
 
@@ -22,18 +22,9 @@ from sqlalchemy import (
 from sqlalchemy.engine import RowMapping
 from sqlalchemy.orm import Mapped, Session, aliased, mapped_column, relationship, declared_attr
 
+from agentexec.activity.status import Status
 from agentexec.config import CONF
 from agentexec.core.db import Base
-
-
-class Status(str, PyEnum):
-    """Agent execution status."""
-
-    QUEUED = "queued"
-    RUNNING = "running"
-    COMPLETE = "complete"
-    ERROR = "error"
-    CANCELED = "canceled"
 
 
 class Activity(Base):

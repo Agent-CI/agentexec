@@ -1,13 +1,11 @@
-import json
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
 
-from agentexec import state
-from agentexec.config import CONF
 from agentexec.core.logging import get_logger
 from agentexec.core.task import Task
+from agentexec.state import backend
 
 logger = get_logger(__name__)
 
@@ -28,105 +26,40 @@ async def enqueue(
     context: BaseModel,
     *,
     priority: Priority = Priority.LOW,
-    queue_name: str | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> Task:
     """Enqueue a task for background execution.
 
-    Pushes the task to the queue for worker processing. The task must be
-    registered with a WorkerPool via @pool.task() decorator.
+    Creates an activity record, serializes the context, and pushes the
+    task to the queue for workers to process.
 
     Args:
-        task_name: Name of the task to execute.
-        context: Task context as a Pydantic BaseModel.
-        priority: Task priority (Priority.HIGH or Priority.LOW).
-        queue_name: Queue name. Defaults to CONF.queue_name.
-        metadata: Optional dict of arbitrary metadata to attach to the activity.
-            Useful for multi-tenancy (e.g., {"organization_id": "org-123"}).
+        task_name: Name of the registered task (must match a ``@pool.task()``).
+        context: Pydantic model with the task's input data.
+        priority: ``Priority.HIGH`` pushes to the front of the queue.
+        metadata: Optional dict attached to the activity record (e.g.
+            ``{"organization_id": "org-123"}`` for multi-tenancy).
 
     Returns:
-        Task instance with typed context and agent_id for tracking.
+        The created Task with its ``agent_id`` for tracking.
 
-    Example:
-        @pool.task("research_company")
-        async def research(agent_id: UUID, context: ResearchContext):
-            ...
+    Example::
 
-        task = await ax.enqueue("research_company", ResearchContext(company="Acme"))
-
-        # With metadata for multi-tenancy
-        task = await ax.enqueue(
-            "research_company",
-            ResearchContext(company="Acme"),
-            metadata={"organization_id": "org-123"}
-        )
+        task = await ax.enqueue("research", ResearchContext(company="Acme"))
+        print(task.agent_id)  # UUID for tracking
     """
-    push_func = {
-        Priority.HIGH: state.backend.rpush,
-        Priority.LOW: state.backend.lpush,
-    }[priority]
-
-    task = Task.create(
+    task = await Task.create(
         task_name=task_name,
         context=context,
         metadata=metadata,
     )
-    push_func(
-        queue_name or CONF.queue_name,
+
+    await backend.queue.push(
         task.model_dump_json(),
+        high_priority=(priority == Priority.HIGH),
     )
 
     logger.info(f"Enqueued task {task.task_name} with agent_id {task.agent_id}")
     return task
 
 
-def requeue(
-    task: Task,
-    *,
-    queue_name: str | None = None,
-) -> int:
-    """Push a task back to the end of the queue.
-
-    Used when a task's lock cannot be acquired — the task is returned to the
-    queue so it can be retried after the lock is released.
-
-    Args:
-        task: Task to requeue.
-        queue_name: Queue name. Defaults to CONF.queue_name.
-
-    Returns:
-        Length of the queue after the push.
-    """
-    return state.backend.lpush(
-        queue_name or CONF.queue_name,
-        task.model_dump_json(),
-    )
-
-
-async def dequeue(
-    *,
-    queue_name: str | None = None,
-    timeout: int = 1,
-) -> dict[str, Any] | None:
-    """Dequeue a task from the queue.
-
-    Blocks for up to timeout seconds waiting for a task.
-
-    Args:
-        queue_name: Queue name. Defaults to CONF.queue_name.
-        timeout: Maximum seconds to wait for a task.
-
-    Returns:
-        Parsed task data if available, None otherwise.
-    """
-    result = await state.backend.brpop(
-        queue_name or CONF.queue_name,
-        timeout=timeout,
-    )
-
-    if result is None:
-        return None
-
-    _, task_data = result
-    data: dict[str, Any] = json.loads(task_data)
-    return data

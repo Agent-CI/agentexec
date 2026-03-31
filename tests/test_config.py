@@ -1,5 +1,3 @@
-"""Test configuration handling."""
-
 import os
 
 import pytest
@@ -15,10 +13,10 @@ class TestConfig:
         config = Config()
         assert config.table_prefix == "agentexec_"
 
-    def test_default_queue_name(self):
-        """Test default queue name."""
+    def test_default_queue_prefix(self):
+        """Test default queue prefix."""
         config = Config()
-        assert config.queue_name == "agentexec_tasks"
+        assert config.queue_prefix == "agentexec_tasks"
 
     def test_default_num_workers(self):
         """Test default number of workers."""
@@ -107,11 +105,11 @@ class TestConfigEnvironmentVariables:
         config = Config()
         assert config.table_prefix == "custom_"
 
-    def test_queue_name_from_env(self):
-        """Test queue_name from environment variable."""
+    def test_queue_prefix_from_env(self):
+        """Test queue_prefix from environment variable (with backwards compat alias)."""
         os.environ["AGENTEXEC_QUEUE_NAME"] = "my_queue"
         config = Config()
-        assert config.queue_name == "my_queue"
+        assert config.queue_prefix == "my_queue"
 
     def test_graceful_shutdown_timeout_from_env(self):
         """Test graceful_shutdown_timeout from environment variable."""
@@ -191,7 +189,7 @@ class TestGlobalConfig:
     def test_conf_has_expected_attributes(self):
         """Test that CONF has all expected attributes."""
         assert hasattr(CONF, "table_prefix")
-        assert hasattr(CONF, "queue_name")
+        assert hasattr(CONF, "queue_prefix")
         assert hasattr(CONF, "num_workers")
         assert hasattr(CONF, "graceful_shutdown_timeout")
         assert hasattr(CONF, "redis_url")

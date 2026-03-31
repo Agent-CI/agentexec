@@ -17,10 +17,10 @@ class Config(BaseSettings):
         description="Prefix for database table names",
         validation_alias="AGENTEXEC_TABLE_PREFIX",
     )
-    queue_name: str = Field(
+    queue_prefix: str = Field(
         default="agentexec_tasks",
-        description="Name of the Redis list to use as task queue",
-        validation_alias="AGENTEXEC_QUEUE_NAME",
+        description="Prefix for task queue keys. Partition queues are {prefix}:{lock_key}.",
+        validation_alias=AliasChoices("AGENTEXEC_QUEUE_PREFIX", "AGENTEXEC_QUEUE_NAME"),
     )
     num_workers: int = Field(
         default=4,
@@ -72,20 +72,59 @@ class Config(BaseSettings):
 
     result_ttl: int = Field(
         default=3600,
-        description="TTL in seconds for task results in Redis",
+        description="TTL in seconds for task results",
         validation_alias="AGENTEXEC_RESULT_TTL",
     )
 
     state_backend: str = Field(
-        default="agentexec.state.redis_backend",
-        description="State backend to use (fully-qualified module path)",
+        default="agentexec.state.redis",
+        description="State backend: 'agentexec.state.redis' or 'agentexec.state.kafka'",
         validation_alias="AGENTEXEC_STATE_BACKEND",
+    )
+
+    kafka_bootstrap_servers: str | None = Field(
+        default=None,
+        description="Kafka bootstrap servers (e.g. 'localhost:9092')",
+        validation_alias=AliasChoices(
+            "AGENTEXEC_KAFKA_BOOTSTRAP_SERVERS", "KAFKA_BOOTSTRAP_SERVERS"
+        ),
+    )
+    kafka_default_partitions: int = Field(
+        default=6,
+        description="Default number of partitions for auto-created topics",
+        validation_alias="AGENTEXEC_KAFKA_DEFAULT_PARTITIONS",
+    )
+    kafka_replication_factor: int = Field(
+        default=1,
+        description="Replication factor for auto-created topics",
+        validation_alias="AGENTEXEC_KAFKA_REPLICATION_FACTOR",
+    )
+    kafka_max_batch_size: int = Field(
+        default=16384,
+        description="Producer max batch size in bytes",
+        validation_alias="AGENTEXEC_KAFKA_MAX_BATCH_SIZE",
+    )
+    kafka_linger_ms: int = Field(
+        default=5,
+        description="Producer linger time in milliseconds",
+        validation_alias="AGENTEXEC_KAFKA_LINGER_MS",
+    )
+    kafka_retention_ms: int = Field(
+        default=-1,
+        description="Retention for compacted topics in ms (-1 = forever)",
+        validation_alias="AGENTEXEC_KAFKA_RETENTION_MS",
     )
 
     key_prefix: str = Field(
         default="agentexec",
         description="Prefix for state backend keys",
         validation_alias="AGENTEXEC_KEY_PREFIX",
+    )
+
+    scheduler_poll_interval: int = Field(
+        default=10,
+        description="Seconds between schedule polls",
+        validation_alias="AGENTEXEC_SCHEDULER_POLL_INTERVAL",
     )
 
     scheduler_timezone: str = Field(
@@ -96,14 +135,24 @@ class Config(BaseSettings):
         ),
         validation_alias="AGENTEXEC_SCHEDULER_TIMEZONE",
     )
+    max_task_retries: int = Field(
+        default=3,
+        description=(
+            "Maximum number of times a failed task will be retried before "
+            "being marked as a permanent error. Set to 0 to disable retries. "
+            "With the Kafka backend, retries preserve partition ordering — "
+            "the task stays in its original position in the queue."
+        ),
+        validation_alias="AGENTEXEC_MAX_TASK_RETRIES",
+    )
+
     lock_ttl: int = Field(
         default=1800,
         description=(
-            "TTL in seconds for task lock keys in Redis. "
-            "This is a safety net for worker process death (OOM, SIGKILL) — "
+            "TTL in seconds for task lock keys (Redis backend only). "
+            "Safety net for worker process death (OOM, SIGKILL) — "
             "locks are always explicitly released on task completion or error. "
-            "Set this higher than your longest expected task duration to avoid "
-            "premature lock expiry while a task is still running."
+            "Ignored by the Kafka backend (partition assignment handles isolation)."
         ),
         validation_alias="AGENTEXEC_LOCK_TTL",
     )

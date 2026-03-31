@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import inspect
+from collections.abc import Mapping
 from typing import Any, Protocol, TypeAlias, TypeVar, cast, get_type_hints
 from uuid import UUID
 
-from pydantic import BaseModel, ConfigDict, PrivateAttr, field_serializer
+from pydantic import BaseModel, ConfigDict
 
-from agentexec import activity, state
+from agentexec import activity
 from agentexec.config import CONF
+from agentexec.state import KEY_RESULT, backend
 
 
 TaskResult: TypeAlias = BaseModel
@@ -16,8 +18,6 @@ ResultT = TypeVar("ResultT", bound=TaskResult)
 
 
 class _SyncTaskHandler(Protocol[ContextT, ResultT]):
-    """Protocol for sync task handler functions."""
-
     __name__: str
 
     def __call__(
@@ -29,8 +29,6 @@ class _SyncTaskHandler(Protocol[ContextT, ResultT]):
 
 
 class _AsyncTaskHandler(Protocol[ContextT, ResultT]):
-    """Protocol for async task handler functions."""
-
     __name__: str
 
     async def __call__(
@@ -51,28 +49,14 @@ TaskHandler: TypeAlias = _SyncTaskHandler[Any, Any] | _AsyncTaskHandler[Any, Any
 class TaskDefinition:
     """Definition of a task type (created at registration time).
 
-    Encapsulates the handler function and its metadata (context class, etc.).
+    Encapsulates the handler function and its metadata (context class, lock key).
     One TaskDefinition can spawn many Task instances.
-
-    This object is created once when a task is registered via @pool.task(),
-    and acts as a factory to reconstruct Task instances from the queue with
-    properly typed context.
-
-    Example:
-        @pool.task("research_company")
-        async def research(agent_id: UUID, context: ResearchContext):
-            print(context.company_name)
-
-        # TaskDefinition captures ResearchContext from the type hint
-        # and uses it to deserialize tasks from the queue
     """
 
     name: str
     handler: TaskHandler
     context_type: type[BaseModel]
-    # Optional: only set if handler returns a BaseModel subclass
     result_type: type[BaseModel] | None
-    # Optional: string template evaluated against context for distributed locking
     lock_key: str | None
 
     def __init__(
@@ -87,16 +71,17 @@ class TaskDefinition:
         """Initialize task definition.
 
         Args:
-            name: Task type name
-            handler: Handler function (sync or async)
-            context_type: Optional explicit context type (inferred from annotations if not provided).
-            result_type: Optional explicit result type (inferred from annotations if not provided).
-            lock_key: Optional string template for distributed locking. Evaluated against
-                context fields (e.g., "user:{user_id}"). When set, only one task with
-                the same evaluated lock key can run at a time.
+            name: Task type name.
+            handler: Handler function (sync or async).
+            context_type: Explicit context type (inferred from annotations if omitted).
+            result_type: Explicit result type (inferred from annotations if omitted).
+            lock_key: String template for distributed locking, evaluated against
+                context fields (e.g. ``"user:{user_id}"``). When set, only one task
+                with the same evaluated lock key can run at a time.
 
         Raises:
-            TypeError: If handler doesn't have a typed 'context' parameter with BaseModel subclass
+            TypeError: If handler doesn't have a typed ``context`` parameter
+                with a BaseModel subclass.
         """
         self.name = name
         self.handler = handler
@@ -104,127 +89,98 @@ class TaskDefinition:
         self.result_type = result_type or self._infer_result_type(handler)
         self.lock_key = lock_key
 
-    async def __call__(self, agent_id: UUID, context: BaseModel) -> TaskResult:
-        """Delegate calls to the handler function."""
-        if inspect.iscoroutinefunction(self.handler):
-            handler = cast(_AsyncTaskHandler, self.handler)
-            return await handler(agent_id=agent_id, context=context)
-        else:
-            handler = cast(_SyncTaskHandler, self.handler)
-            return handler(agent_id=agent_id, context=context)
+    def get_lock_key(self, context: Mapping[str, Any]) -> str | None:
+        """Evaluate the lock key template against context data."""
+        return self.lock_key.format(**context) if self.lock_key else None
+
+    def hydrate_context(self, context: Mapping[str, Any]) -> BaseModel:
+        """Validate raw context data into the registered Pydantic model."""
+        return self.context_type.model_validate(context)
+
+    async def execute(self, task: Task) -> TaskResult | None:
+        """Execute the task handler and manage its lifecycle.
+
+        Handles activity tracking (started/complete/error) and result storage.
+        """
+        context = self.hydrate_context(task.context)
+
+        await activity.update(
+            agent_id=task.agent_id,
+            message=CONF.activity_message_started,
+            percentage=0,
+        )
+
+        try:
+            if inspect.iscoroutinefunction(self.handler):
+                handler = cast(_AsyncTaskHandler, self.handler)
+                result = await handler(agent_id=task.agent_id, context=context)
+            else:
+                handler = cast(_SyncTaskHandler, self.handler)
+                result = handler(agent_id=task.agent_id, context=context)
+
+            if isinstance(result, BaseModel):
+                key = backend.format_key(*KEY_RESULT, str(task.agent_id))
+                await backend.state.set(key, backend.serialize(result), ttl_seconds=CONF.result_ttl)
+
+            await activity.update(
+                agent_id=task.agent_id,
+                message=CONF.activity_message_complete,
+                percentage=100,
+                status=activity.Status.COMPLETE,
+            )
+            return result
+        except Exception as e:
+            await activity.update(
+                agent_id=task.agent_id,
+                message=CONF.activity_message_error.format(error=e),
+                status=activity.Status.ERROR,
+            )
+            raise
 
     def _infer_context_type(self, handler: TaskHandler) -> type[BaseModel]:
-        """Infer context class from handler's type annotations.
-
-        Looks for a 'context' parameter with a Pydantic BaseModel type hint.
-
-        Args:
-            handler: The task handler function
-
-        Returns:
-            Context class (BaseModel subclass)
-
-        Raises:
-            TypeError: If 'context' parameter is missing or not a BaseModel subclass
-        """
         hints = get_type_hints(handler)
         if "context" not in hints:
             raise TypeError(
                 f"Task handler '{handler.__name__}' must have a 'context' parameter "
                 f"with a BaseModel type annotation"
             )
-
         context_type = hints["context"]
         if not (inspect.isclass(context_type) and issubclass(context_type, BaseModel)):
             raise TypeError(
                 f"Task handler '{handler.__name__}' context parameter must be a "
                 f"BaseModel subclass, got {context_type}"
             )
-
         return context_type
 
     def _infer_result_type(self, handler: TaskHandler) -> type[BaseModel] | None:
-        """Infer result class from handler's return type annotation.
-
-        Looks for a return annotation with a Pydantic BaseModel type hint.
-
-        Args:
-            handler: The task handler function
-
-        Returns:
-            Result class (BaseModel subclass) or None if return type is not BaseModel
-        """
         hints = get_type_hints(handler)
         if "return" not in hints:
             return None
-
         return_type = hints["return"]
         if not (inspect.isclass(return_type) and issubclass(return_type, BaseModel)):
             return None
-
         return return_type
 
 
 class Task(BaseModel):
-    """Represents a background task instance.
+    """A background task instance — pure data, no behavior.
 
-    Tasks are serialized to JSON and enqueued to Redis for workers to process.
-    Each task has a type (matching a registered TaskDefinition), a typed context,
-    and an agent_id for tracking.
+    Tasks are serialized to JSON and pushed to the queue. Workers pop them,
+    look up the TaskDefinition by task_name, and execute via the definition.
 
-    The context is stored as its native Pydantic type. Serialization to dict
-    happens automatically via field_serializer when dumping to JSON.
-
-    After deserialization, call bind() to attach the TaskDefinition, then
-    execute() to run the task handler.
-
-    Example:
-        # Create with typed context
-        ctx = ResearchContext(company_name="Anthropic")
-        task = Task.create("research", ctx)
-        task.context.company_name  # Typed access!
-
-        # Serialize to JSON for Redis (context becomes dict)
-        json_str = task.model_dump_json()
-
-        # Worker deserializes and executes
-        task = Task.from_serialized(task_def, data)
-        await task.execute()
+    Context is stored as a raw dict. The TaskDefinition hydrates it into
+    the registered Pydantic model at execution time.
     """
 
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     task_name: str
-    context: BaseModel
+    context: Mapping[str, Any]
     agent_id: UUID
-    _definition: TaskDefinition | None = PrivateAttr(default=None)
-
-    @field_serializer("context")
-    def serialize_context(self, value: BaseModel) -> dict[str, Any]:
-        """Serialize context to dict for JSON storage."""
-        return value.model_dump(mode="json")
+    retry_count: int = 0
 
     @classmethod
-    def from_serialized(cls, definition: TaskDefinition, data: dict[str, Any]) -> Task:
-        """Create a Task from serialized data with its definition bound.
-
-        Args:
-            definition: The TaskDefinition containing the handler and context_type
-            data: Serialized task data with task_name, context, and agent_id
-
-        Returns:
-            Task instance with typed context and bound definition
-        """
-        task = cls(
-            task_name=data["task_name"],
-            context=definition.context_type.model_validate(data["context"]),
-            agent_id=data["agent_id"],
-        )
-        task._definition = definition
-        return task
-
-    @classmethod
-    def create(
+    async def create(
         cls,
         task_name: str,
         context: BaseModel,
@@ -232,31 +188,19 @@ class Task(BaseModel):
     ) -> Task:
         """Create a new task with automatic activity tracking.
 
-        This is a convenience method that creates both a Task instance and
-        its corresponding activity record in one step.
+        Creates an activity record and returns a Task ready to be
+        serialized and pushed to the queue.
 
         Args:
-            task_name: Name/type of the task (e.g., "research", "analysis")
-            context: Task context as a Pydantic model
-            metadata: Optional dict of arbitrary metadata to attach to the activity.
-                Useful for multi-tenancy (e.g., {"organization_id": "org-123"}).
+            task_name: Name of the registered task.
+            context: Pydantic model with the task's input data.
+            metadata: Optional dict attached to the activity record
+                (e.g. ``{"organization_id": "org-123"}``).
 
         Returns:
-            Task instance with agent_id set
-
-        Example:
-            ctx = ResearchContext(company="Acme")
-            task = Task.create("research_company", ctx)
-            task.context.company  # Typed access
-
-            # With metadata for multi-tenancy
-            task = Task.create(
-                "research_company",
-                ctx,
-                metadata={"organization_id": "org-123"}
-            )
+            Task instance with ``agent_id`` set for tracking.
         """
-        agent_id = activity.create(
+        agent_id = await activity.create(
             task_name=task_name,
             message=CONF.activity_message_create,
             metadata=metadata,
@@ -264,73 +208,6 @@ class Task(BaseModel):
 
         return cls(
             task_name=task_name,
-            context=context,
+            context=context.model_dump(mode="json"),
             agent_id=agent_id,
         )
-
-    def get_lock_key(self) -> str | None:
-        """Evaluate the lock key template against the task context.
-
-        Returns:
-            Evaluated lock key string, or None if no lock_key is configured.
-
-        Raises:
-            RuntimeError: If task has not been bound to a definition.
-            KeyError: If the template references a field not present in the context.
-        """
-        if self._definition is None:
-            raise RuntimeError("Task must be bound to a definition before getting lock key")
-
-        if self._definition.lock_key is None:
-            return None
-
-        return self._definition.lock_key.format(**self.context.model_dump())
-
-    async def execute(self) -> TaskResult | None:
-        """Execute the task using its bound definition's handler.
-
-        Manages task lifecycle: marks started, runs handler, marks completed/errored.
-
-        Returns:
-            Handler return value, or None if handler raised an exception
-
-        Raises:
-            RuntimeError: If task has not been bound to a definition
-        """
-        if self._definition is None:
-            raise RuntimeError("Task must be bound to a definition before execution")
-
-        activity.update(
-            agent_id=self.agent_id,
-            message=CONF.activity_message_started,
-            percentage=0,
-        )
-
-        try:
-            result = await self._definition(
-                agent_id=self.agent_id,
-                context=self.context,
-            )
-
-            # TODO ensure we are properly supporting None return values
-            if isinstance(result, BaseModel):
-                await state.aset_result(
-                    self.agent_id,
-                    result,
-                    ttl_seconds=CONF.result_ttl,
-                )
-
-            activity.update(
-                agent_id=self.agent_id,
-                message=CONF.activity_message_complete,
-                percentage=100,
-                status=activity.Status.COMPLETE,
-            )
-            return result
-        except Exception as e:
-            activity.update(
-                agent_id=self.agent_id,
-                message=CONF.activity_message_error.format(error=e),
-                status=activity.Status.ERROR,
-            )
-            return None

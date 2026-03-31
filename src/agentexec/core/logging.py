@@ -1,9 +1,3 @@
-"""Unified logging for main and worker processes.
-
-Uses multiprocessing's built-in logger which handles cross-process
-logging correctly on macOS (spawn mode).
-"""
-
 import logging
 import multiprocessing
 

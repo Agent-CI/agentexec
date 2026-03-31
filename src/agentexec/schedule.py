@@ -4,18 +4,16 @@ import time
 from datetime import datetime
 from typing import Any
 from croniter import croniter
-from pydantic import BaseModel, Field, ValidationError
+from pydantic import BaseModel, Field
 
-from agentexec import state
 from agentexec.config import CONF
 from agentexec.core.logging import get_logger
-from agentexec.core.queue import enqueue
+from agentexec.state import backend
 
 logger = get_logger(__name__)
 
 __all__ = [
     "register",
-    "tick",
 ]
 
 REPEAT_FOREVER: int = -1
@@ -24,9 +22,10 @@ REPEAT_FOREVER: int = -1
 class ScheduledTask(BaseModel):
     """A task scheduled to run on a recurring interval.
 
-    Stored in Redis with a sorted-set index for efficient due-time polling.
-    Each time it fires, a fresh Task (with its own agent_id) is enqueued
-    for the worker pool. Stays in Redis until its repeat budget is exhausted.
+    Stored in the schedule backend with a time index for efficient
+    due-time polling. Each time it fires, a fresh Task (with its own
+    agent_id) is enqueued for the worker pool. Stays registered until
+    its repeat budget is exhausted.
     """
 
     task_name: str
@@ -36,6 +35,13 @@ class ScheduledTask(BaseModel):
     next_run: float = 0
     created_at: float = Field(default_factory=lambda: time.time())
     metadata: dict[str, Any] | None = None
+
+    @property
+    def key(self) -> str:
+        """Unique identity: task_name + cron + context hash."""
+        import hashlib
+        context_hash = hashlib.md5(self.context).hexdigest()[:8]
+        return f"{self.task_name}:{self.cron}:{context_hash}"
 
     def model_post_init(self, __context: Any) -> None:
         """Compute next_run from cron if not explicitly set."""
@@ -58,22 +64,12 @@ class ScheduledTask(BaseModel):
                 break
 
     def _next_after(self, anchor: float) -> float:
-        """Compute the next cron occurrence after anchor."""
+        """Compute the next cron occurrence after the given anchor time."""
         dt = datetime.fromtimestamp(anchor, tz=CONF.scheduler_tz)
         return float(croniter(self.cron, dt).get_next(float))
 
 
-def _schedule_key(schedule_id: str) -> str:
-    """Redis key for a schedule definition."""
-    return state.backend.format_key(*state.KEY_SCHEDULE, schedule_id)
-
-
-def _queue_key() -> str:
-    """Redis sorted-set key that indexes schedules by next_run."""
-    return state.backend.format_key(*state.KEY_SCHEDULE_QUEUE)
-
-
-def register(
+async def register(
     task_name: str,
     every: str,
     context: BaseModel,
@@ -81,7 +77,7 @@ def register(
     repeat: int = REPEAT_FOREVER,
     metadata: dict[str, Any] | None = None,
 ) -> None:
-    """Register a new scheduled task in Redis.
+    """Register a new scheduled task.
 
     The task will first fire at the next cron occurrence from now.
 
@@ -95,50 +91,12 @@ def register(
     """
     task = ScheduledTask(
         task_name=task_name,
-        context=state.backend.serialize(context),
+        context=backend.serialize(context),
         cron=every,
         repeat=repeat,
         metadata=metadata,
     )
-
-    state.backend.set(
-        _schedule_key(task_name),
-        task.model_dump_json().encode(),
-    )
-    state.backend.zadd(_queue_key(), {task_name: task.next_run})
+    await backend.schedule.register(task)
     logger.info(f"Scheduled {task_name}")
 
 
-async def tick() -> None:
-    """Process all scheduled tasks that are due right now.
-
-    For each due task, enqueues it into the normal task queue. If repeats
-    remain, advances to the next run time. Otherwise removes the schedule.
-    """
-    for _task_name in await state.backend.zrangebyscore(_queue_key(), 0, time.time()):
-        task_name = _task_name.decode("utf-8")
-
-        try:
-            data = state.backend.get(_schedule_key(task_name))
-            task = ScheduledTask.model_validate_json(data)
-        except ValidationError:
-            logger.warning(f"Failed to load schedule {task_name}, skipping")
-            continue
-
-        await enqueue(
-            task.task_name,
-            context=state.backend.deserialize(task.context),
-            metadata=task.metadata,
-        )
-
-        if task.repeat == 0:
-            state.backend.zrem(_queue_key(), task_name)
-            state.backend.delete(_schedule_key(task_name))
-            logger.info(f"Schedule for '{task_name}' exhausted")
-        else:
-            task.advance()
-            state.backend.set(
-                _schedule_key(task_name),
-                task.model_dump_json().encode(),
-            )
-            state.backend.zadd(_queue_key(), {task_name: task.next_run})

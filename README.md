@@ -122,8 +122,8 @@ async def start_research(company: str) -> dict:
     return {"agent_id": str(task.agent_id), "status": "queued"}  # Return agent_id for status polling
 
 @router.get("/research/{agent_id}")
-def get_status(agent_id: UUID, db: Session = Depends(get_db)) -> ax.activity.ActivityDetailSchema:
-    return ax.activity.detail(db, agent_id=agent_id)  # Query by agent_id
+async def get_status(agent_id: UUID) -> ax.activity.ActivityDetailSchema:
+    return await ax.activity.detail(agent_id=agent_id)
 ```
 
 ### 4. Run Workers
@@ -150,8 +150,8 @@ task = await ax.enqueue(
 )
 
 # Filter activities by metadata
-activities = ax.activity.list(db, metadata_filter={"organization_id": "org-123"})
-detail = ax.activity.detail(db, agent_id, metadata_filter={"organization_id": "org-123"})
+activities = await ax.activity.list(metadata_filter={"organization_id": "org-123"})
+detail = await ax.activity.detail(agent_id=agent_id, metadata_filter={"organization_id": "org-123"})
 
 # Access metadata programmatically (excluded from API serialization by default)
 org_id = detail.metadata["organization_id"]
@@ -186,7 +186,7 @@ agent = Agent(
 Update progress explicitly from your task:
 
 ```python
-ax.activity.update(agent_id, "Processing batch 3 of 10", percentage=30)
+await ax.activity.update(agent_id, "Processing batch 3 of 10", percentage=30)
 ```
 
 ### Task Locking
@@ -202,11 +202,9 @@ async def associate(agent_id: UUID, context: ObservationContext):
 pool.add_task("associate_observation", handler, lock_key="user:{user_id}")
 ```
 
-The `lock_key` is a string template evaluated against the task context fields. When a worker dequeues a task whose lock is held, it puts the task back at the end of the queue and moves on. The lock is released automatically when the task completes or errors.
+The `lock_key` is a string template evaluated against the task context fields. Tasks with the same evaluated lock key are routed to a dedicated partition queue (`{prefix}:{lock_key}`) where they execute one at a time. Workers skip locked partitions and move on to the next available one — no requeuing, no wasted cycles.
 
-The lock TTL (`AGENTEXEC_LOCK_TTL`, default 1800s) is a safety net for worker process death — locks are always explicitly released on task completion or error. Set this higher than your longest expected task duration.
-
-**Note:** When a task is requeued due to a held lock, it goes to the back of the queue. This means strict FIFO ordering is not guaranteed between tasks sharing the same lock key — if tasks T2 and T3 are both waiting on T1's lock, either could run next after T1 completes.
+The lock is released automatically when a task completes or errors. The lock TTL (`AGENTEXEC_LOCK_TTL`, default 1800s) is a safety net for worker process death (OOM, SIGKILL) — under normal operation, locks are always explicitly released. Set this higher than your longest expected task duration.
 
 ### Scheduled Tasks
 
@@ -366,8 +364,7 @@ if __name__ == "__main__":
     try:
         pool.run()
     except KeyboardInterrupt:
-        with Session(engine) as db:
-            ax.activity.cancel_pending(db)
+        asyncio.run(ax.activity.cancel_pending())
 ```
 
 ### Docker Deployment
@@ -396,11 +393,10 @@ import agentexec as ax
 engine = create_engine(os.environ["DATABASE_URL"])
 pool = ax.Pool(engine=engine)
 
-def cleanup() -> None:
-    with Session(engine) as db:
-        ax.activity.cancel_pending(db)
+async def cleanup() -> None:
+    await ax.activity.cancel_pending()
 
-atexit.register(cleanup)
+atexit.register(lambda: asyncio.run(cleanup()))
 
 @pool.task("my_task")
 async def my_task(agent_id: UUID, context: MyContext) -> None:
@@ -421,11 +417,13 @@ docker run -e DATABASE_URL=... -e REDIS_URL=... -e OPENAI_API_KEY=... my-worker
 
 ## Backend Architecture
 
-### Redis
+### Redis (Default)
 
-agentexec uses Redis for task queuing, result storage, real-time log streaming, and coordination between workers. We chose Redis because it provides exactly the primitives we need (lists, pubsub, atomic counters) with minimal operational overhead.
+agentexec uses Redis for task queuing, result storage, and coordination between workers. The queue uses a partitioned design where tasks with a `lock_key` go to dedicated partition queues (`{prefix}:{lock_key}`) and are serialized by a lock, while tasks without a lock key go to the default queue for concurrent processing.
 
-**AWS Compatible:** Since we use standard Redis features, AWS ElastiCache works out of the box.
+Workers dequeue using Redis `SCAN`, which iterates keys in hash-table order — effectively random. This provides fair distribution across partitions without explicit round-robin. See `examples/queue-fairness/` for benchmarks showing uniform distribution at 1000+ partitions.
+
+**AWS Compatible:** Standard Redis features only — AWS ElastiCache works out of the box.
 
 ```bash
 AGENTEXEC_REDIS_URL=redis://localhost:6379/0
@@ -433,18 +431,45 @@ AGENTEXEC_REDIS_URL=redis://localhost:6379/0
 AGENTEXEC_REDIS_URL=redis://my-cluster.abc123.use1.cache.amazonaws.com:6379
 ```
 
-### Extensible State Backend
+### Kafka (Experimental)
 
-The state backend is pluggable. We're adding support for additional backends (DynamoDB, PostgreSQL, in-memory for testing). You can also implement your own:
+Kafka can be used as an alternative backend for task queuing and schedule storage. Activity tracking always uses PostgreSQL regardless of backend — Kafka is not a KV store, so state operations (`get`/`set`, counters) are not supported and will raise `NotImplementedError`.
 
 ```bash
-AGENTEXEC_STATE_BACKEND=agentexec.state.redis_backend  # Default
-AGENTEXEC_STATE_BACKEND=myapp.state.dynamodb_backend   # Custom
+pip install agentexec[kafka]
+
+AGENTEXEC_STATE_BACKEND=agentexec.state.kafka
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092
+```
+
+Kafka uses consumer groups for work distribution instead of Redis's scan-based dequeue. Topics are auto-created on first use. Schedule storage uses a compacted topic that is replayed on each poll.
+
+**When to consider Kafka:**
+- You already run Kafka and want to avoid adding Redis
+- You need durable, replayable task queues with built-in replication
+- You want partition-level ordering guarantees (tasks with the same key go to the same partition)
+
+**Limitations:**
+- No KV state — `backend.state.get/set/delete` and counters raise `NotImplementedError`
+- No partition-level locking (Kafka partition assignment handles isolation instead)
+- Schedule `get_due()` replays the entire compacted topic on every poll
+- `lock_key` is used as a Kafka partition key (routing), not as a mutex
+
+See [Kafka configuration](#kafka-settings) below for all available settings.
+
+### Extensible State Backend
+
+The state backend is pluggable. Implement `BaseBackend` with `state`, `queue`, and `schedule` sub-backends:
+
+```bash
+AGENTEXEC_STATE_BACKEND=agentexec.state.redis   # Default
+AGENTEXEC_STATE_BACKEND=agentexec.state.kafka    # Experimental
+AGENTEXEC_STATE_BACKEND=myapp.state.custom       # Custom (must export Backend class)
 ```
 
 ### Database
 
-Activity tracking uses SQLAlchemy with two tables:
+Activity tracking uses SQLAlchemy with two tables (always PostgreSQL/SQLite, independent of the state backend):
 
 **`agentexec_activity`** - Main activity records
 - `agent_id` - Unique identifier (UUID)
@@ -478,25 +503,23 @@ from agentexec.activity.schemas import (
 **List activities:**
 
 ```python
-with Session(engine) as db:
-    result = ax.activity.list(db, page=1, page_size=20)
-    # Returns ActivityListSchema:
-    # {
-    #   "items": [...],      # List of ActivityListItemSchema
-    #   "total": 150,
-    #   "page": 1,
-    #   "page_size": 20,
-    #   "total_pages": 8
-    # }
+result = await ax.activity.list(page=1, page_size=20)
+# Returns ActivityListSchema:
+# {
+#   "items": [...],      # List of ActivityListItemSchema
+#   "total": 150,
+#   "page": 1,
+#   "page_size": 20,
+#   "total_pages": 8
+# }
 ```
 
 **Get activity detail:**
 
 ```python
-activity = ax.activity.detail(db, agent_id=agent_id)
+activity = await ax.activity.detail(agent_id=agent_id)
 # Returns ActivityDetailSchema:
 # {
-#   "id": "...",
 #   "agent_id": "...",
 #   "agent_type": "research_company",
 #   "created_at": "2024-01-15T10:30:00Z",
@@ -512,7 +535,7 @@ activity = ax.activity.detail(db, agent_id=agent_id)
 **Count active agents:**
 
 ```python
-count = ax.activity.active_count(db)
+count = await ax.activity.count_active()
 # Returns number of agents with status QUEUED or RUNNING
 ```
 
@@ -527,13 +550,15 @@ from sqlalchemy.orm import Session
 import agentexec as ax
 
 def build_table(db: Session) -> Table:
-    table = Table(title=f"Active Agents: {ax.activity.active_count(db)}")
+    count = asyncio.run(ax.activity.count_active())
+    table = Table(title=f"Active Agents: {count}")
     table.add_column("Status")
     table.add_column("Task")
     table.add_column("Message")
     table.add_column("Progress")
 
-    for item in ax.activity.list(db, page=1, page_size=10).items:
+    activities = asyncio.run(ax.activity.list(page=1, page_size=10))
+    for item in activities.items:
         table.add_row(
             item.status,
             item.agent_type,
@@ -647,7 +672,7 @@ async def scheduled(agent_id: UUID, context: MyContext) -> None: ...
 
 pool.add_schedule("name", "0 * * * *", MyContext(), repeat=3)  # Schedule separately
 
-pool.run()       # Blocking - runs workers + scheduler
+pool.run()       # Blocking - runs workers + scheduler + retry handling
 pool.start()     # Non-blocking - starts workers in background
 pool.shutdown()  # Graceful shutdown
 ```
@@ -658,20 +683,20 @@ pool.shutdown()  # Graceful shutdown
 import agentexec as ax
 
 # Create activity (returns agent_id for tracking)
-agent_id = ax.activity.create(task_name, message="Starting...")
+agent_id = await ax.activity.create(task_name, message="Starting...")
 
 # Update progress
-ax.activity.update(agent_id, message, percentage=50)
-ax.activity.complete(agent_id, message="Done")
-ax.activity.error(agent_id, error="Failed: ...")
+await ax.activity.update(agent_id, message, percentage=50)
+await ax.activity.complete(agent_id, message="Done")
+await ax.activity.error(agent_id, message="Failed: ...")
 
-# Query activities
-activities = ax.activity.list(db, page=1, page_size=20)
-activity = ax.activity.detail(db, agent_id=agent_id)
-count = ax.activity.active_count(db)
+# Query activities (uses database session)
+activities = await ax.activity.list(page=1, page_size=20)
+activity = await ax.activity.detail(agent_id=agent_id)
+count = await ax.activity.count_active()
 
 # Cleanup
-canceled = ax.activity.cancel_pending(db)
+canceled = await ax.activity.cancel_pending()
 ```
 
 ### Runners
@@ -733,13 +758,16 @@ ax.Base  # SQLAlchemy declarative base for activity tables
 All settings via environment variables:
 
 ```bash
-# Redis (required)
-AGENTEXEC_REDIS_URL=redis://localhost:6379/0
+# Redis
+AGENTEXEC_REDIS_URL=redis://localhost:6379/0    # Also accepts REDIS_URL
+AGENTEXEC_REDIS_POOL_SIZE=10
+AGENTEXEC_REDIS_POOL_TIMEOUT=5
 
 # Workers
 AGENTEXEC_NUM_WORKERS=4
-AGENTEXEC_QUEUE_NAME=agentexec_tasks
+AGENTEXEC_QUEUE_PREFIX=agentexec_tasks          # Also accepts AGENTEXEC_QUEUE_NAME
 AGENTEXEC_GRACEFUL_SHUTDOWN_TIMEOUT=300
+AGENTEXEC_MAX_TASK_RETRIES=3                    # 0 to disable retries
 
 # Database
 AGENTEXEC_TABLE_PREFIX=agentexec_
@@ -747,14 +775,15 @@ AGENTEXEC_TABLE_PREFIX=agentexec_
 # Results
 AGENTEXEC_RESULT_TTL=3600
 
-# Task locking
+# Task locking (Redis backend only)
 AGENTEXEC_LOCK_TTL=1800
 
 # Scheduling
 AGENTEXEC_SCHEDULER_TIMEZONE=UTC
+AGENTEXEC_SCHEDULER_POLL_INTERVAL=10
 
 # State backend
-AGENTEXEC_STATE_BACKEND=agentexec.state.redis_backend
+AGENTEXEC_STATE_BACKEND=agentexec.state.redis   # or agentexec.state.kafka
 AGENTEXEC_KEY_PREFIX=agentexec
 
 # Activity messages (customizable)
@@ -763,6 +792,21 @@ AGENTEXEC_ACTIVITY_MESSAGE_STARTED="Task started."
 AGENTEXEC_ACTIVITY_MESSAGE_COMPLETE="Task completed successfully."
 AGENTEXEC_ACTIVITY_MESSAGE_ERROR="Task failed with error: {error}"
 ```
+
+### Kafka Settings
+
+These settings only apply when using the Kafka state backend (`AGENTEXEC_STATE_BACKEND=agentexec.state.kafka`):
+
+```bash
+KAFKA_BOOTSTRAP_SERVERS=localhost:9092          # Also accepts AGENTEXEC_KAFKA_BOOTSTRAP_SERVERS
+AGENTEXEC_KAFKA_DEFAULT_PARTITIONS=6            # Partitions for auto-created topics
+AGENTEXEC_KAFKA_REPLICATION_FACTOR=1            # Replication factor for auto-created topics
+AGENTEXEC_KAFKA_MAX_BATCH_SIZE=16384            # Producer max batch size (bytes)
+AGENTEXEC_KAFKA_LINGER_MS=5                     # Producer linger time (ms)
+AGENTEXEC_KAFKA_RETENTION_MS=-1                 # Retention for compacted topics (-1 = forever)
+```
+
+For single-node development, set `KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1` on your broker or consumer groups will hang.
 
 ---
 
@@ -812,4 +856,5 @@ MIT License - see [LICENSE](LICENSE) for details.
 - **Documentation**: [docs/](docs/)
 - **Example App**: [examples/openai-agents-fastapi/](examples/openai-agents-fastapi/)
 - **Multi-Tenancy Example**: [examples/multi-tenancy/](examples/multi-tenancy/)
+- **Queue Fairness Benchmark**: [examples/queue-fairness/](examples/queue-fairness/)
 - **Issues**: [GitHub Issues](https://github.com/Agent-CI/agentexec/issues)

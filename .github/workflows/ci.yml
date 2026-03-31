@@ -1,0 +1,125 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  # -----------------------------------------------------------------------
+  # Unit tests — no external services (fakeredis + SQLite)
+  # -----------------------------------------------------------------------
+
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.12", "3.13"]
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python ${{ matrix.python-version }}
+        run: uv python install ${{ matrix.python-version }}
+
+      - name: Install dependencies
+        run: uv sync --dev
+
+      - name: Run unit tests
+        run: |
+          uv run pytest tests/ \
+            --ignore=tests/test_kafka_integration.py \
+            -o "addopts=" \
+            -v --tb=long
+
+  # -----------------------------------------------------------------------
+  # Kafka integration tests — real broker via docker run
+  # -----------------------------------------------------------------------
+  test-kafka:
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Start Kafka broker
+        run: |
+          docker run -d --name kafka \
+            -p 9092:9092 \
+            -e KAFKA_NODE_ID=1 \
+            -e KAFKA_PROCESS_ROLES=broker,controller \
+            -e KAFKA_CONTROLLER_QUORUM_VOTERS=1@localhost:9093 \
+            -e KAFKA_CONTROLLER_LISTENER_NAMES=CONTROLLER \
+            -e KAFKA_LISTENERS=PLAINTEXT://:9092,CONTROLLER://:9093 \
+            -e KAFKA_ADVERTISED_LISTENERS=PLAINTEXT://localhost:9092 \
+            -e KAFKA_LISTENER_SECURITY_PROTOCOL_MAP=PLAINTEXT:PLAINTEXT,CONTROLLER:PLAINTEXT \
+            -e KAFKA_INTER_BROKER_LISTENER_NAME=PLAINTEXT \
+            -e KAFKA_LOG_CLEANER_MIN_COMPACTION_LAG_MS=0 \
+            -e KAFKA_LOG_CLEANER_MIN_CLEANABLE_RATIO=0.01 \
+            -e KAFKA_LOG_RETENTION_MS=60000 \
+            -e KAFKA_NUM_PARTITIONS=1 \
+            -e KAFKA_AUTO_CREATE_TOPICS_ENABLE=true \
+            -e KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS=0 \
+            -e KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR=1 \
+            -e CLUSTER_ID=ciTestCluster0001 \
+            apache/kafka:3.9.0
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Set up Python
+        run: uv python install 3.12
+
+      - name: Install dependencies
+        run: uv sync --dev --extra kafka
+
+      - name: Wait for Kafka to be ready
+        run: |
+          echo "Waiting for Kafka..."
+          for i in $(seq 1 30); do
+            if nc -z localhost 9092 2>/dev/null; then
+              echo "Kafka port is open"
+              sleep 5
+              echo "Kafka is ready"
+              exit 0
+            fi
+            echo "  attempt $i/30..."
+            sleep 2
+          done
+          echo "Kafka failed to start"
+          docker logs kafka
+          exit 1
+
+      - name: Run Kafka integration tests
+        timeout-minutes: 2
+        run: |
+          uv run pytest tests/test_kafka_integration.py \
+            -o "addopts=" \
+            -v --tb=long 2>&1 | tee /tmp/kafka_test_output.txt
+          exit ${PIPESTATUS[0]}
+        env:
+          AGENTEXEC_STATE_BACKEND: agentexec.state.kafka
+          KAFKA_BOOTSTRAP_SERVERS: localhost:9092
+          AGENTEXEC_KAFKA_DEFAULT_PARTITIONS: "2"
+          AGENTEXEC_KAFKA_REPLICATION_FACTOR: "1"
+
+      - name: Show Kafka logs on failure
+        if: failure()
+        run: docker logs kafka 2>&1 | tail -50
+
+      - name: Create failure check annotation with output
+        if: failure()
+        run: |
+          if [ -f /tmp/kafka_test_output.txt ]; then
+            grep -E '\[queue_|FAILED|ERROR|AssertionError|TIMEOUT|short test summary' /tmp/kafka_test_output.txt | tail -9 | while IFS= read -r line; do
+              echo "::warning::$line"
+            done
+          fi

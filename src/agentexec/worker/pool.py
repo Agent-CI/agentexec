@@ -5,15 +5,21 @@ import logging
 import multiprocessing as mp
 from dataclasses import dataclass
 from typing import Any, Callable
-from uuid import uuid4
+from uuid import UUID, uuid4
 
 from pydantic import BaseModel
 from sqlalchemy import Engine, create_engine
+from sqlalchemy.orm import Session, sessionmaker
 
-from agentexec import state
 from agentexec.config import CONF
-from agentexec.core.db import remove_global_session, set_global_session
-from agentexec.core.queue import dequeue, requeue
+from agentexec.state import backend
+import queue as stdlib_queue
+
+from agentexec import activity
+from agentexec.activity.events import ActivityUpdated
+from agentexec.activity.handlers import IPCHandler
+from agentexec.core.db import configure_engine
+from agentexec.core.queue import enqueue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
 from agentexec.worker.event import StateEvent
@@ -27,6 +33,24 @@ __all__ = [
     "Worker",
     "Pool",
 ]
+
+
+class Message(BaseModel):
+    """Base event sent from a worker to the pool."""
+    pass
+
+
+class TaskFailed(Message):
+    task: Task
+    error: str
+
+    @classmethod
+    def from_exception(cls, task: Task, exception: Exception) -> TaskFailed:
+        return cls(task=task, error=str(exception))
+
+
+class LogEntry(Message):
+    record: LogMessage
 
 
 class _EmptyContext(BaseModel):
@@ -44,22 +68,21 @@ def _get_pool_id() -> str:
 class WorkerContext:
     """Shared context passed from Pool to Worker processes."""
 
-    database_url: str
     shutdown_event: StateEvent
     tasks: dict[str, TaskDefinition]
-    queue_name: str
+    tx: mp.Queue
 
 
 class Worker:
     """Individual worker process with isolated state.
 
     Each worker configures the scoped Session factory on startup.
-    Task handlers can use get_global_session() to get the process-local session.
+    Workers don't have database access — all persistence goes through the pool.
     """
 
     _worker_id: int
     _context: WorkerContext
-    _logger: logging.Logger
+    logger: logging.Logger
 
     def __init__(self, worker_id: int, context: WorkerContext):
         """Initialize worker with isolated state.
@@ -70,7 +93,9 @@ class Worker:
         """
         self._worker_id = worker_id
         self._context = context
-        self._logger = get_worker_logger(__name__)
+        self.logger = get_worker_logger(__name__, tx=context.tx)
+
+        activity.handler = IPCHandler(context.tx)
 
     @classmethod
     def run_in_process(cls, worker_id: int, context: WorkerContext) -> None:
@@ -85,68 +110,44 @@ class Worker:
 
     def run(self) -> None:
         """Main worker entry point - sets up async loop and runs."""
-        self._logger.info(f"Worker {self._worker_id} starting")
-
-        engine = create_engine(self._context.database_url)
-        set_global_session(engine)
+        self.logger.info(f"Worker {self._worker_id} starting")
 
         try:
             asyncio.run(self._run())
         except Exception as e:
-            self._logger.exception(f"Worker {self._worker_id} fatal error: {e}")
+            self.logger.exception(f"Worker {self._worker_id} fatal error: {e}")
             raise
+        finally:
+            asyncio.run(backend.close())
+            self.logger.info(f"Worker {self._worker_id} shutting down")
+
+    def _send(self, message: Message) -> None:
+        """Send a message to the pool via the multiprocessing queue."""
+        self._context.tx.put_nowait(message)
 
     async def _run(self) -> None:
-        """Async main loop - polls queue and processes tasks."""
-        try:
-            # No sleep needed - dequeue() uses brpop which blocks waiting for tasks
-            while not await self._context.shutdown_event.is_set():
-                if (task := await self._dequeue_task()) is not None:
-                    lock_key = task.get_lock_key()
+        """Async main loop - dequeue, execute, complete."""
+        while not await self._context.shutdown_event.is_set():
+            try:
+                data = await backend.queue.pop(timeout=1)
+                if data is None:
+                    continue
 
-                    if lock_key is not None:
-                        acquired = await state.acquire_lock(lock_key, str(task.agent_id))
-                        if not acquired:
-                            self._logger.debug(
-                                f"Worker {self._worker_id} lock held for {task.task_name} "
-                                f"(lock_key={lock_key}), requeuing"
-                            )
-                            requeue(task, queue_name=self._context.queue_name)
-                            continue
+                task = Task.model_validate(data)
+                definition = self._context.tasks[task.task_name]
+                partition_key = definition.get_lock_key(task.context)
 
-                    try:
-                        self._logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                        await task.execute()
-                        self._logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
-                    finally:
-                        if lock_key is not None:
-                            await state.release_lock(lock_key)
-        except Exception as e:
-            self._logger.exception(f"Worker {self._worker_id} error: {e}")
-            # Continue processing other tasks
-            # TODO allow configurable behavior here (retry, backoff, fail)
-            # TODO all of the actual logic is handled in task.execute(), so I don't know why we ever end up here.
-        finally:
-            await state.backend.close()
-            remove_global_session()
-            self._logger.info(f"Worker {self._worker_id} shutting down")
+                try:
+                    self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
+                    await definition.execute(task)
+                    self.logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
+                except Exception as e:
+                    self._send(TaskFailed.from_exception(task, e))
+                finally:
+                    await backend.queue.complete(partition_key)
+            except Exception as e:
+                self.logger.exception(f"Worker {self._worker_id} error: {e}")
 
-    async def _dequeue_task(self) -> Task | None:
-        """Dequeue and hydrate a task from the Redis queue.
-
-        Reconstructs the typed context using the TaskDefinition
-        and binds the definition to the task.
-
-        Returns:
-            Hydrated Task instance if available, else None.
-        """
-        if (data := await dequeue(queue_name=self._context.queue_name)) is not None:
-            return Task.from_serialized(
-                definition=self._context.tasks[data["task_name"]],
-                data=data,
-            )
-
-        return None
 
 
 class Pool:
@@ -177,14 +178,12 @@ class Pool:
         self,
         engine: Engine | None = None,
         database_url: str | None = None,
-        queue_name: str | None = None,
     ) -> None:
         """Initialize the worker pool.
 
         Args:
             engine: SQLAlchemy engine (URL will be extracted for workers).
             database_url: Database URL string. Alternative to passing engine.
-            queue_name: Redis queue name. Defaults to CONF.queue_name.
 
         Raises:
             ValueError: If neither engine nor database_url is provided.
@@ -194,16 +193,16 @@ class Pool:
             raise ValueError("Either engine or database_url must be provided")
 
         engine = engine or create_engine(database_url)  # type: ignore[arg-type]
-        set_global_session(engine)
-
+        configure_engine(engine)
+        self._worker_queue: mp.Queue = mp.Queue()
         self._context = WorkerContext(
-            database_url=database_url or engine.url.render_as_string(hide_password=False),
             shutdown_event=StateEvent("shutdown", _get_pool_id()),
             tasks={},
-            queue_name=queue_name or CONF.queue_name,
+            tx=self._worker_queue,
         )
         self._processes = []
         self._log_handler = None
+        self._pending_schedules: list[dict[str, Any]] = []
 
     def task(
         self,
@@ -345,6 +344,9 @@ class Pool:
         ``pool.add_task()``.  The scheduler loop runs automatically
         inside ``pool.run()`` — no extra setup needed.
 
+        Schedules are stored and registered with the backend when
+        ``start()`` is called.
+
         Args:
             task_name: Name of a registered task.
             every: Schedule expression (cron syntax: min hour dom mon dow).
@@ -366,58 +368,52 @@ class Pool:
                 f"Use @pool.task() or pool.add_task() first."
             )
 
-        schedule.register(
+        self._pending_schedules.append(dict(
             task_name=task_name,
             every=every,
             context=context,
             repeat=repeat,
             metadata=metadata,
-        )
+        ))
 
-    def start(self) -> None:
-        """Start worker processes (non-blocking).
+    async def start(self) -> None:
+        """Start workers and run until they exit.
 
-        Spawns N worker processes that poll the Redis queue and execute
-        tasks from this pool's registry. Returns immediately.
-
-        Workers log to Redis pubsub. Use run() if you want the main
-        process to collect and display those logs.
+        Spawns worker processes, forwards logs, and processes scheduled
+        tasks. This is the foreground entry point — it blocks until all
+        workers finish. Use ``run()`` for a daemonized version that
+        handles KeyboardInterrupt and cleanup.
         """
-        # Clear any stale shutdown signal
-        self._context.shutdown_event.clear()
+        await self._context.shutdown_event.clear()
 
-        # Spawn workers BEFORE setting up log handler to avoid pickling issues
-        # (StreamHandler has a lock that can't be pickled)
+        # Spawn workers before log handler to avoid pickling issues
         self._spawn_workers()
 
-        # Set up log handler for receiving worker logs
         # TODO make this configurable
         self._log_handler = logging.StreamHandler()
         self._log_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
 
+        await asyncio.gather(
+            self._process_worker_events(),
+            self._process_scheduled_tasks(),
+        )
+
     def run(self) -> None:
-        """Start workers and run log collector until interrupted.
+        """Start workers in a managed event loop with graceful shutdown.
 
-        Spawns worker processes and runs an async event loop in the main
-        process that collects logs from workers via Redis pubsub.
-        The scheduler loop also runs automatically alongside the workers,
-        polling for due scheduled tasks and enqueuing them.
-
-        Blocks until all workers exit or KeyboardInterrupt, then shuts
-        down gracefully.
+        Calls ``start()`` inside ``asyncio.run()`` and handles
+        KeyboardInterrupt, shutdown, and connection cleanup.
         """
 
         async def _loop() -> None:
             try:
-                await self._collect_logs()
+                await self.start()
             except asyncio.CancelledError:
                 pass
             finally:
-                self.shutdown()
-                await state.backend.close()
+                await self.shutdown()
 
         try:
-            self.start()
             asyncio.run(_loop())
         except KeyboardInterrupt:
             pass
@@ -436,34 +432,66 @@ class Pool:
             self._processes.append(process)
             print(f"Started worker {worker_id} (PID: {process.pid})")
 
-    async def _collect_logs(self) -> None:
-        """Listen for log messages from workers and run scheduler ticks."""
+    async def _process_scheduled_tasks(self) -> None:
+        """Register pending schedules, then poll for due tasks and enqueue them."""
+        for _schedule in self._pending_schedules:
+            await schedule.register(**_schedule)
+        self._pending_schedules.clear()
+
+        while any(p.is_alive() for p in self._processes):
+            await asyncio.sleep(CONF.scheduler_poll_interval)
+
+            for scheduled_task in await backend.schedule.get_due():
+                await enqueue(
+                    scheduled_task.task_name,
+                    context=backend.deserialize(scheduled_task.context),
+                    metadata=scheduled_task.metadata,
+                )
+
+                if scheduled_task.repeat == 0:
+                    await backend.schedule.remove(scheduled_task.key)
+                else:
+                    scheduled_task.advance()
+                    await backend.schedule.register(scheduled_task)
+
+    def _partition_key_for(self, task: Task) -> str | None:
+        """Derive the partition/lock key for a task from its definition."""
+        return self._context.tasks[task.task_name].get_lock_key(task.context)
+
+    async def _process_worker_events(self) -> None:
+        """Handle all events from worker processes via multiprocessing queue."""
         assert self._log_handler, "Log handler not initialized"
 
-        # Create task to subscribe to logs
-        log_task = asyncio.create_task(self._process_log_stream())
-
-        try:
-            # Poll worker processes and run scheduler
-            while any(p.is_alive() for p in self._processes):
-                await asyncio.sleep(0.1)
-                await schedule.tick()
-        finally:
-            log_task.cancel()
+        while any(p.is_alive() for p in self._processes):
             try:
-                await log_task
-            except asyncio.CancelledError:
-                pass
+                message = self._worker_queue.get_nowait()
+            except stdlib_queue.Empty:
+                await asyncio.sleep(0.05)
+                continue
 
-    async def _process_log_stream(self) -> None:
-        """Process log messages from the state backend."""
-        assert self._log_handler, "Log handler not initialized"
+            match message:
+                case LogEntry(record=record):
+                    self._log_handler.emit(record.to_log_record())
 
-        async for message in state.subscribe_logs():
-            log_message = LogMessage.model_validate_json(message)
-            self._log_handler.emit(log_message.to_log_record())
+                case TaskFailed(task=task, error=error):
+                    if task.retry_count < CONF.max_task_retries:
+                        task.retry_count += 1
+                        await backend.queue.push(
+                            task.model_dump_json(),
+                            partition_key=self._partition_key_for(task),
+                            high_priority=True,
+                        )
+                    else:
+                        # TODO incorporate this messaging into the ax.activity stream.
+                        print(
+                            f"Task {task.task_name} failed "
+                            f"after {task.retry_count + 1} attempts, giving up: {error}"
+                        )
 
-    def shutdown(self, timeout: int | None = None) -> None:
+                case ActivityUpdated():
+                    activity.handler(message)
+
+    async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.
 
         For use with start(). If using run(), shutdown is handled automatically.
@@ -475,7 +503,7 @@ class Pool:
             timeout = CONF.graceful_shutdown_timeout
 
         print("Shutting down worker pool")
-        self._context.shutdown_event.set()
+        await self._context.shutdown_event.set()
 
         for process in self._processes:
             process.join(timeout=timeout)
@@ -485,4 +513,5 @@ class Pool:
                 process.join(timeout=5)
 
         self._processes.clear()
+        await backend.close()
         print("Worker pool shutdown complete")

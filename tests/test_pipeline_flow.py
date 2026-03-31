@@ -1,12 +1,3 @@
-"""Test Pipeline type flow validation.
-
-This module tests the type checking between pipeline steps, ensuring that:
-- Return types from one step match parameter types of the next step
-- Tuple returns are properly unpacked into multiple parameters
-- Type mismatches are caught at validation time
-- Subclass relationships are respected
-"""
-
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 
@@ -14,11 +5,6 @@ import pytest
 from pydantic import BaseModel
 
 from agentexec.pipeline import Pipeline
-
-
-# =============================================================================
-# Test Models
-# =============================================================================
 
 
 class Context(BaseModel):
@@ -52,11 +38,6 @@ class Combined(BaseModel):
     b: str
 
 
-# =============================================================================
-# Fixtures
-# =============================================================================
-
-
 @dataclass
 class MockWorkerContext:
     """Mock context for testing."""
@@ -76,11 +57,6 @@ def mock_pool():
 def pipeline(mock_pool):
     """Create a Pipeline for testing."""
     return Pipeline(mock_pool)
-
-
-# =============================================================================
-# Valid Flows - Single Value
-# =============================================================================
 
 
 class TestValidSingleValueFlows:
@@ -148,11 +124,6 @@ class TestValidSingleValueFlows:
         assert result.value == "from_derived"
 
 
-# =============================================================================
-# Valid Flows - Tuple Unpacking
-# =============================================================================
-
-
 class TestValidTupleFlows:
     """Test valid tuple return/parameter flows."""
 
@@ -215,11 +186,6 @@ class TestValidTupleFlows:
         assert result.b == "right:data"
 
 
-# =============================================================================
-# Invalid Flows - Count Mismatches
-# =============================================================================
-
-
 class TestInvalidCountMismatches:
     """Test that count mismatches between steps are caught."""
 
@@ -279,11 +245,6 @@ class TestInvalidCountMismatches:
             await pipeline.run(Context(value="42"))
 
 
-# =============================================================================
-# Invalid Flows - Type Mismatches
-# =============================================================================
-
-
 class TestInvalidTypeMismatches:
     """Test that type mismatches between steps are caught."""
 
@@ -328,11 +289,6 @@ class TestInvalidTypeMismatches:
             pipeline._validate_type_flow()
 
 
-# =============================================================================
-# Invalid Flows - Final Step Returns Tuple
-# =============================================================================
-
-
 class TestInvalidFinalStepTuple:
     """Test that final step returning tuple is rejected."""
 
@@ -355,11 +311,6 @@ class TestInvalidFinalStepTuple:
 
         with pytest.raises(TypeError):
             pipeline._validate_type_flow()
-
-
-# =============================================================================
-# Edge Cases
-# =============================================================================
 
 
 class TestInvalidNoSteps:

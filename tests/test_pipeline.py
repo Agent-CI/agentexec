@@ -1,5 +1,3 @@
-"""Test Pipeline orchestration functionality."""
-
 from dataclasses import dataclass, field
 from unittest.mock import MagicMock
 

@@ -2,9 +2,9 @@ import uuid
 from datetime import datetime
 from typing import Any
 
-from pydantic import BaseModel, ConfigDict, Field, computed_field
+from pydantic import AliasChoices, BaseModel, ConfigDict, Field, computed_field
 
-from agentexec.activity.models import Status
+from agentexec.activity.status import Status
 
 
 class ActivityLogSchema(BaseModel):
@@ -22,15 +22,19 @@ class ActivityLogSchema(BaseModel):
 class ActivityDetailSchema(BaseModel):
     """Schema for an agent activity record with optional logs."""
 
-    model_config = ConfigDict(from_attributes=True)
+    model_config = ConfigDict(from_attributes=True, populate_by_name=True)
 
-    id: uuid.UUID
+    id: uuid.UUID | None = None
     agent_id: uuid.UUID
     agent_type: str
     created_at: datetime
     updated_at: datetime
     logs: list[ActivityLogSchema] = Field(default_factory=list)
-    metadata: dict[str, Any] | None = Field(default=None, alias="metadata_", exclude=True)
+    metadata: dict[str, Any] | None = Field(
+        default=None,
+        validation_alias=AliasChoices("metadata_", "metadata"),
+        exclude=True,
+    )
 
 
 class ActivityListItemSchema(BaseModel):

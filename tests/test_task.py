@@ -1,5 +1,3 @@
-"""Test Task data structure and serialization."""
-
 import json
 import uuid
 
@@ -7,44 +5,36 @@ import pytest
 from pydantic import BaseModel
 
 import agentexec as ax
+from agentexec.core.task import TaskDefinition
 
 
 class SampleContext(BaseModel):
-    """Sample context for task tests."""
-
     message: str
     value: int = 0
 
 
 class NestedContext(BaseModel):
-    """Sample context with nested data."""
-
     message: str
     nested: dict
 
 
 class TaskResult(BaseModel):
-    """Sample result model for task tests."""
-
     status: str
 
 
 @pytest.fixture
 def pool():
-    """Create a Pool for testing."""
     from sqlalchemy import create_engine
-
     engine = create_engine("sqlite:///:memory:")
     return ax.Pool(engine=engine)
 
 
 def test_task_serialization() -> None:
-    """Test that tasks can be serialized to JSON."""
+    """Task serializes to JSON with context as a dict."""
     agent_id = uuid.uuid4()
-    ctx = SampleContext(message="hello", value=42)
     task = ax.Task(
         task_name="test_task",
-        context=ctx,
+        context={"message": "hello", "value": 42},
         agent_id=agent_id,
     )
 
@@ -57,15 +47,8 @@ def test_task_serialization() -> None:
     assert task_data["agent_id"] == str(agent_id)
 
 
-def test_task_deserialization(pool) -> None:
-    """Test that tasks can be deserialized using Task.from_serialized."""
-    # Register a task to get a TaskDefinition
-    @pool.task("test_task")
-    async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
-        return TaskResult(status="success")
-
-    task_def = pool._context.tasks["test_task"]
-
+def test_task_deserialization() -> None:
+    """Task deserializes from raw queue data."""
     agent_id = uuid.uuid4()
     data = {
         "task_name": "test_task",
@@ -73,124 +56,82 @@ def test_task_deserialization(pool) -> None:
         "agent_id": str(agent_id),
     }
 
-    task = ax.Task.from_serialized(task_def, data)
+    task = ax.Task.model_validate(data)
 
     assert task.task_name == "test_task"
-    assert isinstance(task.context, SampleContext)
-    assert task.context.message == "hello"
-    assert task.context.value == 42
+    assert task.context == {"message": "hello", "value": 42}
     assert task.agent_id == agent_id
 
 
-def test_task_round_trip(pool) -> None:
-    """Test that tasks can be serialized and deserialized."""
-    # Register task for deserialization
-    @pool.task("round_trip_task")
-    async def handler(agent_id: uuid.UUID, context: NestedContext) -> TaskResult:
-        return TaskResult(status="success")
-
-    task_def = pool._context.tasks["round_trip_task"]
-
-    original_ctx = NestedContext(message="hello", nested={"key": "value"})
+def test_task_round_trip() -> None:
+    """Task survives serialize → JSON → deserialize."""
     original = ax.Task(
         task_name="round_trip_task",
-        context=original_ctx,
+        context={"message": "hello", "nested": {"key": "value"}},
         agent_id=uuid.uuid4(),
     )
 
-    # Serialize → JSON → Deserialize
     serialized = original.model_dump_json()
-    data = json.loads(serialized)
-    deserialized = ax.Task.from_serialized(task_def, data)
+    deserialized = ax.Task.model_validate_json(serialized)
 
     assert deserialized.task_name == original.task_name
-    # Cast to access typed attributes (Task.context is typed as BaseModel)
-    assert isinstance(deserialized.context, NestedContext)
-    assert isinstance(original.context, NestedContext)
-    assert deserialized.context.message == original.context.message
-    assert deserialized.context.nested == original.context.nested
+    assert deserialized.context == original.context
     assert deserialized.agent_id == original.agent_id
 
 
-def test_task_create_with_basemodel(monkeypatch) -> None:
-    """Test Task.create() with a BaseModel context."""
-    # Mock activity.create to avoid database dependency
-    def mock_create(*args, **kwargs):
+async def test_task_create_with_basemodel(monkeypatch) -> None:
+    """Task.create() serializes context to dict."""
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
 
     ctx = SampleContext(message="hello", value=42)
-    task = ax.Task.create("test_task", ctx)
+    task = await ax.Task.create("test_task", ctx)
 
     assert task.task_name == "test_task"
-    # Context is the typed object
-    assert isinstance(task.context, SampleContext)
-    assert task.context.message == "hello"
-    assert task.context.value == 42
+    assert task.context == {"message": "hello", "value": 42}
 
 
-def test_task_create_preserves_nested(monkeypatch) -> None:
-    """Test Task.create() preserves nested Pydantic models."""
-    # Mock activity.create to avoid database dependency
-    def mock_create(*args, **kwargs):
+async def test_task_create_preserves_nested(monkeypatch) -> None:
+    """Task.create() preserves nested structures in the dict."""
+    async def mock_create(*args, **kwargs):
         return uuid.uuid4()
 
     monkeypatch.setattr("agentexec.core.task.activity.create", mock_create)
 
     ctx = NestedContext(message="hello", nested={"key": "value"})
-    task = ax.Task.create("test_task", ctx)
+    task = await ax.Task.create("test_task", ctx)
 
-    assert isinstance(task.context, NestedContext)
-    assert task.context.message == "hello"
-    assert task.context.nested == {"key": "value"}
+    assert task.context == {"message": "hello", "nested": {"key": "value"}}
 
 
-def test_task_from_serialized(pool) -> None:
-    """Test Task.from_serialized creates a task with typed context."""
-    from agentexec.core.task import TaskDefinition
-
+def test_definition_hydrates_context(pool) -> None:
+    """TaskDefinition.hydrate_context validates dict into typed model."""
     @pool.task("test_task")
     async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
-        return TaskResult(status=f"Result: {context.message}")
+        return TaskResult(status="success")
 
-    task_def = pool._context.tasks["test_task"]
-    agent_id = uuid.uuid4()
+    definition = pool._context.tasks["test_task"]
+    typed = definition.hydrate_context({"message": "hello", "value": 42})
 
-    data = {
-        "task_name": "test_task",
-        "context": {"message": "hello", "value": 42},
-        "agent_id": str(agent_id),
-    }
-
-    task = ax.Task.from_serialized(task_def, data)
-
-    assert task.task_name == "test_task"
-    assert isinstance(task.context, SampleContext)
-    assert task.context.message == "hello"
-    assert task.context.value == 42
-    assert task.agent_id == agent_id
-    assert task._definition is task_def
+    assert isinstance(typed, SampleContext)
+    assert typed.message == "hello"
+    assert typed.value == 42
 
 
-async def test_task_execute_async_handler(pool, monkeypatch) -> None:
-    """Test Task.execute with an async handler."""
-    from unittest.mock import AsyncMock
-
-    # Track activity updates
+async def test_definition_execute_async(pool, monkeypatch) -> None:
+    """TaskDefinition.execute() runs async handler and tracks activity."""
     activity_updates = []
 
-    def mock_update(**kwargs):
+    async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    # Mock state.aset_result
-    aset_result_calls = []
-
-    async def mock_aset_result(agent_id, data, ttl_seconds=None):
-        aset_result_calls.append((agent_id, data, ttl_seconds))
+    async def mock_state_set(key, value, ttl_seconds=None):
+        pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
 
     execution_result = TaskResult(status="success")
 
@@ -198,64 +139,46 @@ async def test_task_execute_async_handler(pool, monkeypatch) -> None:
     async def async_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
         return execution_result
 
-    task_def = pool._context.tasks["async_task"]
-    agent_id = uuid.uuid4()
-
-    task = ax.Task.from_serialized(
-        task_def,
-        {
-            "task_name": "async_task",
-            "context": {"message": "test"},
-            "agent_id": str(agent_id),
-        },
+    definition = pool._context.tasks["async_task"]
+    task = ax.Task(
+        task_name="async_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
     )
 
-    result = await task.execute()
+    result = await definition.execute(task)
 
     assert result == execution_result
-    # Verify activity was updated (started and completed)
     assert len(activity_updates) == 2
-    # First update marks task as started
     assert activity_updates[0]["percentage"] == 0
-    # Second update marks task as completed
     assert activity_updates[1]["percentage"] == 100
 
-    # Verify result was stored
-    assert len(aset_result_calls) == 1
-    assert aset_result_calls[0][0] == agent_id  # Can be UUID or str
-    assert aset_result_calls[0][1] == execution_result
 
-
-async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
-    """Test Task.execute with a sync handler."""
+async def test_definition_execute_sync(pool, monkeypatch) -> None:
+    """TaskDefinition.execute() runs sync handler."""
     activity_updates = []
 
-    def mock_update(**kwargs):
+    async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    async def mock_aset_result(agent_id, data, ttl_seconds=None):
+    async def mock_state_set(key, value, ttl_seconds=None):
         pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
 
     @pool.task("sync_task")
     def sync_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
         return TaskResult(status=f"Sync result: {context.message}")
 
-    task_def = pool._context.tasks["sync_task"]
-    agent_id = uuid.uuid4()
-
-    task = ax.Task.from_serialized(
-        task_def,
-        {
-            "task_name": "sync_task",
-            "context": {"message": "test"},
-            "agent_id": str(agent_id),
-        },
+    definition = pool._context.tasks["sync_task"]
+    task = ax.Task(
+        task_name="sync_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
     )
 
-    result = await task.execute()
+    result = await definition.execute(task)
 
     assert result is not None
     assert isinstance(result, TaskResult)
@@ -263,54 +186,193 @@ async def test_task_execute_sync_handler(pool, monkeypatch) -> None:
     assert len(activity_updates) == 2
 
 
-async def test_task_execute_without_definition_raises() -> None:
-    """Test Task.execute raises RuntimeError if not bound to definition."""
-    task = ax.Task(
-        task_name="test_task",
-        context=SampleContext(message="test"),
-        agent_id=uuid.uuid4(),
-    )
-
-    with pytest.raises(RuntimeError, match="must be bound to a definition"):
-        await task.execute()
-
-
-async def test_task_execute_error_marks_activity_errored(pool, monkeypatch) -> None:
-    """Test Task.execute marks activity as errored on exception."""
-    from agentexec.activity.models import Status
+async def test_definition_execute_error(pool, monkeypatch) -> None:
+    """TaskDefinition.execute() marks activity as errored on exception."""
+    from agentexec.activity.status import Status
 
     activity_updates = []
 
-    def mock_update(**kwargs):
+    async def mock_update(**kwargs):
         activity_updates.append(kwargs)
 
-    async def mock_aset_result(agent_id, data, ttl_seconds=None):
+    async def mock_state_set(key, value, ttl_seconds=None):
         pass
 
     monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
-    monkeypatch.setattr("agentexec.core.task.state.aset_result", mock_aset_result)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
 
     @pool.task("failing_task")
     async def failing_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
         raise ValueError("Task failed!")
 
-    task_def = pool._context.tasks["failing_task"]
-    agent_id = uuid.uuid4()
-
-    task = ax.Task.from_serialized(
-        task_def,
-        {
-            "task_name": "failing_task",
-            "context": {"message": "test"},
-            "agent_id": str(agent_id),
-        },
+    definition = pool._context.tasks["failing_task"]
+    task = ax.Task(
+        task_name="failing_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
     )
 
-    # execute() catches the exception and marks activity as errored, returns None
-    result = await task.execute()
+    with pytest.raises(ValueError, match="Task failed!"):
+        await definition.execute(task)
 
-    assert result is None  # Handler exception results in None return
-    # First update marks started, second marks errored
     assert len(activity_updates) == 2
     assert activity_updates[1]["status"] == Status.ERROR
     assert "Task failed!" in activity_updates[1]["message"]
+
+
+async def test_definition_execute_none_result_not_stored(pool, monkeypatch) -> None:
+    """Handler returning None does not write to result storage."""
+    state_set_calls = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    async def mock_state_set(key, value, ttl_seconds=None):
+        state_set_calls.append(key)
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
+
+    @pool.task("void_task")
+    async def void_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        pass
+
+    definition = pool._context.tasks["void_task"]
+    task = ax.Task(
+        task_name="void_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
+    )
+
+    result = await definition.execute(task)
+    assert result is None
+    assert len(state_set_calls) == 0
+
+
+async def test_definition_execute_stores_result_with_ttl(pool, monkeypatch) -> None:
+    """Handler result is stored in state with the configured TTL."""
+    from agentexec.config import CONF
+
+    state_set_calls = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    async def mock_state_set(key, value, ttl_seconds=None):
+        state_set_calls.append({"key": key, "ttl_seconds": ttl_seconds})
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+    monkeypatch.setattr("agentexec.core.task.backend.state.set", mock_state_set)
+
+    @pool.task("result_task")
+    async def result_handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
+        return TaskResult(status="done")
+
+    definition = pool._context.tasks["result_task"]
+    task = ax.Task(
+        task_name="result_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
+    )
+
+    await definition.execute(task)
+    assert len(state_set_calls) == 1
+    assert state_set_calls[0]["ttl_seconds"] == CONF.result_ttl
+    assert str(task.agent_id) in state_set_calls[0]["key"]
+
+
+async def test_definition_execute_hydrates_context(pool, monkeypatch) -> None:
+    """execute() passes a typed context model to the handler, not a raw dict."""
+    received_context = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("typed_task")
+    async def typed_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        received_context.append(context)
+
+    definition = pool._context.tasks["typed_task"]
+    task = ax.Task(
+        task_name="typed_task",
+        context={"message": "typed", "value": 7},
+        agent_id=uuid.uuid4(),
+    )
+
+    await definition.execute(task)
+    assert len(received_context) == 1
+    assert isinstance(received_context[0], SampleContext)
+    assert received_context[0].message == "typed"
+    assert received_context[0].value == 7
+
+
+async def test_definition_execute_passes_agent_id(pool, monkeypatch) -> None:
+    """execute() passes the task's agent_id to the handler."""
+    received_ids = []
+
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("id_task")
+    async def id_handler(agent_id: uuid.UUID, context: SampleContext) -> None:
+        received_ids.append(agent_id)
+
+    definition = pool._context.tasks["id_task"]
+    expected_id = uuid.uuid4()
+    task = ax.Task(
+        task_name="id_task",
+        context={"message": "test"},
+        agent_id=expected_id,
+    )
+
+    await definition.execute(task)
+    assert received_ids == [expected_id]
+
+
+async def test_definition_execute_error_reraises(pool, monkeypatch) -> None:
+    """execute() re-raises the original exception after marking activity as errored."""
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("reraise_task")
+    async def bad_handler(agent_id: uuid.UUID, context: SampleContext):
+        raise RuntimeError("original error")
+
+    definition = pool._context.tasks["reraise_task"]
+    task = ax.Task(
+        task_name="reraise_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
+    )
+
+    with pytest.raises(RuntimeError, match="original error"):
+        await definition.execute(task)
+
+
+async def test_definition_execute_bad_context_raises(pool, monkeypatch) -> None:
+    """execute() raises ValidationError when context doesn't match the registered type."""
+    async def mock_update(**kwargs):
+        pass
+
+    monkeypatch.setattr("agentexec.core.task.activity.update", mock_update)
+
+    @pool.task("strict_task")
+    async def strict_handler(agent_id: uuid.UUID, context: SampleContext):
+        pass
+
+    definition = pool._context.tasks["strict_task"]
+    task = ax.Task(
+        task_name="strict_task",
+        context={"wrong_field": "oops"},  # missing required 'message'
+        agent_id=uuid.uuid4(),
+    )
+
+    from pydantic import ValidationError
+    with pytest.raises(ValidationError):
+        await definition.execute(task)

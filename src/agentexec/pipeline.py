@@ -374,7 +374,7 @@ class Pipeline:
 
         _context: StepResult = context
         for i, step in enumerate(steps):
-            activity.update(
+            await activity.update(
                 agent_id,
                 f"Started {step.description}",
                 percentage=int((i / total_steps) * 100),
