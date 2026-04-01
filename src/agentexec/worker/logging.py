@@ -19,9 +19,15 @@ class LogMessage(BaseModel):
     process: int | None
     thread: int | None
     created: float
+    exc_text: str | None = None
 
     @classmethod
     def from_log_record(cls, record: logging.LogRecord) -> LogMessage:
+        exc_text = None
+        if record.exc_info and record.exc_info[1] is not None:
+            import traceback
+            exc_text = "".join(traceback.format_exception(*record.exc_info))
+
         return cls(
             name=record.name,
             levelno=record.levelno,
@@ -31,6 +37,7 @@ class LogMessage(BaseModel):
             process=record.process,
             thread=record.thread,
             created=record.created,
+            exc_text=exc_text,
         )
 
     def to_log_record(self) -> logging.LogRecord:
@@ -46,6 +53,7 @@ class LogMessage(BaseModel):
         record.processName = self.processName
         record.process = self.process
         record.created = self.created
+        record.exc_text = self.exc_text
         return record
 
 
@@ -69,16 +77,18 @@ _worker_logging_configured = False
 
 
 def get_worker_logger(name: str, tx: mp.Queue | None = None) -> logging.Logger:
-    """Configure worker logging and return a logger."""
+    """Configure worker logging and return a logger.
+
+    On first call with a tx queue, attaches a QueueLogHandler to the root
+    logger so all worker logs (including third-party libraries) are
+    forwarded to the pool process via IPC.
+    """
     global _worker_logging_configured
 
     if not _worker_logging_configured and tx is not None:
-        root = logging.getLogger(LOGGER_NAME)
+        root = logging.getLogger()
         root.setLevel(logging.INFO)
         root.addHandler(QueueLogHandler(tx))
-        root.propagate = False
         _worker_logging_configured = True
 
-    if name.startswith(LOGGER_NAME):
-        return logging.getLogger(name)
-    return logging.getLogger(f"{LOGGER_NAME}.{name}")
+    return logging.getLogger(name)

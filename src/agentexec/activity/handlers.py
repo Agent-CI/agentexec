@@ -34,7 +34,7 @@ from __future__ import annotations
 import multiprocessing as mp
 from typing import Protocol
 
-from agentexec.activity.events import ActivityCreated, ActivityUpdated
+from agentexec.activity.events import ActivityCreated, ActivityEvent, ActivityUpdated
 from agentexec.activity.status import Status
 
 
@@ -44,7 +44,7 @@ class ActivityHandler(Protocol):
     Any callable that accepts an ``ActivityCreated`` or ``ActivityUpdated``
     event satisfies this protocol.
     """
-    def __call__(self, event: ActivityCreated | ActivityUpdated) -> None: ...
+    def __call__(self, event: ActivityEvent) -> None: ...
 
 
 class PostgresHandler:
@@ -54,7 +54,7 @@ class PostgresHandler:
     for each event, writes the appropriate records, and commits.
     """
 
-    def __call__(self, event: ActivityCreated | ActivityUpdated) -> None:
+    def __call__(self, event: ActivityEvent) -> None:
         match event:
             case ActivityCreated(agent_id=agent_id, task_name=task_name, message=message, metadata=metadata):
                 from agentexec.activity.models import Activity, ActivityLog
@@ -99,5 +99,5 @@ class IPCHandler:
     def __init__(self, tx: mp.Queue) -> None:
         self.tx = tx
 
-    def __call__(self, event: ActivityCreated | ActivityUpdated) -> None:
+    def __call__(self, event: ActivityEvent) -> None:
         self.tx.put_nowait(event)

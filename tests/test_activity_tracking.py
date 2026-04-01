@@ -569,3 +569,22 @@ async def test_metadata_excluded_from_serialization(db_session: Session):
     # But still accessible as attribute for internal use
     assert result.items[0].metadata == {"organization_id": "org-123", "secret": "sensitive"}
     assert detail.metadata == {"organization_id": "org-123", "secret": "sensitive"}
+
+
+async def test_append_log_missing_activity_skips(db_session: Session):
+    """append_log for a nonexistent agent_id warns and returns without raising."""
+    nonexistent_id = uuid.uuid4()
+
+    # Should not raise — just logs a warning and returns
+    Activity.append_log(
+        session=db_session,
+        agent_id=nonexistent_id,
+        message="orphaned update",
+        status=Status.RUNNING,
+        percentage=50,
+    )
+
+    # No log entry was created
+    logs = db_session.query(ActivityLog).all()
+    orphaned = [l for l in logs if l.message == "orphaned update"]
+    assert len(orphaned) == 0

@@ -16,7 +16,7 @@ from agentexec.state import backend
 import queue as stdlib_queue
 
 from agentexec import activity
-from agentexec.activity.events import ActivityUpdated
+from agentexec.activity.events import ActivityEvent
 from agentexec.activity.handlers import IPCHandler
 from agentexec.core.db import configure_engine
 from agentexec.core.queue import enqueue
@@ -24,10 +24,11 @@ from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
 from agentexec.worker.event import StateEvent
 from agentexec.worker.logging import (
-    DEFAULT_FORMAT,
     LogMessage,
     get_worker_logger,
 )
+
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "Worker",
@@ -172,7 +173,6 @@ class Pool:
 
     _context: WorkerContext
     _processes: list[mp.Process]
-    _log_handler: logging.Handler | None
 
     def __init__(
         self,
@@ -201,7 +201,6 @@ class Pool:
             tx=self._worker_queue,
         )
         self._processes = []
-        self._log_handler = None
         self._pending_schedules: list[dict[str, Any]] = []
 
     def task(
@@ -386,12 +385,7 @@ class Pool:
         """
         await self._context.shutdown_event.clear()
 
-        # Spawn workers before log handler to avoid pickling issues
         self._spawn_workers()
-
-        # TODO make this configurable
-        self._log_handler = logging.StreamHandler()
-        self._log_handler.setFormatter(logging.Formatter(DEFAULT_FORMAT))
 
         await asyncio.gather(
             self._process_worker_events(),
@@ -410,6 +404,8 @@ class Pool:
                 await self.start()
             except asyncio.CancelledError:
                 pass
+            except Exception as e:
+                logger.exception(f"Pool error: {e}")
             finally:
                 await self.shutdown()
 
@@ -460,8 +456,6 @@ class Pool:
 
     async def _process_worker_events(self) -> None:
         """Handle all events from worker processes via multiprocessing queue."""
-        assert self._log_handler, "Log handler not initialized"
-
         while any(p.is_alive() for p in self._processes):
             try:
                 message = self._worker_queue.get_nowait()
@@ -471,7 +465,7 @@ class Pool:
 
             match message:
                 case LogEntry(record=record):
-                    self._log_handler.emit(record.to_log_record())
+                    logger.handle(record.to_log_record())
 
                 case TaskFailed(task=task, error=error):
                     if task.retry_count < CONF.max_task_retries:
@@ -488,7 +482,7 @@ class Pool:
                             f"after {task.retry_count + 1} attempts, giving up: {error}"
                         )
 
-                case ActivityUpdated():
+                case ActivityEvent():
                     activity.handler(message)
 
     async def shutdown(self, timeout: int | None = None) -> None:

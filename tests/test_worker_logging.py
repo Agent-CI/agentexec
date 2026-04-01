@@ -181,8 +181,8 @@ class TestGetWorkerLogger:
 
         yield
 
-        root = logging.getLogger(LOGGER_NAME)
-        root.handlers.clear()
+        root = logging.getLogger()
+        root.handlers = [h for h in root.handlers if not isinstance(h, QueueLogHandler)]
 
     def test_get_worker_logger_returns_logger(self):
         """Test get_worker_logger returns a logger instance."""
@@ -190,26 +190,21 @@ class TestGetWorkerLogger:
 
         assert isinstance(logger, logging.Logger)
 
-    def test_get_worker_logger_namespaced(self):
-        """Test get_worker_logger returns logger under agentexec namespace."""
+    def test_get_worker_logger_returns_exact_name(self):
+        """Test get_worker_logger returns logger with the given name."""
         logger = get_worker_logger("mymodule")
+        assert logger.name == "mymodule"
 
-        assert logger.name == f"{LOGGER_NAME}.mymodule"
-
-    def test_get_worker_logger_existing_namespace(self):
-        """Test get_worker_logger with existing namespace prefix."""
-        logger = get_worker_logger(f"{LOGGER_NAME}.submodule")
-
-        # Should not double-prefix
-        assert logger.name == f"{LOGGER_NAME}.submodule"
+        logger2 = get_worker_logger(f"{LOGGER_NAME}.submodule")
+        assert logger2.name == f"{LOGGER_NAME}.submodule"
 
     def test_get_worker_logger_configures_handler(self):
-        """Test get_worker_logger adds QueueLogHandler on first call."""
+        """Test get_worker_logger adds QueueLogHandler to root logger."""
         import multiprocessing as mp
         tx = mp.Queue()
         get_worker_logger("first.call", tx=tx)
 
-        root = logging.getLogger(LOGGER_NAME)
+        root = logging.getLogger()
         handler_types = [type(h).__name__ for h in root.handlers]
 
         assert "QueueLogHandler" in handler_types
@@ -220,14 +215,15 @@ class TestGetWorkerLogger:
         tx = mp.Queue()
         get_worker_logger("first", tx=tx)
 
-        root = logging.getLogger(LOGGER_NAME)
-        initial_handler_count = len(root.handlers)
+        root = logging.getLogger()
+        initial_handler_count = len([h for h in root.handlers if isinstance(h, QueueLogHandler)])
 
         # Second call
-        get_worker_logger("second")
+        get_worker_logger("second", tx=tx)
 
         # Should not add more handlers
-        assert len(root.handlers) == initial_handler_count
+        queue_handlers = len([h for h in root.handlers if isinstance(h, QueueLogHandler)])
+        assert queue_handlers == initial_handler_count
 
 
 class TestConstants:

@@ -77,36 +77,40 @@ class Activity(Base):
     ) -> None:
         """Append a log entry to the activity for the given agent_id.
 
-        This uses a single query to look up the activity_id and insert the log,
-        avoiding the need to load the Activity record first.
+        Looks up the activity by agent_id and inserts a log entry. If no
+        activity record exists (e.g. stale task from a previous session),
+        logs a warning and returns without raising.
 
         Args:
-            session: SQLAlchemy session
-            agent_id: The agent_id to append the log to
-            message: Log message
-            status: Current status of the agent
-            percentage: Optional completion percentage (0-100)
-
-        Raises:
-            ValueError: If agent_id not found (foreign key constraint will fail)
+            session: SQLAlchemy session.
+            agent_id: The agent_id to append the log to.
+            message: Log message.
+            status: Current status of the agent.
+            percentage: Optional completion percentage (0-100).
         """
-        # Scalar subquery to get activity.id from agent_id
-        activity_id_subq = select(cls.id).where(cls.agent_id == agent_id).scalar_subquery()
+        import logging
+        logger = logging.getLogger(__name__)
 
-        # Insert the log using the subquery for activity_id
+        # Look up the activity_id first so we can skip gracefully if missing
+        activity_id = session.execute(
+            select(cls.id).where(cls.agent_id == agent_id)
+        ).scalar_one_or_none()
+
+        if activity_id is None:
+            logger.warning(
+                f"No activity record for agent_id {agent_id}, skipping log append. "
+                f"This can happen when a stale task from a previous session is picked up."
+            )
+            return
+
         stmt = insert(ActivityLog).values(
-            activity_id=activity_id_subq,
+            activity_id=activity_id,
             message=message,
             status=status,
             percentage=percentage,
         )
-
-        try:
-            session.execute(stmt)
-            session.commit()
-        except Exception as e:
-            session.rollback()
-            raise ValueError(f"Failed to append log for agent_id {agent_id}") from e
+        session.execute(stmt)
+        session.commit()
 
     @classmethod
     def get_by_agent_id(
