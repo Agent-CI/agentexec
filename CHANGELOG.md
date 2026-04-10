@@ -1,5 +1,118 @@
 # Changelog
 
+## v0.2.0rc2
+
+Second release candidate for 0.2.0. Completes the async migration and
+stabilizes the worker pool architecture.
+
+### Breaking Changes
+
+**Fully async database layer**
+- `configure_engine()` and `get_session()` now require an async SQLAlchemy engine (`AsyncEngine`) and return `AsyncSession`
+- Database URLs must use async drivers (e.g. `sqlite+aiosqlite://`, `postgresql+asyncpg://`)
+- `sqlalchemy[asyncio]` is now a core dependency; `aiosqlite` added as dev dependency
+
+**Async activity query API**
+- `activity.list()`, `activity.detail()`, and `activity.count_active()` are now async and accept `AsyncSession`
+- Activity handlers are now async (`async def __call__`)
+
+**Removed `session` parameter from activity mutations**
+- `activity.create()`, `activity.update()`, `activity.complete()`, and `activity.error()` no longer accept a `session` parameter — the handler owns its own session lifecycle
+
+**Queue priority parameter**
+- `BaseQueueBackend.push()` signature changed from `high_priority: bool` to `priority: Priority | None`
+- Affects Redis, Kafka, and any custom queue backend implementations
+
+### New Features
+
+**CLI entrypoint**
+- New `agentexec` CLI command via `[project.scripts]`
+
+**Activity model `create()` classmethod**
+- `Activity.create()` encapsulates record + initial log entry creation in one async call
+
+**Async engine disposal**
+- `dispose_engine()` ensures the async engine's background threads exit cleanly on shutdown
+
+### Architecture Changes
+
+**Worker pool refactor**
+- Workers now use the `spawn` multiprocessing start method with explicit context — no inherited state
+- `StateEvent` replaced with stdlib `multiprocessing.Event` — removes dependency on the state backend for shutdown coordination
+- Event handling and scheduling extracted into `_EventHandler` and `_Scheduler` classes
+- Worker processes are now daemonic with `SIGINT` ignored — clean shutdown driven by the event
+- `pool.start()` handles `CancelledError` directly for Ctrl+C shutdown
+
+**Logging overhaul**
+- Removed `worker/logging.py` and `core/logging.py` — all modules use stdlib `logging.getLogger(__name__)`
+- Spawned workers bootstrap a `StreamHandler` on the root logger so logs reach stderr
+- Pool messages use `logger.info`/`logger.error` instead of `print()`
+
+### Bug Fixes
+
+- Fixed crash when worker receives a task for an unregistered task name (now logs error and skips)
+- Failed tasks now log full tracebacks via `logger.exception` instead of `logger.error`
+- Kafka consumer handles `None` message values without crashing
+- `ActivityUpdated.status` is now `Status` enum instead of raw string
+- `raise e` instead of bare `raise` in task execution for clearer tracebacks
+
+### Improvements
+
+- Dependency groups use PEP 735 `[dependency-groups]` instead of `[tool.uv]`
+- Ruff line-length increased to 110
+- Removed verbose docstring examples and redundant comments throughout activity models
+- `selectinload` for eager loading of activity logs in `get_by_agent_id`
+- Redis backend adds `type: ignore` annotations for redis-py async stubs
+
+## v0.2.0rc1
+
+First release candidate for 0.2.0. Major refactor of the backend, queue,
+activity, and worker systems.
+
+### Breaking Changes
+
+**Backend module restructure**
+- `agentexec.state.redis_backend` renamed to `agentexec.state.redis` — update `AGENTEXEC_STATE_BACKEND` if set explicitly
+- `AGENTEXEC_QUEUE_NAME` renamed to `AGENTEXEC_QUEUE_PREFIX` (old name still accepted as alias)
+
+**Async activity API**
+- Activity functions are now async: `await ax.activity.create(...)`, `await ax.activity.update(...)`, etc.
+
+**Task context serialization**
+- `Task.context` is now `Mapping[str, Any]` (raw dict), not a typed BaseModel — hydration happens at execution time
+- `Task.create()` is now async
+
+**Removed APIs**
+- `set_global_session`/`get_global_session`/`remove_global_session` — use `configure_engine`/`get_session`
+- `state.backend.publish`/`subscribe` (pubsub), `index_add`/`index_range`/`index_remove`, `clear`, `configure`
+
+### New Features
+
+**Partitioned Redis queues**
+- Tasks with `lock_key` route to dedicated partition queues with per-partition locking and SCAN-based fair dequeue
+
+**Activity handler pattern**
+- Pluggable persistence via `PostgresHandler` (default) and `IPCHandler` (worker processes)
+
+**Task retry**
+- Failed tasks requeue as high priority with `AGENTEXEC_MAX_TASK_RETRIES` (default 3)
+
+**Kafka backend (experimental)**
+- `pip install agentexec[kafka]` for queue and schedule via Kafka
+
+**Typed worker IPC**
+- `TaskFailed`, `LogEntry`, `ActivityUpdated` messages over `multiprocessing.Queue`
+
+**Schedule composite keys**
+- `{task_name}:{cron}:{context_hash}` for unique schedule identity
+
+### Improvements
+
+- Class-based backend architecture with ABCs (`BaseStateBackend`, `BaseQueueBackend`, `BaseScheduleBackend`)
+- `Task` is pure data, `TaskDefinition` owns behavior
+- Session management via `configure_engine`/`get_session` (Pool owns the engine)
+- Status enum extracted to `activity/status.py` (no SQLAlchemy dependency)
+
 ## v0.1.7
 
 ### New Features
