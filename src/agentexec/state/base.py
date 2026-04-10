@@ -7,6 +7,7 @@ from typing import TYPE_CHECKING, Any, Optional, TypedDict
 from pydantic import BaseModel
 
 if TYPE_CHECKING:
+    from agentexec.core.queue import Priority
     from agentexec.schedule import ScheduledTask
 
 
@@ -72,7 +73,7 @@ class BaseQueueBackend(ABC):
         self,
         value: str,
         *,
-        high_priority: bool = False,
+        priority: Priority | None = None,
         partition_key: str | None = None,
     ) -> None: ...
 

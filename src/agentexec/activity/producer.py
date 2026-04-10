@@ -12,8 +12,6 @@ from __future__ import annotations
 import uuid
 from typing import Any
 
-from sqlalchemy.orm import Session
-
 import agentexec.activity as activity
 from agentexec.activity.events import ActivityCreated, ActivityUpdated
 from agentexec.activity.status import Status
@@ -31,13 +29,10 @@ def normalize_agent_id(agent_id: str | uuid.UUID) -> uuid.UUID:
     return agent_id
 
 
-
-
 async def create(
     task_name: str,
     message: str = "Agent queued",
     agent_id: str | uuid.UUID | None = None,
-    session: Session | None = None,
     metadata: dict[str, Any] | None = None,
 ) -> uuid.UUID:
     """Create a new activity record with an initial "queued" log entry.
@@ -49,7 +44,6 @@ async def create(
         task_name: The registered task name (e.g. ``"research"``).
         message: Initial log message.
         agent_id: Optional pre-generated agent ID. Auto-generated if omitted.
-        session: Unused — kept for backwards compatibility.
         metadata: Arbitrary key-value pairs attached to the activity
             (e.g. ``{"organization_id": "org-123"}``).
 
@@ -61,7 +55,7 @@ async def create(
         agent_id = await activity.create("research", metadata={"org": "acme"})
     """
     agent_id = normalize_agent_id(agent_id) if agent_id else generate_agent_id()
-    activity.handler(ActivityCreated(
+    await activity.handler(ActivityCreated(
         agent_id=agent_id,
         task_name=task_name,
         message=message,
@@ -75,7 +69,6 @@ async def update(
     message: str,
     percentage: int | None = None,
     status: Status | None = None,
-    session: Session | None = None,
 ) -> bool:
     """Append a log entry to an existing activity record.
 
@@ -86,16 +79,15 @@ async def update(
         message: Log message describing the current state.
         percentage: Optional completion percentage (0-100).
         status: Optional status override (default: ``RUNNING``).
-        session: Unused — kept for backwards compatibility.
 
     Example::
 
         await activity.update(agent_id, "Fetching data", percentage=30)
     """
-    activity.handler(ActivityUpdated(
+    await activity.handler(ActivityUpdated(
         agent_id=normalize_agent_id(agent_id),
         message=message,
-        status=(status or Status.RUNNING).value,
+        status=status or Status.RUNNING,
         percentage=percentage,
     ))
     return True
@@ -105,7 +97,6 @@ async def complete(
     agent_id: str | uuid.UUID,
     message: str = "Agent completed",
     percentage: int = 100,
-    session: Session | None = None,
 ) -> bool:
     """Mark an activity as complete.
 
@@ -113,16 +104,15 @@ async def complete(
         agent_id: The agent to mark complete.
         message: Completion log message.
         percentage: Final percentage (default: 100).
-        session: Unused — kept for backwards compatibility.
 
     Example::
 
         await activity.complete(agent_id)
     """
-    activity.handler(ActivityUpdated(
+    await activity.handler(ActivityUpdated(
         agent_id=normalize_agent_id(agent_id),
         message=message,
-        status=Status.COMPLETE.value,
+        status=Status.COMPLETE,
         percentage=percentage,
     ))
     return True
@@ -132,7 +122,6 @@ async def error(
     agent_id: str | uuid.UUID,
     message: str = "Agent failed",
     percentage: int = 100,
-    session: Session | None = None,
 ) -> bool:
     """Mark an activity as failed.
 
@@ -140,26 +129,28 @@ async def error(
         agent_id: The agent to mark as errored.
         message: Error log message.
         percentage: Final percentage (default: 100).
-        session: Unused — kept for backwards compatibility.
 
     Example::
 
         await activity.error(agent_id, "Connection timeout")
     """
-    activity.handler(ActivityUpdated(
+    await activity.handler(ActivityUpdated(
         agent_id=normalize_agent_id(agent_id),
         message=message,
-        status=Status.ERROR.value,
+        status=Status.ERROR,
         percentage=percentage,
     ))
     return True
 
 
-async def cancel_pending(session: Session | None = None) -> int:
+async def cancel_pending(session=None) -> int:
     """Cancel all queued and running activities.
 
     Typically called during pool shutdown to mark in-flight tasks as
     canceled. Reads pending IDs from Postgres and emits cancel events.
+
+    Args:
+        session: Optional async SQLAlchemy session. Falls back to ``get_session()``.
 
     Returns:
         Number of activities canceled.
@@ -167,13 +158,13 @@ async def cancel_pending(session: Session | None = None) -> int:
     from agentexec.activity.models import Activity
     from agentexec.core.db import get_session
 
-    with session or get_session() as db:
-        pending_ids = Activity.get_pending_ids(db)
+    async with session or get_session() as db:
+        pending_ids = await Activity.get_pending_ids(db)
         for agent_id in pending_ids:
-            activity.handler(ActivityUpdated(
+            await activity.handler(ActivityUpdated(
                 agent_id=agent_id,
                 message="Canceled due to shutdown",
-                status=Status.CANCELED.value,
+                status=Status.CANCELED,
                 percentage=None,
             ))
         return len(pending_ids)

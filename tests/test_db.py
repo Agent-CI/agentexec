@@ -1,28 +1,29 @@
 import pytest
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 from agentexec.core.db import Base, configure_engine, get_session
 
 
 @pytest.fixture
-def test_engine():
-    engine = create_engine("sqlite:///:memory:")
-    Base.metadata.create_all(bind=engine)
+async def test_engine():
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
     configure_engine(engine)
     yield engine
-    engine.dispose()
+    await engine.dispose()
 
 
-def test_configure_engine(test_engine):
+async def test_configure_engine(test_engine):
     """configure_engine makes get_session available."""
     session = get_session()
     assert session is not None
-    session.close()
+    await session.close()
 
 
-def test_get_session_context_manager(test_engine):
+async def test_get_session_context_manager(test_engine):
     """get_session works as a context manager."""
-    with get_session() as session:
+    async with get_session() as session:
         assert session is not None
 
 

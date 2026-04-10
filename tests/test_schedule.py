@@ -84,7 +84,7 @@ def mock_activity_create(monkeypatch):
 
 @pytest.fixture
 def pool():
-    p = ax.Pool(database_url="sqlite:///")
+    p = ax.Pool(database_url="sqlite+aiosqlite:///")
 
     @p.task("refresh_cache")
     async def refresh(agent_id: UUID, context: RefreshContext):
@@ -233,7 +233,7 @@ class TestScheduleRegister:
 
 class TestPoolScheduleDecorator:
     def test_decorator_registers_task_and_defers_schedule(self):
-        p = ax.Pool(database_url="sqlite:///")
+        p = ax.Pool(database_url="sqlite+aiosqlite:///")
 
         @p.schedule("refresh_cache", "*/5 * * * *", context=RefreshContext(scope="all"))
         async def refresh(agent_id: uuid.UUID, context: RefreshContext):
@@ -243,7 +243,7 @@ class TestPoolScheduleDecorator:
         assert len(p._pending_schedules) == 1
 
     def test_decorator_with_lock_key(self):
-        p = ax.Pool(database_url="sqlite:///")
+        p = ax.Pool(database_url="sqlite+aiosqlite:///")
 
         @p.schedule("locked_task", "*/5 * * * *", lock_key="user:{user_id}")
         async def locked(agent_id: uuid.UUID, context: RefreshContext):
@@ -253,7 +253,7 @@ class TestPoolScheduleDecorator:
         assert defn.lock_key == "user:{user_id}"
 
     def test_decorator_returns_handler(self):
-        p = ax.Pool(database_url="sqlite:///")
+        p = ax.Pool(database_url="sqlite+aiosqlite:///")
 
         @p.schedule("my_task", "*/5 * * * *")
         async def my_handler(agent_id: uuid.UUID, context: BaseModel):

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import uuid
 from datetime import UTC, datetime
 
@@ -20,11 +21,14 @@ from sqlalchemy import (
     select,
 )
 from sqlalchemy.engine import RowMapping
-from sqlalchemy.orm import Mapped, Session, aliased, mapped_column, relationship, declared_attr
+from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import Mapped, aliased, mapped_column, relationship, declared_attr, selectinload
 
 from agentexec.activity.status import Status
 from agentexec.config import CONF
 from agentexec.core.db import Base
+
+logger = logging.getLogger(__name__)
 
 
 class Activity(Base):
@@ -67,9 +71,48 @@ class Activity(Base):
     )
 
     @classmethod
-    def append_log(
+    async def create(
         cls,
-        session: Session,
+        session: AsyncSession,
+        agent_id: uuid.UUID,
+        task_name: str,
+        message: str,
+        metadata: dict[str, Any] | None = None,
+    ) -> Activity:
+        """Create a new activity record with an initial queued log entry.
+
+        Args:
+            session: Async SQLAlchemy session.
+            agent_id: Unique agent identifier.
+            task_name: The registered task name.
+            message: Initial log message.
+            metadata: Optional metadata dict.
+
+        Returns:
+            The created Activity record.
+        """
+        record = cls(
+            agent_id=agent_id,
+            agent_type=task_name,
+            metadata_=metadata,
+        )
+        session.add(record)
+        await session.flush()
+        session.add(
+            ActivityLog(
+                activity_id=record.id,
+                message=message,
+                status=Status.QUEUED,
+                percentage=0,
+            )
+        )
+        await session.commit()
+        return record
+
+    @classmethod
+    async def append_log(
+        cls,
+        session: AsyncSession,
         agent_id: uuid.UUID,
         message: str,
         status: Status,
@@ -82,19 +125,14 @@ class Activity(Base):
         logs a warning and returns without raising.
 
         Args:
-            session: SQLAlchemy session.
+            session: Async SQLAlchemy session.
             agent_id: The agent_id to append the log to.
             message: Log message.
             status: Current status of the agent.
             percentage: Optional completion percentage (0-100).
         """
-        import logging
-        logger = logging.getLogger(__name__)
-
-        # Look up the activity_id first so we can skip gracefully if missing
-        activity_id = session.execute(
-            select(cls.id).where(cls.agent_id == agent_id)
-        ).scalar_one_or_none()
+        result = await session.execute(select(cls.id).where(cls.agent_id == agent_id))
+        activity_id = result.scalar_one_or_none()
 
         if activity_id is None:
             logger.warning(
@@ -103,65 +141,49 @@ class Activity(Base):
             )
             return
 
-        stmt = insert(ActivityLog).values(
-            activity_id=activity_id,
-            message=message,
-            status=status,
-            percentage=percentage,
+        await session.execute(
+            insert(ActivityLog).values(
+                activity_id=activity_id,
+                message=message,
+                status=status,
+                percentage=percentage,
+            )
         )
-        session.execute(stmt)
-        session.commit()
+        await session.commit()
 
     @classmethod
-    def get_by_agent_id(
+    async def get_by_agent_id(
         cls,
-        session: Session,
+        session: AsyncSession,
         agent_id: str | uuid.UUID,
         metadata_filter: dict[str, Any] | None = None,
     ) -> Activity | None:
         """Get an activity by agent_id.
 
         Args:
-            session: SQLAlchemy session
-            agent_id: The agent_id to look up (string or UUID)
+            session: Async SQLAlchemy session.
+            agent_id: The agent_id to look up (string or UUID).
             metadata_filter: Optional dict of key-value pairs to filter by.
-                If provided and the activity's metadata doesn't match,
-                returns None (same as if not found).
 
         Returns:
-            Activity object or None if not found or metadata doesn't match
-
-        Example:
-            activity = Activity.get_by_agent_id(session, "abc-123")
-            # Or with UUID object
-            activity = Activity.get_by_agent_id(session, uuid.UUID("abc-123..."))
-            if activity:
-                print(f"Found activity: {activity.agent_type}")
-
-            # With metadata filter (for multi-tenancy)
-            activity = Activity.get_by_agent_id(
-                session,
-                agent_id,
-                metadata_filter={"organization_id": "org-123"}
-            )
+            Activity object or None if not found or metadata doesn't match.
         """
-        # Normalize to UUID if string
         if isinstance(agent_id, str):
             agent_id = uuid.UUID(agent_id)
 
-        query = session.query(cls).filter_by(agent_id=agent_id)
+        query = select(cls).options(selectinload(cls.logs)).where(cls.agent_id == agent_id)
 
-        # Apply metadata filtering if provided
         if metadata_filter:
             for key, value in metadata_filter.items():
-                query = query.filter(cls.metadata_[key].as_string() == str(value))
+                query = query.where(cls.metadata_[key].as_string() == str(value))
 
-        return query.first()
+        result = await session.execute(query)
+        return result.scalar_one_or_none()
 
     @classmethod
-    def get_list(
+    async def get_list(
         cls,
-        session: Session,
+        session: AsyncSession,
         page: int = 1,
         page_size: int = 50,
         metadata_filter: dict[str, Any] | None = None,
@@ -169,30 +191,14 @@ class Activity(Base):
         """Get a paginated list of activities with summary information.
 
         Args:
-            session: SQLAlchemy session to use for the query
-            page: Page number (1-indexed)
-            page_size: Number of items per page
+            session: Async SQLAlchemy session.
+            page: Page number (1-indexed).
+            page_size: Number of items per page.
             metadata_filter: Optional dict of key-value pairs to filter by.
-                Activities must have metadata containing all specified keys
-                with exactly matching values.
 
         Returns:
-            List of RowMapping objects (dict-like) with keys matching ActivitySummarySchema:
-            agent_id, agent_type, latest_log_message, status, latest_log_timestamp,
-            percentage, started_at, metadata
-
-        Example:
-            results = Activity.get_list(session, page=1, page_size=20)
-            for row in results:
-                print(f"{row['agent_id']}: {row['latest_log_message']}")
-
-            # Filter by organization
-            results = Activity.get_list(
-                session,
-                metadata_filter={"organization_id": "org-123"}
-            )
+            List of RowMapping objects with activity summary fields.
         """
-        # Subquery to get the latest log for each agent
         latest_log_subq = select(
             ActivityLog.activity_id,
             ActivityLog.message,
@@ -207,7 +213,6 @@ class Activity(Base):
             .label("rn"),
         ).subquery()
 
-        # Subquery to get start time (first log timestamp)
         started_at_subq = (
             select(
                 ActivityLog.activity_id,
@@ -217,11 +222,9 @@ class Activity(Base):
             .subquery()
         )
 
-        # Alias for the subqueries
         latest_log = aliased(latest_log_subq)
         started_at = aliased(started_at_subq)
 
-        # Build base query - select only the columns we need with aliases matching schema
         query = (
             select(
                 cls.agent_id,
@@ -240,14 +243,10 @@ class Activity(Base):
             .outerjoin(started_at, cls.id == started_at.c.activity_id)
         )
 
-        # Apply metadata filtering if provided
         if metadata_filter:
             for key, value in metadata_filter.items():
-                # Use JSON path extraction for exact string matching
-                # This works across SQLite (for testing) and PostgreSQL (for production)
                 query = query.where(cls.metadata_[key].as_string() == str(value))
 
-        # Custom ordering: active agents (running, queued) at the top
         is_active = case(
             (latest_log.c.status.in_([Status.RUNNING, Status.QUEUED]), 0),
             else_=1,
@@ -257,30 +256,22 @@ class Activity(Base):
             (latest_log.c.status == Status.QUEUED, 2),
             else_=3,
         )
-        query = query.order_by(
-            is_active, active_priority, started_at.c.started_at.desc().nullslast()
-        )
+        query = query.order_by(is_active, active_priority, started_at.c.started_at.desc().nullslast())
 
-        # Apply pagination and execute
         offset = (page - 1) * page_size
-        return list(session.execute(query.offset(offset).limit(page_size)).mappings().all())
+        result = await session.execute(query.offset(offset).limit(page_size))
+        return list(result.mappings().all())
 
     @classmethod
-    def get_pending_ids(cls, session: Session) -> list[uuid.UUID]:
+    async def get_pending_ids(cls, session: AsyncSession) -> list[uuid.UUID]:
         """Get agent_ids for all activities with QUEUED or RUNNING status.
 
         Args:
-            session: SQLAlchemy session to use for the query
+            session: Async SQLAlchemy session.
 
         Returns:
-            List of agent_id UUIDs for pending (queued or running) activities
-
-        Example:
-            pending_ids = Activity.get_pending_ids(session)
-            for agent_id in pending_ids:
-                print(f"Pending agent: {agent_id}")
+            List of agent_id UUIDs for pending (queued or running) activities.
         """
-        # Subquery to get the latest log status for each activity
         latest_log_subq = select(
             ActivityLog.activity_id,
             ActivityLog.status,
@@ -292,35 +283,28 @@ class Activity(Base):
             .label("rn"),
         ).subquery()
 
-        # Query for agent_ids where latest status is queued or running
-        result = (
-            session.query(cls.agent_id)
+        query = (
+            select(cls.agent_id)
             .join(
                 latest_log_subq,
                 (cls.id == latest_log_subq.c.activity_id) & (latest_log_subq.c.rn == 1),
             )
-            .filter(latest_log_subq.c.status.in_([Status.QUEUED, Status.RUNNING]))
-            .all()
+            .where(latest_log_subq.c.status.in_([Status.QUEUED, Status.RUNNING]))
         )
 
-        # Extract UUIDs from result tuples
-        return [agent_id for (agent_id,) in result]
+        result = await session.execute(query)
+        return [row[0] for row in result.all()]
 
     @classmethod
-    def get_active_count(cls, session: Session) -> int:
+    async def get_active_count(cls, session: AsyncSession) -> int:
         """Get count of activities with QUEUED or RUNNING status.
 
         Args:
-            session: SQLAlchemy session to use for the query
+            session: Async SQLAlchemy session.
 
         Returns:
-            Count of active (queued or running) activities
-
-        Example:
-            count = Activity.get_active_count(session)
-            print(f"Active agents: {count}")
+            Count of active (queued or running) activities.
         """
-        # Subquery to get the latest log status for each activity
         latest_log_subq = select(
             ActivityLog.activity_id,
             ActivityLog.status,
@@ -332,18 +316,17 @@ class Activity(Base):
             .label("rn"),
         ).subquery()
 
-        # Count activities where latest status is queued or running
-        result = (
-            session.query(func.count(cls.id))
+        query = (
+            select(func.count(cls.id))
             .join(
                 latest_log_subq,
                 (cls.id == latest_log_subq.c.activity_id) & (latest_log_subq.c.rn == 1),
             )
-            .filter(latest_log_subq.c.status.in_([Status.QUEUED, Status.RUNNING]))
-            .scalar()
+            .where(latest_log_subq.c.status.in_([Status.QUEUED, Status.RUNNING]))
         )
 
-        return result or 0
+        result = await session.execute(query)
+        return result.scalar() or 0
 
 
 class ActivityLog(Base):
@@ -370,5 +353,4 @@ class ActivityLog(Base):
         default=lambda: datetime.now(UTC),
     )
 
-    # Relationship back to activity
     activity: Mapped[Activity] = relationship("Activity", back_populates="logs")

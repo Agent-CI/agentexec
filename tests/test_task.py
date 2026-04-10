@@ -24,8 +24,8 @@ class TaskResult(BaseModel):
 
 @pytest.fixture
 def pool():
-    from sqlalchemy import create_engine
-    engine = create_engine("sqlite:///:memory:")
+    from sqlalchemy.ext.asyncio import create_async_engine
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     return ax.Pool(engine=engine)
 
 

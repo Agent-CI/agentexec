@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import time
 from typing import TYPE_CHECKING
+from uuid import UUID
 
 from pydantic import BaseModel
 
@@ -15,7 +16,7 @@ if TYPE_CHECKING:
 DEFAULT_TIMEOUT: int = 300  # TODO improve this polling approach
 
 
-async def _get_result(agent_id: str) -> BaseModel | None:
+async def _get_result(agent_id: str | UUID) -> BaseModel | None:
     key = backend.format_key(*KEY_RESULT, str(agent_id))
     data = await backend.state.get(key)
     return backend.deserialize(data) if data else None

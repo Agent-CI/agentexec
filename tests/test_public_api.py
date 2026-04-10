@@ -2,7 +2,7 @@ import uuid
 
 import pytest
 from pydantic import BaseModel
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
 import agentexec as ax
 
@@ -22,7 +22,7 @@ class SampleResult(BaseModel):
 @pytest.fixture
 def pool():
     """Create a Pool for testing."""
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     return ax.Pool(engine=engine)
 
 

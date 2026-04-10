@@ -45,9 +45,12 @@ safety net for dead worker recovery.
 
 from __future__ import annotations
 
-import uuid
 from typing import TYPE_CHECKING, Any, Optional
 
+if TYPE_CHECKING:
+    from agentexec.core.queue import Priority
+    from agentexec.schedule import ScheduledTask
+import json
 import redis
 import redis.asyncio
 
@@ -148,15 +151,20 @@ class RedisQueueBackend(BaseQueueBackend):
         return queue_key != self._default_key
 
     async def _acquire_lock(self, queue_key: bytes) -> bool:
-        return bool(await self.backend.client.set(
-            self._lock_key(queue_key), b"1", nx=True, ex=CONF.lock_ttl,
-        ))
+        return bool(
+            await self.backend.client.set(
+                self._lock_key(queue_key),
+                b"1",
+                nx=True,
+                ex=CONF.lock_ttl,
+            )
+        )
 
     async def push(
         self,
         value: str,
         *,
-        high_priority: bool = False,
+        priority: Priority | None = None,
         partition_key: str | None = None,
     ) -> None:
         """Push a task to the queue.
@@ -165,11 +173,13 @@ class RedisQueueBackend(BaseQueueBackend):
         and are serialized by a lock. Tasks without one go to the default
         queue for concurrent processing.
         """
+        from agentexec.core.queue import Priority
+
         key = self._queue_key(partition_key)
-        if high_priority:
-            await self.backend.client.rpush(key, value)
+        if priority is Priority.HIGH:
+            await self.backend.client.rpush(key, value)  # type: ignore[misc]
         else:
-            await self.backend.client.lpush(key, value)
+            await self.backend.client.lpush(key, value)  # type: ignore[misc]
 
     async def pop(self, *, timeout: int = 1) -> dict[str, Any] | None:
         """Pop the next eligible task from any queue.
@@ -178,8 +188,6 @@ class RedisQueueBackend(BaseQueueBackend):
         for the selected partition, and pops the task. Returns ``None``
         if no eligible tasks are available.
         """
-        import json
-
         locks_seen: set[bytes] = set()
 
         # SCAN returns keys in hash-table order (effectively random),
@@ -197,7 +205,7 @@ class RedisQueueBackend(BaseQueueBackend):
                 if not await self._acquire_lock(key):
                     continue  # another worker holds this partition, find another
 
-            result = await self.backend.client.rpop(key)
+            result = await self.backend.client.rpop(key)  # type: ignore[misc]
             if result is None:
                 if self._needs_lock(key):
                     # TODO this should never happen; we can improve on the ergonomics of recovery later.
@@ -239,8 +247,8 @@ class RedisScheduleBackend(BaseScheduleBackend):
         self._data_key = self.backend.format_key(CONF.key_prefix, "schedules", "data")
 
     async def register(self, task: ScheduledTask) -> None:
-        await self.backend.client.hset(self._data_key, task.key, task.model_dump_json().encode())
-        await self.backend.client.zadd(self._index_key, {task.key: task.next_run})
+        await self.backend.client.hset(self._data_key, task.key, task.model_dump_json().encode())  # type: ignore[misc]
+        await self.backend.client.zadd(self._index_key, {task.key: task.next_run})  # type: ignore[misc]
 
     async def get_due(self) -> list[ScheduledTask]:
         import time
@@ -249,8 +257,8 @@ class RedisScheduleBackend(BaseScheduleBackend):
 
         raw = await self.backend.client.zrangebyscore(self._index_key, 0, time.time())
         tasks = []
-        for key in raw:
-            data = await self.backend.client.hget(self._data_key, key)
+        for key in raw or []:
+            data = await self.backend.client.hget(self._data_key, key)  # type: ignore[misc]
             if data is None:
                 continue
             try:
@@ -260,5 +268,5 @@ class RedisScheduleBackend(BaseScheduleBackend):
         return tasks
 
     async def remove(self, key: str) -> None:
-        await self.backend.client.zrem(self._index_key, key)
-        await self.backend.client.hdel(self._data_key, key)
+        await self.backend.client.zrem(self._index_key, key)  # type: ignore[misc]
+        await self.backend.client.hdel(self._data_key, key)  # type: ignore[misc]

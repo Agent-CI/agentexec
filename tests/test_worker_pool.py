@@ -7,6 +7,7 @@ import pytest
 from pydantic import BaseModel
 
 import agentexec as ax
+from agentexec.core.queue import Priority
 from agentexec.state import backend
 
 
@@ -28,8 +29,9 @@ def mock_state_backend(monkeypatch):
     """Mock the queue ops for push operations."""
     queue_data = []
 
-    async def mock_queue_push(value, *, high_priority=False, partition_key=None):
-        if high_priority:
+    async def mock_queue_push(value, *, priority=None, partition_key=None):
+        from agentexec.core.queue import Priority
+        if priority is Priority.HIGH:
             queue_data.append(value)
         else:
             queue_data.insert(0, value)
@@ -45,9 +47,9 @@ def mock_state_backend(monkeypatch):
 @pytest.fixture
 def pool():
     """Create a Pool for testing."""
-    from sqlalchemy import create_engine
+    from sqlalchemy.ext.asyncio import create_async_engine
 
-    engine = create_engine("sqlite:///:memory:")
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:")
     return ax.Pool(engine=engine)
 
 
@@ -175,7 +177,7 @@ def test_pool_requires_engine_or_database_url() -> None:
 
 def test_pool_with_database_url() -> None:
     """Test that Pool can be created with database_url."""
-    pool = ax.Pool(database_url="sqlite:///:memory:")
+    pool = ax.Pool(database_url="sqlite+aiosqlite:///:memory:")
 
     assert pool._processes == []
     assert pool._processes == []
@@ -185,14 +187,13 @@ def test_pool_with_database_url() -> None:
 async def test_worker_dequeue_task(pool, monkeypatch) -> None:
     """Test Worker._dequeue_task method."""
     from agentexec.worker.pool import Worker, WorkerContext
-    from agentexec.worker.event import StateEvent
 
     @pool.task("test_task")
     async def handler(agent_id: uuid.UUID, context: SampleContext) -> TaskResult:
         return TaskResult()
 
     context = WorkerContext(
-        shutdown_event=StateEvent("shutdown", "test-worker"),
+        shutdown_event=mp.Event(),
         tasks=pool._context.tasks,
         tx=mp.Queue(),
     )
@@ -233,25 +234,13 @@ async def test_dequeue_returns_none_on_empty_queue(pool, monkeypatch) -> None:
 
 async def test_worker_pool_shutdown_with_no_processes(pool) -> None:
     """Test shutdown when no processes have been started."""
-    from unittest.mock import AsyncMock
-
-    pool._context.shutdown_event = AsyncMock()
-
     # Should not raise even with empty process list
     await pool.shutdown(timeout=1)
 
     assert pool._processes == []
-    pool._context.shutdown_event.set.assert_called_once()
+    assert pool._context.shutdown_event.is_set()
 
 
-def test_get_pool_id() -> None:
-    """Test _get_pool_id generates unique IDs."""
-    from agentexec.worker.pool import _get_pool_id
-
-    id1 = _get_pool_id()
-    id2 = _get_pool_id()
-
-    assert id1 != id2
 
 
 class TestTaskFailed:
@@ -296,20 +285,15 @@ class TestWorkerFailurePath:
             raise RuntimeError("handler exploded")
 
         tx = mp.Queue()
-        call_count = 0
-        shutdown = AsyncMock()
-
-        async def is_set():
-            nonlocal call_count
-            return call_count > 1
-
-        shutdown.is_set = is_set
+        shutdown = mp.Event()
 
         context = WorkerContext(
             shutdown_event=shutdown,
             tasks=pool._context.tasks,
             tx=tx,
         )
+
+        call_count = 0
 
         async def mock_pop(*, timeout=1):
             nonlocal call_count
@@ -320,6 +304,7 @@ class TestWorkerFailurePath:
                     "context": {"message": "boom"},
                     "agent_id": str(uuid.uuid4()),
                 }
+            shutdown.set()
             return None
 
         import agentexec.activity as activity_mod
@@ -329,7 +314,6 @@ class TestWorkerFailurePath:
 
         worker = Worker(0, context)
 
-        # Capture _send calls directly to avoid mp.Queue reliability issues
         sent_messages = []
         original_send = worker._send
         def capture_send(message):
@@ -355,20 +339,15 @@ class TestWorkerFailurePath:
         pool._context.tasks["locked_fail"].lock_key = "msg:{message}"
 
         tx = mp.Queue()
-        call_count = 0
-        shutdown = AsyncMock()
-
-        async def is_set():
-            nonlocal call_count
-            return call_count > 1
-
-        shutdown.is_set = is_set
+        shutdown = mp.Event()
 
         context = WorkerContext(
             shutdown_event=shutdown,
             tasks=pool._context.tasks,
             tx=tx,
         )
+
+        call_count = 0
 
         async def mock_pop(*, timeout=1):
             nonlocal call_count
@@ -379,6 +358,7 @@ class TestWorkerFailurePath:
                     "context": {"message": "test"},
                     "agent_id": str(uuid.uuid4()),
                 }
+            shutdown.set()
             return None
 
         completed_keys = []
@@ -398,7 +378,17 @@ class TestWorkerFailurePath:
 
 
 class TestPoolRetryLogic:
-    """Test that Pool._process_worker_events handles TaskFailed correctly."""
+    """Test that _EventHandler handles TaskFailed correctly."""
+
+    def _make_handler(self, pool):
+        import queue
+        from agentexec.worker.pool import _EventHandler
+        self._test_queue = queue.Queue()
+        return _EventHandler(
+            shutdown_event=pool._context.shutdown_event,
+            queue=self._test_queue,
+            tasks=pool._context.tasks,
+        )
 
     async def test_requeues_with_incremented_retry(self, pool, monkeypatch):
         """Failed task with retries remaining is requeued as high priority."""
@@ -417,36 +407,22 @@ class TestPoolRetryLogic:
 
         pushed = []
 
-        async def mock_push(value, *, high_priority=False, partition_key=None):
-            pushed.append({"value": value, "high_priority": high_priority, "partition_key": partition_key})
+        async def mock_push(value, *, priority=None, partition_key=None):
+            pushed.append({"value": value, "priority": priority, "partition_key": partition_key})
 
         monkeypatch.setattr("agentexec.state.backend.queue.push", mock_push)
         monkeypatch.setattr(ax.CONF, "max_task_retries", 3)
 
-        # Put a TaskFailed message in the worker queue
-        pool._worker_queue.put_nowait(TaskFailed(task=task, error="boom"))
-
-        # Simulate one iteration of _process_worker_events
-        # We need a fake process that reports alive once then dead
-        class FakeProcess:
-            def __init__(self):
-                self._calls = 0
-
-            def is_alive(self):
-                self._calls += 1
-                return self._calls <= 2  # alive for first check, dead on second
-
-        pool._processes = [FakeProcess()]
-        pool._log_handler = __import__("logging").StreamHandler()
-
-        await pool._process_worker_events()
+        eh = self._make_handler(pool)
+        self._test_queue.put(TaskFailed(task=task, error="boom"))
+        await eh._handle()
 
         assert len(pushed) == 1
         requeued = json.loads(pushed[0]["value"])
         assert requeued["retry_count"] == 1
-        assert pushed[0]["high_priority"] is True
+        assert pushed[0]["priority"] is Priority.HIGH
 
-    async def test_gives_up_after_max_retries(self, pool, monkeypatch, capsys):
+    async def test_gives_up_after_max_retries(self, pool, monkeypatch, caplog):
         """Failed task at max retries is not requeued."""
         from agentexec.worker.pool import TaskFailed
 
@@ -463,35 +439,21 @@ class TestPoolRetryLogic:
 
         pushed = []
 
-        async def mock_push(value, *, high_priority=False, partition_key=None):
+        async def mock_push(value, *, priority=None, partition_key=None):
             pushed.append(value)
 
         monkeypatch.setattr("agentexec.state.backend.queue.push", mock_push)
         monkeypatch.setattr(ax.CONF, "max_task_retries", 3)
 
-        pool._worker_queue.put_nowait(TaskFailed(task=task, error="fatal"))
+        eh = self._make_handler(pool)
+        self._test_queue.put(TaskFailed(task=task, error="fatal"))
+        with caplog.at_level("INFO", logger="agentexec.worker.pool"):
+            await eh._handle()
 
-        class FakeProcess:
-            def __init__(self):
-                self._calls = 0
-
-            def is_alive(self):
-                self._calls += 1
-                return self._calls <= 2
-
-        pool._processes = [FakeProcess()]
-        pool._log_handler = __import__("logging").StreamHandler()
-
-        await pool._process_worker_events()
-
-        # Should NOT have requeued
         assert len(pushed) == 0
-
-        # Should have printed the give-up message
-        captured = capsys.readouterr()
-        assert "doomed_task" in captured.out
-        assert "4 attempts" in captured.out
-        assert "fatal" in captured.out
+        assert "doomed_task" in caplog.text
+        assert "4 attempts" in caplog.text
+        assert "fatal" in caplog.text
 
     async def test_retry_preserves_partition_key(self, pool, monkeypatch):
         """Requeued task uses the correct partition key from its definition."""
@@ -512,25 +474,14 @@ class TestPoolRetryLogic:
 
         pushed = []
 
-        async def mock_push(value, *, high_priority=False, partition_key=None):
+        async def mock_push(value, *, priority=None, partition_key=None):
             pushed.append({"partition_key": partition_key})
 
         monkeypatch.setattr("agentexec.state.backend.queue.push", mock_push)
         monkeypatch.setattr(ax.CONF, "max_task_retries", 3)
 
-        pool._worker_queue.put_nowait(TaskFailed(task=task, error="transient"))
-
-        class FakeProcess:
-            def __init__(self):
-                self._calls = 0
-
-            def is_alive(self):
-                self._calls += 1
-                return self._calls <= 2
-
-        pool._processes = [FakeProcess()]
-        pool._log_handler = __import__("logging").StreamHandler()
-
-        await pool._process_worker_events()
+        eh = self._make_handler(pool)
+        self._test_queue.put(TaskFailed(task=task, error="transient"))
+        await eh._handle()
 
         assert pushed[0]["partition_key"] == "msg:hello"

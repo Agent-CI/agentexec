@@ -4,12 +4,11 @@ import asyncio
 import logging
 import multiprocessing as mp
 from dataclasses import dataclass
+from multiprocessing.synchronize import Event as MPEvent
 from typing import Any, Callable
-from uuid import UUID, uuid4
 
 from pydantic import BaseModel
-from sqlalchemy import Engine, create_engine
-from sqlalchemy.orm import Session, sessionmaker
+from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from agentexec.config import CONF
 from agentexec.state import backend
@@ -18,15 +17,10 @@ import queue as stdlib_queue
 from agentexec import activity
 from agentexec.activity.events import ActivityEvent
 from agentexec.activity.handlers import IPCHandler
-from agentexec.core.db import configure_engine
+from agentexec.core.db import configure_engine, dispose_engine
 from agentexec.core.queue import enqueue
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
-from agentexec.worker.event import StateEvent
-from agentexec.worker.logging import (
-    LogMessage,
-    get_worker_logger,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +32,7 @@ __all__ = [
 
 class Message(BaseModel):
     """Base event sent from a worker to the pool."""
+
     pass
 
 
@@ -50,26 +45,17 @@ class TaskFailed(Message):
         return cls(task=task, error=str(exception))
 
 
-class LogEntry(Message):
-    record: LogMessage
-
-
 class _EmptyContext(BaseModel):
     """Default context for scheduled tasks that don't need one."""
 
     pass
 
 
-def _get_pool_id() -> str:
-    """Get a unique pool ID for shutdown event keys."""
-    return str(uuid4())
-
-
 @dataclass
 class WorkerContext:
     """Shared context passed from Pool to Worker processes."""
 
-    shutdown_event: StateEvent
+    shutdown_event: MPEvent
     tasks: dict[str, TaskDefinition]
     tx: mp.Queue
 
@@ -83,7 +69,6 @@ class Worker:
 
     _worker_id: int
     _context: WorkerContext
-    logger: logging.Logger
 
     def __init__(self, worker_id: int, context: WorkerContext):
         """Initialize worker with isolated state.
@@ -94,7 +79,6 @@ class Worker:
         """
         self._worker_id = worker_id
         self._context = context
-        self.logger = get_worker_logger(__name__, tx=context.tx)
 
         activity.handler = IPCHandler(context.tx)
 
@@ -106,21 +90,32 @@ class Worker:
             worker_id: Unique identifier for this worker
             context: Shared context from Pool
         """
+        import signal
+
+        signal.signal(signal.SIGINT, signal.SIG_IGN)
+        context.tx.cancel_join_thread()
+
+        # Ensure worker logs reach stderr — add a StreamHandler if
+        # the user hasn't configured one (spawn doesn't inherit handlers)
+        # root = logging.getLogger()
+        # has_stream = any(isinstance(h, logging.StreamHandler) for h in root.handlers)
+        # if not has_stream:
+        #    handler = logging.StreamHandler()
+        #    root.addHandler(handler)
+        #    root.setLevel(logging.DEBUG)
+
         instance = cls(worker_id, context)
         instance.run()
 
     def run(self) -> None:
         """Main worker entry point - sets up async loop and runs."""
-        self.logger.info(f"Worker {self._worker_id} starting")
+        logger.info(f"Worker {self._worker_id} starting")
 
         try:
             asyncio.run(self._run())
         except Exception as e:
-            self.logger.exception(f"Worker {self._worker_id} fatal error: {e}")
+            logger.exception(f"Worker {self._worker_id} fatal error: {e}")
             raise
-        finally:
-            asyncio.run(backend.close())
-            self.logger.info(f"Worker {self._worker_id} shutting down")
 
     def _send(self, message: Message) -> None:
         """Send a message to the pool via the multiprocessing queue."""
@@ -128,27 +123,135 @@ class Worker:
 
     async def _run(self) -> None:
         """Async main loop - dequeue, execute, complete."""
-        while not await self._context.shutdown_event.is_set():
-            try:
-                data = await backend.queue.pop(timeout=1)
-                if data is None:
-                    continue
+        # logger = logging.getLogger(__name__)
 
-                task = Task.model_validate(data)
-                definition = self._context.tasks[task.task_name]
-                partition_key = definition.get_lock_key(task.context)
-
+        try:
+            while not self._context.shutdown_event.is_set():
                 try:
-                    self.logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                    await definition.execute(task)
-                    self.logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
-                except Exception as e:
-                    self._send(TaskFailed.from_exception(task, e))
-                finally:
-                    await backend.queue.complete(partition_key)
-            except Exception as e:
-                self.logger.exception(f"Worker {self._worker_id} error: {e}")
+                    if data := await backend.queue.pop(timeout=1):
+                        task = Task.model_validate(data)
+                        logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
+                        definition = self._context.tasks[task.task_name]
+                        partition_key = definition.get_lock_key(task.context)
+                    else:
+                        await asyncio.sleep(1)
+                        continue
 
+                    try:
+                        await definition.execute(task)
+                        logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
+                    except Exception as e:
+                        logger.error(f"Worker {self._worker_id} failed: {task.task_name}")
+                        self._send(TaskFailed.from_exception(task, e))
+                    finally:
+                        await backend.queue.complete(partition_key)
+                except Exception as e:
+                    logger.exception(f"Worker {self._worker_id} error: {e}")
+        finally:
+            await backend.close()
+
+
+class _EventHandler:
+    shutdown_event: MPEvent
+    queue: mp.Queue
+    tasks: dict[str, TaskDefinition]
+
+    def __init__(
+        self,
+        shutdown_event: MPEvent,
+        queue: mp.Queue,
+        tasks: dict[str, TaskDefinition],
+    ) -> None:
+        self.shutdown_event = shutdown_event
+        self.queue = queue
+        self.tasks = tasks
+
+    async def __call__(self) -> None:
+        """Process messages until a shutdown event is set."""
+        while not self.shutdown_event.is_set():
+            try:
+                await self._handle()
+            except stdlib_queue.Empty:
+                await asyncio.sleep(0.05)
+            except Exception as e:
+                logger.exception(f"Event handler error: {e}")
+
+    async def cleanup(self) -> None:
+        """Process messages until the queue is empty."""
+        while not self.queue.empty():
+            try:
+                await self._handle()
+            except stdlib_queue.Empty:
+                break
+            except Exception as e:
+                logger.exception(f"Event handler cleanup error: {e}")
+
+    def _partition_key_for(self, task: Task) -> str | None:
+        """Derive the partition/lock key for a task from its definition."""
+        return self.tasks[task.task_name].get_lock_key(task.context)
+
+    async def _handle(self) -> None:
+        """Handle a single worker event."""
+        message = self.queue.get_nowait()
+        match message:
+            case TaskFailed(task=task, error=error):
+                if task.retry_count < CONF.max_task_retries:
+                    task.retry_count += 1
+                    from agentexec.core.queue import Priority
+
+                    await backend.queue.push(
+                        task.model_dump_json(),
+                        partition_key=self._partition_key_for(task),
+                        priority=Priority.HIGH,
+                    )
+                else:
+                    logger.info(
+                        f"Task {task.task_name} failed "
+                        f"after {task.retry_count + 1} attempts, giving up: {error}"
+                    )
+
+            case ActivityEvent():
+                await activity.handler(message)
+
+
+class _Scheduler:
+    shutdown_event: MPEvent
+    pending: list[dict[str, Any]]
+
+    def __init__(self, shutdown_event: MPEvent, pending: list[dict[str, Any]]) -> None:
+        self.shutdown_event = shutdown_event
+        self.pending = pending
+
+    async def __call__(self) -> None:
+        await self._register_pending()
+
+        while not self.shutdown_event.is_set():
+            try:
+                await self._process_due()
+                await asyncio.sleep(CONF.scheduler_poll_interval)
+            except Exception as e:
+                logger.exception(f"Scheduled task error: {e}")
+
+    async def _register_pending(self) -> None:
+        """Register configured schedules."""
+        for _schedule in self.pending:
+            await schedule.register(**_schedule)
+        self.pending.clear()
+
+    async def _process_due(self) -> None:
+        """Collect due tasks and enqueue them."""
+        for scheduled_task in await backend.schedule.get_due():
+            await enqueue(
+                scheduled_task.task_name,
+                context=backend.deserialize(scheduled_task.context),
+                metadata=scheduled_task.metadata,
+            )
+
+            if scheduled_task.repeat == 0:
+                await backend.schedule.remove(scheduled_task.key)
+            else:
+                scheduled_task.advance()
+                await backend.schedule.register(scheduled_task)
 
 
 class Pool:
@@ -172,18 +275,19 @@ class Pool:
     """
 
     _context: WorkerContext
-    _processes: list[mp.Process]
+    _processes: list[mp.process.BaseProcess]
 
     def __init__(
         self,
-        engine: Engine | None = None,
+        engine: AsyncEngine | None = None,
         database_url: str | None = None,
     ) -> None:
         """Initialize the worker pool.
 
         Args:
-            engine: SQLAlchemy engine (URL will be extracted for workers).
-            database_url: Database URL string. Alternative to passing engine.
+            engine: Async SQLAlchemy engine.
+            database_url: Async database URL string (e.g. ``"sqlite+aiosqlite:///..."``).
+                Alternative to passing engine.
 
         Raises:
             ValueError: If neither engine nor database_url is provided.
@@ -192,11 +296,12 @@ class Pool:
         if not engine and not database_url:
             raise ValueError("Either engine or database_url must be provided")
 
-        engine = engine or create_engine(database_url)  # type: ignore[arg-type]
-        configure_engine(engine)
-        self._worker_queue: mp.Queue = mp.Queue()
+        self._engine = engine or create_async_engine(database_url)  # type: ignore[arg-type]
+        configure_engine(self._engine)
+        self._mp_context = mp.get_context("spawn")
+        self._worker_queue: mp.Queue = self._mp_context.Queue()
         self._context = WorkerContext(
-            shutdown_event=StateEvent("shutdown", _get_pool_id()),
+            shutdown_event=self._mp_context.Event(),
             tasks={},
             tx=self._worker_queue,
         )
@@ -321,8 +426,11 @@ class Pool:
         def decorator(func: TaskHandler) -> TaskHandler:
             self.add_task(name, func, lock_key=lock_key)
             self.add_schedule(
-                name, every, context or _EmptyContext(),
-                repeat=repeat, metadata=metadata,
+                name,
+                every,
+                context or _EmptyContext(),
+                repeat=repeat,
+                metadata=metadata,
             )
             return func
 
@@ -363,127 +471,65 @@ class Pool:
         """
         if task_name not in self._context.tasks:
             raise ValueError(
-                f"Task '{task_name}' is not registered. "
-                f"Use @pool.task() or pool.add_task() first."
+                f"Task '{task_name}' is not registered. Use @pool.task() or pool.add_task() first."
             )
 
-        self._pending_schedules.append(dict(
-            task_name=task_name,
-            every=every,
-            context=context,
-            repeat=repeat,
-            metadata=metadata,
-        ))
+        self._pending_schedules.append(
+            dict(
+                task_name=task_name,
+                every=every,
+                context=context,
+                repeat=repeat,
+                metadata=metadata,
+            )
+        )
+
+    def _spawn_workers(self) -> None:
+        """Spawn worker processes using the 'spawn' start method.
+
+        Workers start fresh with no inherited state — connections and
+        event loops are created from scratch in each process.
+        """
+        logger.info(f"Starting {CONF.num_workers} worker processes")
+
+        for worker_id in range(CONF.num_workers):
+            process = self._mp_context.Process(
+                target=Worker.run_in_process,
+                args=(worker_id, self._context),
+                daemon=True,
+            )
+            process.start()
+            self._processes.append(process)
+            logger.info(f"Started worker {worker_id} (PID: {process.pid})")
 
     async def start(self) -> None:
         """Start workers and run until they exit.
 
         Spawns worker processes, forwards logs, and processes scheduled
-        tasks. This is the foreground entry point — it blocks until all
-        workers finish. Use ``run()`` for a daemonized version that
-        handles KeyboardInterrupt and cleanup.
+        tasks. Handles shutdown on cancellation (Ctrl+C). This is the
+        async entry point — use ``run()`` for a blocking version.
         """
-        await self._context.shutdown_event.clear()
+        self._context.shutdown_event.clear()
 
-        self._spawn_workers()
-
-        await asyncio.gather(
-            self._process_worker_events(),
-            self._process_scheduled_tasks(),
+        event_handler = _EventHandler(
+            shutdown_event=self._context.shutdown_event,
+            queue=self._worker_queue,
+            tasks=self._context.tasks,
+        )
+        scheduler = _Scheduler(
+            shutdown_event=self._context.shutdown_event,
+            pending=self._pending_schedules,
         )
 
-    def run(self) -> None:
-        """Start workers in a managed event loop with graceful shutdown.
-
-        Calls ``start()`` inside ``asyncio.run()`` and handles
-        KeyboardInterrupt, shutdown, and connection cleanup.
-        """
-
-        async def _loop() -> None:
-            try:
-                await self.start()
-            except asyncio.CancelledError:
-                pass
-            except Exception as e:
-                logger.exception(f"Pool error: {e}")
-            finally:
-                await self.shutdown()
-
         try:
-            asyncio.run(_loop())
-        except KeyboardInterrupt:
-            pass
-
-    def _spawn_workers(self) -> None:
-        """Spawn worker processes."""
-        print(f"Starting {CONF.num_workers} worker processes")
-
-        for worker_id in range(CONF.num_workers):
-            process = mp.Process(
-                target=Worker.run_in_process,
-                args=(worker_id, self._context),
-                daemon=False,
+            self._spawn_workers()
+            await asyncio.gather(
+                event_handler(),
+                scheduler(),
             )
-            process.start()
-            self._processes.append(process)
-            print(f"Started worker {worker_id} (PID: {process.pid})")
-
-    async def _process_scheduled_tasks(self) -> None:
-        """Register pending schedules, then poll for due tasks and enqueue them."""
-        for _schedule in self._pending_schedules:
-            await schedule.register(**_schedule)
-        self._pending_schedules.clear()
-
-        while any(p.is_alive() for p in self._processes):
-            await asyncio.sleep(CONF.scheduler_poll_interval)
-
-            for scheduled_task in await backend.schedule.get_due():
-                await enqueue(
-                    scheduled_task.task_name,
-                    context=backend.deserialize(scheduled_task.context),
-                    metadata=scheduled_task.metadata,
-                )
-
-                if scheduled_task.repeat == 0:
-                    await backend.schedule.remove(scheduled_task.key)
-                else:
-                    scheduled_task.advance()
-                    await backend.schedule.register(scheduled_task)
-
-    def _partition_key_for(self, task: Task) -> str | None:
-        """Derive the partition/lock key for a task from its definition."""
-        return self._context.tasks[task.task_name].get_lock_key(task.context)
-
-    async def _process_worker_events(self) -> None:
-        """Handle all events from worker processes via multiprocessing queue."""
-        while any(p.is_alive() for p in self._processes):
-            try:
-                message = self._worker_queue.get_nowait()
-            except stdlib_queue.Empty:
-                await asyncio.sleep(0.05)
-                continue
-
-            match message:
-                case LogEntry(record=record):
-                    logger.handle(record.to_log_record())
-
-                case TaskFailed(task=task, error=error):
-                    if task.retry_count < CONF.max_task_retries:
-                        task.retry_count += 1
-                        await backend.queue.push(
-                            task.model_dump_json(),
-                            partition_key=self._partition_key_for(task),
-                            high_priority=True,
-                        )
-                    else:
-                        # TODO incorporate this messaging into the ax.activity stream.
-                        print(
-                            f"Task {task.task_name} failed "
-                            f"after {task.retry_count + 1} attempts, giving up: {error}"
-                        )
-
-                case ActivityEvent():
-                    activity.handler(message)
+        except asyncio.CancelledError:
+            await event_handler.cleanup()
+            await self.shutdown()
 
     async def shutdown(self, timeout: int | None = None) -> None:
         """Gracefully shutdown all worker processes.
@@ -496,16 +542,18 @@ class Pool:
         if timeout is None:
             timeout = CONF.graceful_shutdown_timeout
 
-        print("Shutting down worker pool")
-        await self._context.shutdown_event.set()
+        logger.info("Shutting down worker pool")
+        self._context.shutdown_event.set()
 
         for process in self._processes:
             process.join(timeout=timeout)
             if process.is_alive():
-                print(f"Worker {process.pid} did not stop, terminating")
+                logger.error(f"Worker {process.pid} did not stop, terminating")
                 process.terminate()
                 process.join(timeout=5)
 
         self._processes.clear()
+
         await backend.close()
-        print("Worker pool shutdown complete")
+        await dispose_engine()
+        logger.info("Worker pool shutdown complete")

@@ -5,6 +5,8 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from agentexec.activity.status import Status
+
 
 class ActivityEvent(BaseModel):
     """Base class for all activity lifecycle events."""
@@ -19,7 +21,7 @@ class ActivityCreated(ActivityEvent):
 
 class ActivityUpdated(ActivityEvent):
     message: str
-    status: str
+    status: Status
     percentage: int | None = None
 
 

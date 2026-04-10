@@ -135,7 +135,7 @@ class TaskDefinition:
                 message=CONF.activity_message_error.format(error=e),
                 status=activity.Status.ERROR,
             )
-            raise
+            raise e
 
     def _infer_context_type(self, handler: TaskHandler) -> type[BaseModel]:
         hints = get_type_hints(handler)

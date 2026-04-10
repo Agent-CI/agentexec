@@ -56,7 +56,7 @@ async def enqueue(
 
     await backend.queue.push(
         task.model_dump_json(),
-        high_priority=(priority == Priority.HIGH),
+        priority=priority,
     )
 
     logger.info(f"Enqueued task {task.task_name} with agent_id {task.agent_id}")

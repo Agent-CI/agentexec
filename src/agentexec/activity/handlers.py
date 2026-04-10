@@ -26,7 +26,7 @@ during startup; everything else uses the default Postgres handler::
     # → writes directly to Postgres
 
 Custom handlers can be implemented by conforming to the ``ActivityHandler``
-protocol — any callable that accepts ``ActivityCreated | ActivityUpdated``.
+protocol — any callable that accepts ``ActivityEvent``.
 """
 
 from __future__ import annotations
@@ -35,54 +35,45 @@ import multiprocessing as mp
 from typing import Protocol
 
 from agentexec.activity.events import ActivityCreated, ActivityEvent, ActivityUpdated
-from agentexec.activity.status import Status
+from agentexec.activity.models import Activity
+from agentexec.core.db import get_session
 
 
 class ActivityHandler(Protocol):
     """Protocol for activity event handlers.
 
-    Any callable that accepts an ``ActivityCreated`` or ``ActivityUpdated``
-    event satisfies this protocol.
+    Any callable that accepts an ``ActivityEvent`` satisfies this protocol.
     """
-    def __call__(self, event: ActivityEvent) -> None: ...
+
+    async def __call__(self, event: ActivityEvent) -> None: ...
 
 
 class PostgresHandler:
     """Writes activity events directly to Postgres.
 
-    This is the default handler. It creates a short-lived database session
-    for each event, writes the appropriate records, and commits.
+    This is the default handler. It creates a short-lived async database
+    session for each event, writes the appropriate records, and commits.
     """
 
-    def __call__(self, event: ActivityEvent) -> None:
-        match event:
-            case ActivityCreated(agent_id=agent_id, task_name=task_name, message=message, metadata=metadata):
-                from agentexec.activity.models import Activity, ActivityLog
-                from agentexec.core.db import get_session
-
-                with get_session() as db:
-                    record = Activity(agent_id=agent_id, agent_type=task_name, metadata_=metadata)
-                    db.add(record)
-                    db.flush()
-                    db.add(ActivityLog(
-                        activity_id=record.id,
-                        message=message,
-                        status=Status.QUEUED,
-                        percentage=0,
-                    ))
-                    db.commit()
-
-            case ActivityUpdated(agent_id=agent_id, message=message, status=status, percentage=percentage):
-                from agentexec.activity.models import Activity
-                from agentexec.core.db import get_session
-
-                with get_session() as db:
-                    Activity.append_log(
+    async def __call__(self, event: ActivityEvent) -> None:
+        async with get_session() as db:
+            match event:
+                case ActivityCreated():
+                    await Activity.create(
                         session=db,
-                        agent_id=agent_id,
-                        message=message,
-                        status=Status(status),
-                        percentage=percentage,
+                        agent_id=event.agent_id,
+                        task_name=event.task_name,
+                        message=event.message,
+                        metadata=event.metadata,
+                    )
+
+                case ActivityUpdated():
+                    await Activity.append_log(
+                        session=db,
+                        agent_id=event.agent_id,
+                        message=event.message,
+                        status=event.status,
+                        percentage=event.percentage,
                     )
 
 
@@ -99,5 +90,5 @@ class IPCHandler:
     def __init__(self, tx: mp.Queue) -> None:
         self.tx = tx
 
-    def __call__(self, event: ActivityEvent) -> None:
+    async def __call__(self, event: ActivityEvent) -> None:
         self.tx.put_nowait(event)

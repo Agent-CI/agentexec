@@ -1,30 +1,29 @@
 import uuid
 
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
+from sqlalchemy.ext.asyncio import create_async_engine, async_sessionmaker, AsyncSession
 
 from agentexec.activity.models import Activity, Base, Status
 from agentexec.runners.base import BaseAgentRunner, _RunnerPrompts, _RunnerTools
 
 
 @pytest.fixture
-def db_session():
+async def db_session():
     """Set up an in-memory SQLite database for testing."""
-    engine = create_engine("sqlite:///:memory:", echo=False)
-    SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
-    Base.metadata.create_all(bind=engine)
+    engine = create_async_engine("sqlite+aiosqlite:///:memory:", echo=False)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
 
-    session = SessionLocal()
+    session = async_sessionmaker(bind=engine, expire_on_commit=False)()
     try:
         yield session
-        session.commit()
+        await session.commit()
     except Exception:
-        session.rollback()
+        await session.rollback()
         raise
     finally:
-        session.close()
-        engine.dispose()
+        await session.close()
+        await engine.dispose()
 
 
 class TestRunnerPrompts:

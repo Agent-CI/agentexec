@@ -5,7 +5,11 @@ import json
 import os
 import socket
 import time
-from typing import Any, Optional
+from typing import TYPE_CHECKING, Any, Optional
+
+if TYPE_CHECKING:
+    from agentexec.core.queue import Priority
+    from agentexec.schedule import ScheduledTask
 
 from aiokafka import AIOKafkaConsumer, AIOKafkaProducer, TopicPartition
 from aiokafka.admin import AIOKafkaAdminClient, NewTopic
@@ -193,7 +197,7 @@ class KafkaQueueBackend(BaseQueueBackend):
         self,
         value: str,
         *,
-        high_priority: bool = False,
+        priority: Priority | None = None,
         partition_key: str | None = None,
     ) -> None:
         topic = self.backend.tasks_topic(CONF.queue_prefix)
@@ -221,6 +225,8 @@ class KafkaQueueBackend(BaseQueueBackend):
                 timeout=timeout,
             )
             await consumer.commit()
+            if msg.value is None:
+                return None
             return json.loads(msg.value.decode("utf-8"))
         except asyncio.TimeoutError:
             return None

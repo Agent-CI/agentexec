@@ -8,6 +8,7 @@ from fakeredis import aioredis as fake_aioredis
 from pydantic import BaseModel
 
 import agentexec as ax
+from agentexec.core.queue import Priority
 from agentexec.state import backend
 
 
@@ -165,7 +166,7 @@ class TestMultiPartitionDequeue:
         """High priority tasks within a partition are popped first."""
         await backend.queue.push(_task_json("low"), partition_key="user:1")
         await backend.queue.push(
-            _task_json("high"), partition_key="user:1", high_priority=True,
+            _task_json("high"), partition_key="user:1", priority=Priority.HIGH,
         )
 
         result = await backend.queue.pop(timeout=1)
