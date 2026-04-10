@@ -1,13 +1,13 @@
+import logging
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
 
-from agentexec.core.logging import get_logger
 from agentexec.core.task import Task
 from agentexec.state import backend
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 
 class Priority(str, Enum):

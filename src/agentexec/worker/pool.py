@@ -95,14 +95,17 @@ class Worker:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         context.tx.cancel_join_thread()
 
-        # Ensure worker logs reach stderr — add a StreamHandler if
-        # the user hasn't configured one (spawn doesn't inherit handlers)
-        # root = logging.getLogger()
-        # has_stream = any(isinstance(h, logging.StreamHandler) for h in root.handlers)
-        # if not has_stream:
-        #    handler = logging.StreamHandler()
-        #    root.addHandler(handler)
-        #    root.setLevel(logging.DEBUG)
+        # Spawn doesn't inherit log handlers — bootstrap a stderr handler
+        # on the root logger so every logger in this process (ours and the
+        # user's) has somewhere to write.
+        root = logging.getLogger()
+        if not root.handlers:
+            handler = logging.StreamHandler()
+            handler.setFormatter(logging.Formatter(
+                "[%(levelname)s/%(processName)s] %(name)s: %(message)s"
+            ))
+            root.addHandler(handler)
+            root.setLevel(logging.INFO)
 
         instance = cls(worker_id, context)
         instance.run()
@@ -123,25 +126,29 @@ class Worker:
 
     async def _run(self) -> None:
         """Async main loop - dequeue, execute, complete."""
-        # logger = logging.getLogger(__name__)
-
         try:
             while not self._context.shutdown_event.is_set():
                 try:
                     if data := await backend.queue.pop(timeout=1):
                         task = Task.model_validate(data)
-                        logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
-                        definition = self._context.tasks[task.task_name]
+                        try:
+                            definition = self._context.tasks[task.task_name]
+                        except KeyError:
+                            logger.error(
+                                f"Worker {self._worker_id}: task '{task.task_name}' is not registered"
+                            )
+                            continue
                         partition_key = definition.get_lock_key(task.context)
                     else:
                         await asyncio.sleep(1)
                         continue
 
                     try:
+                        logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
                         await definition.execute(task)
                         logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
                     except Exception as e:
-                        logger.error(f"Worker {self._worker_id} failed: {task.task_name}")
+                        logger.exception(f"Worker {self._worker_id} failed: {task.task_name}")
                         self._send(TaskFailed.from_exception(task, e))
                     finally:
                         await backend.queue.complete(partition_key)

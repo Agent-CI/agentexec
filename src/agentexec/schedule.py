@@ -1,16 +1,17 @@
 from __future__ import annotations
 
+import logging
 import time
 from datetime import datetime
 from typing import Any
+
 from croniter import croniter
 from pydantic import BaseModel, Field
 
 from agentexec.config import CONF
-from agentexec.core.logging import get_logger
 from agentexec.state import backend
 
-logger = get_logger(__name__)
+logger = logging.getLogger(__name__)
 
 __all__ = [
     "register",
