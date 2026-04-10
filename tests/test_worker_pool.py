@@ -386,7 +386,7 @@ class TestPoolRetryLogic:
         self._test_queue = queue.Queue()
         return _EventHandler(
             shutdown_event=pool._context.shutdown_event,
-            queue=self._test_queue,
+            queue=self._test_queue,  # type: ignore[arg-type]
             tasks=pool._context.tasks,
         )
 

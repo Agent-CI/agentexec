@@ -277,7 +277,7 @@ class TestEventHandlerLogging:
         q = queue.Queue()
         eh = _EventHandler(
             shutdown_event=pool._context.shutdown_event,
-            queue=q,
+            queue=q,  # type: ignore[arg-type]
             tasks=pool._context.tasks,
         )
 
