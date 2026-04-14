@@ -1,3 +1,4 @@
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -105,16 +106,18 @@ class TestCounterOperations:
 class TestConnectionManagement:
     async def test_close_all_connections(self):
         mock_client = AsyncMock()
-        backend._client = mock_client
+        redis_backend = cast(RedisBackend, backend)
+        redis_backend._client = mock_client
 
         await backend.close()
 
         mock_client.aclose.assert_called_once()
-        assert backend._client is None
+        assert redis_backend._client is None
 
     async def test_close_handles_none_clients(self):
-        backend._client = None
+        redis_backend = cast(RedisBackend, backend)
+        redis_backend._client = None
 
         await backend.close()
 
-        assert backend._client is None
+        assert redis_backend._client is None

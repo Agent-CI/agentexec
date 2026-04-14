@@ -294,6 +294,7 @@ class TestTick:
         await tick()
 
         updated = await _get_schedule(fake_redis, "refresh_cache")
+        assert updated is not None
         assert updated.repeat < 3
         assert updated.next_run > old_st.next_run
 
@@ -304,6 +305,7 @@ class TestTick:
         await tick()
 
         updated = await _get_schedule(fake_redis, "refresh_cache")
+        assert updated is not None
         assert updated.repeat == -1
 
     async def test_tick_anchor_based_rescheduling(self, fake_redis, mock_activity_create):
@@ -313,6 +315,7 @@ class TestTick:
         await tick()
 
         updated = await _get_schedule(fake_redis, "refresh_cache")
+        assert updated is not None
         assert updated.next_run > old_st.next_run
 
     async def test_tick_skips_orphaned_entries(self, fake_redis, mock_activity_create):
@@ -329,6 +332,7 @@ class TestTick:
         await register("refresh_cache", "*/1 * * * *", RefreshContext(scope="all"))
 
         st = await _get_schedule(fake_redis, "refresh_cache")
+        assert st is not None
         st.next_run = time.time() - 600
         await fake_redis.hset(_data_key(), st.key, st.model_dump_json().encode())
         await fake_redis.zadd(_index_key(), {st.key: st.next_run})
@@ -343,6 +347,7 @@ class TestTick:
         await register("refresh_cache", "*/5 * * * *", RefreshContext(scope="users", ttl=999))
 
         st = await _get_schedule(fake_redis, "refresh_cache")
+        assert st is not None
         ctx = state.backend.deserialize(st.context)
         assert isinstance(ctx, RefreshContext)
         assert ctx.scope == "users"

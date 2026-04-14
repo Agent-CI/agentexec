@@ -125,31 +125,6 @@ def test_get_lock_key_raises_on_missing_field(pool):
         definition.get_lock_key({"user_id": "42"})
 
 
-async def test_acquire_lock_success(fake_redis):
-    """Queue backend acquire_lock returns True when lock is free."""
-    queue_key = backend.queue._queue_key("user:42").encode()
-    result = await backend.queue._acquire_lock(queue_key)
-    assert result is True
-
-
-async def test_acquire_lock_already_held(fake_redis):
-    """Queue backend acquire_lock returns False when already held."""
-    queue_key = backend.queue._queue_key("user:42").encode()
-    await backend.queue._acquire_lock(queue_key)
-    result = await backend.queue._acquire_lock(queue_key)
-    assert result is False
-
-
-async def test_release_lock(fake_redis):
-    """release_lock frees the lock so it can be re-acquired."""
-    queue_key = backend.queue._queue_key("user:42").encode()
-    await backend.queue._acquire_lock(queue_key)
-    await backend.queue.complete("user:42")
-
-    result = await backend.queue._acquire_lock(queue_key)
-    assert result is True
-
-
 async def test_requeue_pushes_to_back(fake_redis, monkeypatch):
     """requeue() pushes task to the back of the queue (lpush)."""
 

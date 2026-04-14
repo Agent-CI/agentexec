@@ -41,7 +41,7 @@ class TaskFailed(Message):
     error: str
 
     @classmethod
-    def from_exception(cls, task: Task, exception: Exception) -> TaskFailed:
+    def from_exception(cls, task: Task, exception: BaseException) -> TaskFailed:
         return cls(task=task, error=str(exception))
 
 
@@ -147,13 +147,20 @@ class Worker:
                         logger.info(f"Worker {self._worker_id} processing: {task.task_name}")
                         await definition.execute(task)
                         logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
-                    except Exception as e:
+                    except asyncio.CancelledError:
+                        # Cooperative shutdown — let it propagate so the
+                        # outer finally can close the backend cleanly.
+                        raise
+                    except BaseException as e:
+                        # User code can raise SystemExit, KeyboardInterrupt,
+                        # or anything else. Don't let it kill the worker.
                         logger.exception(f"Worker {self._worker_id} failed: {task.task_name}")
                         self._send(TaskFailed.from_exception(task, e))
                     finally:
                         await backend.queue.complete(partition_key)
                 except Exception as e:
                     logger.exception(f"Worker {self._worker_id} error: {e}")
+                    await asyncio.sleep(1)  # avoid tight loop on infra failures (e.g. backend down)
         finally:
             await backend.close()
 
@@ -235,14 +242,18 @@ class _Scheduler:
         while not self.shutdown_event.is_set():
             try:
                 await self._process_due()
-                await asyncio.sleep(CONF.scheduler_poll_interval)
             except Exception as e:
+                # TODO: exponential backoff on repeated failures — current
+                # behavior is one traceback per poll interval, which is noisy
+                # but not resource-burning.
                 logger.exception(f"Scheduled task error: {e}")
+            await asyncio.sleep(CONF.scheduler_poll_interval)
 
     async def _register_pending(self) -> None:
         """Register configured schedules."""
         for _schedule in self.pending:
             await schedule.register(**_schedule)
+            logger.info(f"Scheduled {_schedule['task_name']}")
         self.pending.clear()
 
     async def _process_due(self) -> None:

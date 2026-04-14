@@ -44,6 +44,7 @@ class TestStateBackend:
 
         with patch.object(backend.state, "get", side_effect=mock_get):
             data = await backend.state.get("test-key")
+            assert data is not None
             restored = backend.deserialize(data)
             assert isinstance(restored, ResultModel)
             assert restored == result

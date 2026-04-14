@@ -98,6 +98,5 @@ async def register(
         metadata=metadata,
     )
     await backend.schedule.register(task)
-    logger.info(f"Scheduled {task_name}")
 
 
