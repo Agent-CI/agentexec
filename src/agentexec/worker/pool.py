@@ -95,6 +95,16 @@ class Worker:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         context.tx.cancel_join_thread()
 
+        # Ask the kernel to SIGTERM us if the parent dies (e.g. pool SIGKILL'd).
+        # Linux-only; silently skipped elsewhere.
+        try:
+            import ctypes
+
+            PR_SET_PDEATHSIG = 1
+            ctypes.CDLL("libc.so.6").prctl(PR_SET_PDEATHSIG, signal.SIGTERM, 0, 0, 0)
+        except (OSError, AttributeError):
+            pass
+
         # Spawn doesn't inherit log handlers; bootstrap stderr for this process.
         root = logging.getLogger()
         if not root.handlers:

@@ -11,6 +11,7 @@ import asyncio
 import importlib
 import logging
 import os
+import signal
 import sys
 
 logger = logging.getLogger(__name__)
@@ -82,9 +83,14 @@ async def run(args):
     if args.create_tables:
         await _create_tables(pool)
 
+    loop = asyncio.get_running_loop()
+    start_task = asyncio.ensure_future(pool.start())
+    # SIGTERM (systemd/docker stop) doesn't raise in Python by default; cancel explicitly.
+    loop.add_signal_handler(signal.SIGTERM, start_task.cancel)
+
     try:
-        await pool.start()
-    except KeyboardInterrupt:
+        await start_task
+    except (KeyboardInterrupt, asyncio.CancelledError):
         pass
 
 
