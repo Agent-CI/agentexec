@@ -95,9 +95,7 @@ class Worker:
         signal.signal(signal.SIGINT, signal.SIG_IGN)
         context.tx.cancel_join_thread()
 
-        # Spawn doesn't inherit log handlers — bootstrap a stderr handler
-        # on the root logger so every logger in this process (ours and the
-        # user's) has somewhere to write.
+        # Spawn doesn't inherit log handlers; bootstrap stderr for this process.
         root = logging.getLogger()
         if not root.handlers:
             handler = logging.StreamHandler()
@@ -148,19 +146,16 @@ class Worker:
                         await definition.execute(task)
                         logger.info(f"Worker {self._worker_id} completed: {task.task_name}")
                     except asyncio.CancelledError:
-                        # Cooperative shutdown — let it propagate so the
-                        # outer finally can close the backend cleanly.
                         raise
                     except BaseException as e:
-                        # User code can raise SystemExit, KeyboardInterrupt,
-                        # or anything else. Don't let it kill the worker.
+                        # Catch BaseException so SystemExit/KeyboardInterrupt in user code don't kill the worker.
                         logger.exception(f"Worker {self._worker_id} failed: {task.task_name}")
                         self._send(TaskFailed.from_exception(task, e))
                     finally:
                         await backend.queue.complete(partition_key)
                 except Exception as e:
                     logger.exception(f"Worker {self._worker_id} error: {e}")
-                    await asyncio.sleep(1)  # avoid tight loop on infra failures (e.g. backend down)
+                    await asyncio.sleep(1)  # avoid tight loop when backend is unreachable
         finally:
             await backend.close()
 
@@ -243,9 +238,7 @@ class _Scheduler:
             try:
                 await self._process_due()
             except Exception as e:
-                # TODO: exponential backoff on repeated failures — current
-                # behavior is one traceback per poll interval, which is noisy
-                # but not resource-burning.
+                # TODO: exponential backoff on repeated failures.
                 logger.exception(f"Scheduled task error: {e}")
             await asyncio.sleep(CONF.scheduler_poll_interval)
 
