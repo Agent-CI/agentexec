@@ -467,7 +467,7 @@ class Pool:
 
         The task must already be registered via ``@pool.task()`` or
         ``pool.add_task()``.  The scheduler loop runs automatically
-        inside ``pool.run()`` — no extra setup needed.
+        when the pool starts — no extra setup needed.
 
         Schedules are stored and registered with the backend when
         ``start()`` is called.

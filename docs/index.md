@@ -31,12 +31,14 @@ agentexec provides all of this out of the box, letting you focus on building you
 ## Quick Example
 
 ```python
+# worker.py — shared module imported by both workers and producers.
 from uuid import UUID
 from pydantic import BaseModel
+from sqlalchemy.ext.asyncio import create_async_engine
 from agents import Agent
 import agentexec as ax
 
-# Define input and output schemas
+
 class ResearchContext(BaseModel):
     company: str
     focus_areas: list[str]
@@ -45,10 +47,11 @@ class ResearchResult(BaseModel):
     summary: str
     insights: list[str]
 
-# Create a worker pool
+
+engine = create_async_engine("postgresql+asyncpg://user:pass@localhost/mydb")
 pool = ax.Pool(engine=engine)
 
-# Register a task
+
 @pool.task("research_company")
 async def research_company(agent_id: UUID, context: ResearchContext) -> ResearchResult:
     runner = ax.OpenAIRunner(agent_id=agent_id)
@@ -66,15 +69,25 @@ async def research_company(agent_id: UUID, context: ResearchContext) -> Research
 
     result = await runner.run(agent, input="Begin research", max_turns=15)
     return result.final_output_as(ResearchResult)
+```
 
-# Start workers
-pool.run()
+Start the workers via the CLI:
 
-# Queue a task (from anywhere in your app)
-task = await ax.enqueue("research_company", ResearchContext(
-    company="Anthropic",
-    focus_areas=["AI safety", "product offerings"]
-))
+```bash
+agentexec run worker:pool --create-tables
+```
+
+Enqueue tasks from anywhere (e.g. a FastAPI handler) — importing the worker
+module configures the engine so `ax.enqueue()` works:
+
+```python
+from worker import ResearchContext
+import agentexec as ax
+
+task = await ax.enqueue(
+    "research_company",
+    ResearchContext(company="Anthropic", focus_areas=["AI safety"]),
+)
 result = await ax.get_result(task)
 ```
 

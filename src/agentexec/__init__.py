@@ -5,7 +5,7 @@ Example:
     from pydantic import BaseModel
     import agentexec as ax
 
-    pool = ax.Pool(database_url="sqlite:///tasks.db")
+    pool = ax.Pool(database_url="sqlite+aiosqlite:///tasks.db")
 
     class Input(BaseModel):
         query: str
@@ -20,7 +20,9 @@ Example:
     # Enqueue from anywhere (returns Task with agent_id for tracking)
     task = await ax.enqueue("search", Input(query="hello"))
 
-    pool.run()  # Blocks and processes tasks
+    # Start the pool:
+    #   CLI:    agentexec run mymodule:pool
+    #   inline: asyncio.run(pool.start())
 """
 
 from importlib.metadata import PackageNotFoundError, version

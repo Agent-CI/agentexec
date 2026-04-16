@@ -294,14 +294,14 @@ from agentexec.runners.base import BaseAgentRunner
 
 class MyRunner(BaseAgentRunner):
     async def run(self, agent, input: str, max_turns: int = 10, **kwargs):
-        ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
+        await ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
 
         try:
             result = await self._execute(agent, input, max_turns)
-            ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
+            await ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
             return result
         except Exception as e:
-            ax.activity.error(self.agent_id, str(e))
+            await ax.activity.error(self.agent_id, str(e))
             raise
 
     async def run_streamed(self, agent, input: str, **kwargs):
@@ -422,9 +422,9 @@ async def my_task(agent_id: UUID, context: MyContext):
         result = await runner.run(agent, input="...", max_turns=10)
         return result.final_output
     except MaxTurnsExceeded:
-        ax.activity.update(agent_id, "Max turns reached, returning partial")
+        await ax.activity.update(agent_id, "Max turns reached, returning partial")
         return {"partial": True}
     except Exception as e:
-        ax.activity.error(agent_id, f"Custom error: {e}")
+        await ax.activity.error(agent_id, f"Custom error: {e}")
         raise CustomError(str(e))
 ```

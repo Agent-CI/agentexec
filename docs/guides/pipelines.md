@@ -526,23 +526,23 @@ class TrackedPipeline(pipeline.Base):
 
     @pipeline.step(0)
     async def step_one(self, ctx: InputContext) -> StepOneResult:
-        ax.activity.update(self.tracking_id, "Pipeline: Starting step 1", 0)
+        await ax.activity.update(self.tracking_id, "Pipeline: Starting step 1", 0)
         result = await self._do_step_one(ctx)
-        ax.activity.update(self.tracking_id, "Pipeline: Step 1 complete", 33)
+        await ax.activity.update(self.tracking_id, "Pipeline: Step 1 complete", 33)
         return result
 
     @pipeline.step(1)
     async def step_two(self, data: StepOneResult) -> StepTwoResult:
-        ax.activity.update(self.tracking_id, "Pipeline: Starting step 2", 33)
+        await ax.activity.update(self.tracking_id, "Pipeline: Starting step 2", 33)
         result = await self._do_step_two(data)
-        ax.activity.update(self.tracking_id, "Pipeline: Step 2 complete", 66)
+        await ax.activity.update(self.tracking_id, "Pipeline: Step 2 complete", 66)
         return result
 
     @pipeline.step(2)
     async def step_three(self, data: StepTwoResult) -> FinalResult:
-        ax.activity.update(self.tracking_id, "Pipeline: Starting step 3", 66)
+        await ax.activity.update(self.tracking_id, "Pipeline: Starting step 3", 66)
         result = await self._do_step_three(data)
-        ax.activity.update(self.tracking_id, "Pipeline: Complete", 100)
+        await ax.activity.update(self.tracking_id, "Pipeline: Complete", 100)
         return result
 ```
 

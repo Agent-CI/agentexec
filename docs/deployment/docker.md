@@ -91,7 +91,7 @@ services:
     volumes:
       - ./src:/app/src  # Hot reload
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/agentexec
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/agentexec
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY}
     depends_on:
@@ -102,11 +102,11 @@ services:
 
   worker:
     build: .
-    command: python -m myapp.worker
+    command: agentexec run myapp.worker:pool
     volumes:
       - ./src:/app/src
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/agentexec
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/agentexec
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AGENTEXEC_NUM_WORKERS=2
@@ -168,7 +168,7 @@ services:
 
   worker:
     image: myregistry/myapp:${VERSION:-latest}
-    command: python -m myapp.worker
+    command: agentexec run myapp.worker:pool
     deploy:
       replicas: 2
       resources:
@@ -194,7 +194,7 @@ services:
   worker:
     image: ghcr.io/agent-ci/agentexec-worker:latest
     environment:
-      - DATABASE_URL=postgresql://postgres:postgres@db:5432/agentexec
+      - DATABASE_URL=postgresql+asyncpg://postgres:postgres@db:5432/agentexec
       - REDIS_URL=redis://redis:6379/0
       - OPENAI_API_KEY=${OPENAI_API_KEY}
       - AGENTEXEC_WORKER_MODULE=myapp.worker
@@ -255,7 +255,7 @@ CMD ["python", "-m", "myapp.worker"]
 
 ```bash
 # Database connection
-DATABASE_URL=postgresql://user:password@host:5432/dbname
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname
 
 # Redis connection
 REDIS_URL=redis://host:6379/0
@@ -298,23 +298,24 @@ services:
 ```python
 # myapp/main.py
 from fastapi import FastAPI
-from agentexec.core.redis_client import get_redis
+from sqlalchemy import text
+from agentexec.core.db import get_session
+from agentexec.state import backend
 
 app = FastAPI()
 
 @app.get("/health")
 async def health_check():
-    # Check Redis
+    # Check Redis (state backend)
     try:
-        redis = await get_redis()
-        await redis.ping()
+        await backend.state.get("__health_probe__")
     except Exception as e:
         return {"status": "unhealthy", "redis": str(e)}
 
     # Check database
     try:
-        with Session(engine) as session:
-            session.execute("SELECT 1")
+        async with get_session() as db:
+            await db.execute(text("SELECT 1"))
     except Exception as e:
         return {"status": "unhealthy", "database": str(e)}
 
@@ -323,16 +324,20 @@ async def health_check():
 
 ### Worker Health Check
 
-Workers don't expose HTTP endpoints by default. Use Redis for health monitoring:
+Workers don't expose HTTP endpoints by default. Use the state backend to
+report heartbeats:
 
 ```python
-# In your worker
+# In your task handler, periodically:
 import time
-from agentexec.core.redis_client import get_redis_sync
+from agentexec.state import backend
 
-def report_health(worker_id: str):
-    redis = get_redis_sync()
-    redis.setex(f"worker:{worker_id}:heartbeat", 60, str(time.time()))
+async def heartbeat(worker_id: str):
+    await backend.state.set(
+        f"worker:{worker_id}:heartbeat",
+        str(time.time()).encode(),
+        ttl_seconds=60,
+    )
 ```
 
 ## Logging

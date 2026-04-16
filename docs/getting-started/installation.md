@@ -24,10 +24,10 @@ Create a `.env` file in your project root with your configuration:
 
 ```bash
 REDIS_URL=redis://localhost:6379/0
-DATABASE_URL=postgresql://user:password@localhost/myapp
+# Use an async driver (postgresql+asyncpg, sqlite+aiosqlite, mysql+aiomysql)
+DATABASE_URL=postgresql+asyncpg://user:password@localhost/myapp
 
 AGENTEXEC_NUM_WORKERS=4
-AGENTEXEC_QUEUE_NAME=myapp_tasks
 ```
 
 agentexec automatically loads environment variables from `.env` files using pydantic-settings.

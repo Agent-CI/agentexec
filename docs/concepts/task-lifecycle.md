@@ -170,11 +170,15 @@ task = await enqueue("my_task", MyContext(data="urgent"), priority=Priority.HIGH
 | `Priority.LOW` | Added to back of queue (LPUSH) | Default, normal tasks |
 | `Priority.HIGH` | Added to front of queue (RPUSH) | Urgent tasks, user-facing requests |
 
-### Custom Queue
+### Attach Metadata
 
 ```python
-# Enqueue to a specific queue
-task = await enqueue("my_task", context, queue_name="high_priority_queue")
+# Arbitrary metadata stored on the activity record
+task = await ax.enqueue(
+    "my_task",
+    context,
+    metadata={"organization_id": "org-123"},
+)
 ```
 
 ### Task Object
@@ -223,13 +227,13 @@ For custom runners, you can manage lifecycle manually:
 @pool.task("custom_task")
 async def custom_task(agent_id: UUID, context: MyContext):
     # Manual status updates
-    ax.activity.update(agent_id, "Starting phase 1", percentage=0)
+    await ax.activity.update(agent_id, "Starting phase 1", percentage=0)
 
     await phase_1()
-    ax.activity.update(agent_id, "Phase 1 complete", percentage=33)
+    await ax.activity.update(agent_id, "Phase 1 complete", percentage=33)
 
     await phase_2()
-    ax.activity.update(agent_id, "Phase 2 complete", percentage=66)
+    await ax.activity.update(agent_id, "Phase 2 complete", percentage=66)
 
     await phase_3()
     # Final status is set automatically
@@ -260,7 +264,7 @@ async def api_task(agent_id: UUID, context: MyContext):
         result = await external_api_call()
         return result
     except APIError as e:
-        ax.activity.error(agent_id, f"API failed: {e.message}")
+        await ax.activity.error(agent_id, f"API failed: {e.message}")
         raise  # Re-raise to mark task as ERROR
 ```
 
@@ -281,7 +285,7 @@ async def retry_task(agent_id: UUID, context: MyContext):
     try:
         return await do_work()
     except Exception as e:
-        ax.activity.error(agent_id, f"Failed after 3 retries: {e}")
+        await ax.activity.error(agent_id, f"Failed after 3 retries: {e}")
         raise
 ```
 
@@ -331,14 +335,12 @@ async def step2(self, result_a, result_b):
 ### Query Single Task
 
 ```python
-from sqlalchemy.orm import Session
+activity = await ax.activity.detail(agent_id=agent_id)
 
-with Session(engine) as session:
-    activity = ax.activity.detail(session, agent_id)
-
-    print(f"Status: {activity.status}")
-    print(f"Progress: {activity.latest_percentage}%")
-
+if activity:
+    latest = activity.logs[-1] if activity.logs else None
+    print(f"Status: {latest.status if latest else 'UNKNOWN'}")
+    print(f"Progress: {latest.percentage if latest else None}")
     for log in activity.logs:
         print(f"[{log.created_at}] {log.message}")
 ```
@@ -346,23 +348,27 @@ with Session(engine) as session:
 ### List Tasks
 
 ```python
-with Session(engine) as session:
-    activities = ax.activity.list(session, page=1, page_size=20)
-
-    print(f"Total: {activities.total}")
-    for item in activities.items:
-        print(f"{item.agent_id}: {item.status}")
+activities = await ax.activity.list(page=1, page_size=20)
+print(f"Total: {activities.total}")
+for item in activities.items:
+    print(f"{item.agent_id}: {item.status}")
 ```
 
 ### Query by Status
 
 ```python
-from agentexec.activity.models import Activity, Status
+from sqlalchemy import select
+from agentexec.activity.models import Activity, ActivityLog, Status
+from agentexec.core.db import get_session
 
-with Session(engine) as session:
-    running = session.query(Activity).filter(
-        Activity.logs.any(status=Status.RUNNING)
-    ).all()
+async with get_session() as db:
+    stmt = (
+        select(Activity)
+        .join(ActivityLog, ActivityLog.activity_id == Activity.id)
+        .where(ActivityLog.status == Status.RUNNING)
+    )
+    result = await db.execute(stmt)
+    running = result.scalars().all()
 ```
 
 ## Next Steps

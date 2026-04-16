@@ -22,7 +22,7 @@ class Pipeline:
 ```python
 import agentexec as ax
 
-pool = ax.Pool(database_url="sqlite:///agents.db")
+pool = ax.Pool(database_url="sqlite+aiosqlite:///agents.db")
 pipeline = ax.Pipeline(pool)
 
 class MyPipeline(pipeline.Base):
@@ -352,7 +352,7 @@ class ReportContext(BaseModel):
     format: str
 
 # Create pool and pipeline
-pool = ax.Pool(database_url="sqlite:///agents.db")
+pool = ax.Pool(database_url="sqlite+aiosqlite:///agents.db")
 pipeline = ax.Pipeline(pool)
 
 class ResearchPipeline(pipeline.Base):
@@ -508,22 +508,22 @@ class TrackedPipeline(pipeline.Base):
 
     @pipeline.step(0)
     async def step_one(self, ctx):
-        ax.activity.update(self.tracking_id, "Pipeline: Step 1/3", 0)
+        await ax.activity.update(self.tracking_id, "Pipeline: Step 1/3", 0)
         result = await self._do_step_one(ctx)
-        ax.activity.update(self.tracking_id, "Pipeline: Step 1 complete", 33)
+        await ax.activity.update(self.tracking_id, "Pipeline: Step 1 complete", 33)
         return result
 
     @pipeline.step(1)
     async def step_two(self, data):
-        ax.activity.update(self.tracking_id, "Pipeline: Step 2/3", 33)
+        await ax.activity.update(self.tracking_id, "Pipeline: Step 2/3", 33)
         result = await self._do_step_two(data)
-        ax.activity.update(self.tracking_id, "Pipeline: Step 2 complete", 66)
+        await ax.activity.update(self.tracking_id, "Pipeline: Step 2 complete", 66)
         return result
 
     @pipeline.step(2)
     async def step_three(self, data):
-        ax.activity.update(self.tracking_id, "Pipeline: Step 3/3", 66)
+        await ax.activity.update(self.tracking_id, "Pipeline: Step 3/3", 66)
         result = await self._do_step_three(data)
-        ax.activity.complete(self.tracking_id, "Pipeline complete", 100)
+        await ax.activity.complete(self.tracking_id, "Pipeline complete", 100)
         return result
 ```

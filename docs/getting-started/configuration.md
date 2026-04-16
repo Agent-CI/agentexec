@@ -127,8 +127,9 @@ Create a `.env` file in your project root:
 # Required
 REDIS_URL=redis://localhost:6379/0
 
-# Database (passed to Pool)
-DATABASE_URL=postgresql://user:password@localhost:5432/myapp
+# Database (passed to Pool). Use an async driver:
+#   postgresql+asyncpg://..., sqlite+aiosqlite://..., mysql+aiomysql://...
+DATABASE_URL=postgresql+asyncpg://user:password@localhost:5432/myapp
 
 # OpenAI (for agents)
 OPENAI_API_KEY=sk-your-key-here
@@ -137,8 +138,8 @@ OPENAI_API_KEY=sk-your-key-here
 AGENTEXEC_NUM_WORKERS=4
 AGENTEXEC_GRACEFUL_SHUTDOWN_TIMEOUT=300
 
-# Queue configuration
-AGENTEXEC_QUEUE_NAME=myapp_tasks
+# Queue configuration (prefix for Redis queue keys)
+AGENTEXEC_QUEUE_PREFIX=myapp_tasks
 
 # Database tables
 AGENTEXEC_TABLE_PREFIX=myapp_
@@ -157,12 +158,12 @@ Use different `.env` files for different environments:
 ```bash
 # .env.development
 REDIS_URL=redis://localhost:6379/0
-DATABASE_URL=sqlite:///dev.db
+DATABASE_URL=sqlite+aiosqlite:///dev.db
 AGENTEXEC_NUM_WORKERS=2
 
 # .env.production
 REDIS_URL=redis://redis-cluster:6379/0
-DATABASE_URL=postgresql://user:pass@db-host/prod
+DATABASE_URL=postgresql+asyncpg://user:pass@db-host/prod
 AGENTEXEC_NUM_WORKERS=16
 AGENTEXEC_GRACEFUL_SHUTDOWN_TIMEOUT=600
 ```
@@ -185,17 +186,18 @@ env = os.getenv("ENVIRONMENT", "development")
 load_dotenv(f".env.{env}")
 ```
 
-### Multiple Queues
+### Multiple Queue Namespaces
 
-Run different worker pools for different task types:
+Run different worker pools for different task types by giving each a
+different queue prefix:
 
 ```bash
-# High-priority queue
-AGENTEXEC_QUEUE_NAME=myapp_high_priority
+# High-priority pool
+AGENTEXEC_QUEUE_PREFIX=myapp_high_priority
 AGENTEXEC_NUM_WORKERS=8
 
-# Low-priority queue (separate process)
-AGENTEXEC_QUEUE_NAME=myapp_low_priority
+# Low-priority pool (separate process)
+AGENTEXEC_QUEUE_PREFIX=myapp_low_priority
 AGENTEXEC_NUM_WORKERS=2
 ```
 
@@ -221,7 +223,7 @@ config = ax.CONF
 
 print(f"Redis URL: {config.redis_url}")
 print(f"Workers: {config.num_workers}")
-print(f"Queue: {config.queue_name}")
+print(f"Queue prefix: {config.queue_prefix}")
 print(f"Table prefix: {config.table_prefix}")
 print(f"Result TTL: {config.result_ttl}s")
 print(f"Shutdown timeout: {config.graceful_shutdown_timeout}s")
@@ -269,24 +271,30 @@ REDIS_URL=rediss://localhost:6379/0
 
 ## Database URL Format
 
-The `DATABASE_URL` passed to `Pool` follows SQLAlchemy conventions:
+The `DATABASE_URL` passed to `Pool` must use an **async** SQLAlchemy
+driver:
 
 ```bash
-# PostgreSQL
-DATABASE_URL=postgresql://user:password@host:5432/dbname
+# PostgreSQL (asyncpg)
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname
 
 # PostgreSQL with SSL
-DATABASE_URL=postgresql://user:password@host:5432/dbname?sslmode=require
+DATABASE_URL=postgresql+asyncpg://user:password@host:5432/dbname?ssl=require
 
-# MySQL
-DATABASE_URL=mysql://user:password@host:3306/dbname
+# MySQL (aiomysql)
+DATABASE_URL=mysql+aiomysql://user:password@host:3306/dbname
 
-# SQLite
-DATABASE_URL=sqlite:///path/to/database.db
+# SQLite (aiosqlite)
+DATABASE_URL=sqlite+aiosqlite:///path/to/database.db
 
 # SQLite in memory (not recommended for workers)
-DATABASE_URL=sqlite:///:memory:
+DATABASE_URL=sqlite+aiosqlite:///:memory:
 ```
+
+> **Alembic note:** Migrations run synchronously, so Alembic's
+> `sqlalchemy.url` should use a sync driver even when the runtime uses
+> async (e.g. `postgresql+psycopg://` or plain `sqlite:///`). See the
+> [Basic Usage](../guides/basic-usage.md#database-setup) guide.
 
 ## Next Steps
 

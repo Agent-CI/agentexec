@@ -213,24 +213,34 @@ from unittest.mock import AsyncMock, patch
 import agentexec as ax
 
 @pytest.fixture
-def mock_redis():
-    """Fixture for mocked Redis."""
-    with patch("agentexec.core.redis_client.get_redis") as mock:
-        mock.return_value = AsyncMock()
-        yield mock.return_value
+def mock_queue_push(monkeypatch):
+    """Patch the queue backend so tests don't need a live Redis."""
+    pushed = []
+
+    async def _push(value, *, priority=None, partition_key=None):
+        pushed.append(value)
+
+    monkeypatch.setattr("agentexec.state.backend.queue.push", _push)
+    return pushed
+
 
 @pytest.mark.asyncio
-async def test_enqueue_creates_activity(mock_redis):
+async def test_enqueue_creates_activity(mock_queue_push, monkeypatch):
     """Test that enqueueing a task creates an activity record."""
-    # Arrange
-    context = MyContext(data="test")
+    # Arrange: stub Task.create so we don't need a real DB.
+    async def fake_create(**kwargs):
+        from agentexec import Task
+        return Task(agent_id=uuid4(), **kwargs)
+
+    monkeypatch.setattr("agentexec.core.task.Task.create", fake_create)
 
     # Act
-    task = await ax.enqueue("test_task", context)
+    task = await ax.enqueue("test_task", MyContext(data="test"))
 
     # Assert
     assert task.agent_id is not None
     assert task.task_name == "test_task"
+    assert len(mock_queue_push) == 1
 ```
 
 ### Test Guidelines

@@ -307,10 +307,10 @@ async def handled_task(agent_id: UUID, context: MyContext):
         result = await runner.run(agent, input="...", max_turns=10)
         return result.final_output
     except MaxTurnsExceeded:
-        ax.activity.update(agent_id, "Task incomplete - max turns reached")
+        await ax.activity.update(agent_id, "Task incomplete - max turns reached")
         return {"status": "incomplete", "reason": "max_turns"}
     except Exception as e:
-        ax.activity.error(agent_id, f"Unexpected error: {e}")
+        await ax.activity.error(agent_id, f"Unexpected error: {e}")
         raise
 ```
 
@@ -324,12 +324,12 @@ async def multi_agent(agent_id: UUID, context: MyContext):
     runner = ax.OpenAIRunner(agent_id=agent_id)
 
     # First agent: Research
-    ax.activity.update(agent_id, "Starting research phase", 0)
+    await ax.activity.update(agent_id, "Starting research phase", 0)
     research_agent = Agent(name="Researcher", ...)
     research_result = await runner.run(research_agent, input="Research...", max_turns=10)
 
     # Second agent: Analysis
-    ax.activity.update(agent_id, "Starting analysis phase", 50)
+    await ax.activity.update(agent_id, "Starting analysis phase", 50)
     analysis_agent = Agent(name="Analyst", ...)
     analysis_result = await runner.run(
         analysis_agent,
@@ -337,7 +337,7 @@ async def multi_agent(agent_id: UUID, context: MyContext):
         max_turns=10
     )
 
-    ax.activity.complete(agent_id, "Both phases complete", 100)
+    await ax.activity.complete(agent_id, "Both phases complete", 100)
     return analysis_result.final_output
 ```
 

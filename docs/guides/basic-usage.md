@@ -1,10 +1,11 @@
 # Basic Usage Guide
 
-This guide covers common patterns and best practices for using agentexec in your applications.
+This guide covers common patterns and best practices for using agentexec in
+your applications.
 
 ## Project Structure
 
-A typical agentexec project structure:
+A typical agentexec project:
 
 ```
 my-agent-project/
@@ -27,7 +28,6 @@ Contexts are Pydantic models that define what data your task needs:
 ```python
 # contexts.py
 from pydantic import BaseModel, Field
-from typing import Optional
 
 class ResearchContext(BaseModel):
     """Context for research tasks."""
@@ -95,18 +95,20 @@ Tasks are async functions decorated with `@pool.task()`:
 ```python
 # worker.py
 from uuid import UUID
-import agentexec as ax
+
+from sqlalchemy.ext.asyncio import create_async_engine
 from agents import Agent
+import agentexec as ax
 
 from .contexts import ResearchContext
-from .db import engine, DATABASE_URL
+from .db import DATABASE_URL
 
-pool = ax.Pool(engine=engine, database_url=DATABASE_URL)
+engine = create_async_engine(DATABASE_URL)
+pool = ax.Pool(engine=engine)
 
 @pool.task("research_company")
 async def research_company(agent_id: UUID, context: ResearchContext) -> dict:
     """Research a company and return findings."""
-
     runner = ax.OpenAIRunner(agent_id=agent_id)
 
     agent = Agent(
@@ -121,7 +123,7 @@ async def research_company(agent_id: UUID, context: ResearchContext) -> dict:
     result = await runner.run(
         agent,
         input=f"Research {context.company}",
-        max_turns=15
+        max_turns=15,
     )
 
     return {"company": context.company, "findings": result.final_output}
@@ -150,7 +152,7 @@ async def handle_order(agent_id: UUID, context: OrderContext):
     update_inventory()
 ```
 
-**Handle errors explicitly:**
+**Handle errors and reflect them in activity state:**
 
 ```python
 @pool.task("api_task")
@@ -159,7 +161,7 @@ async def api_task(agent_id: UUID, context: APIContext) -> dict:
         result = await call_external_api(context.endpoint)
         return {"success": True, "data": result}
     except APIError as e:
-        ax.activity.error(agent_id, f"API error: {e.message}")
+        await ax.activity.error(agent_id, f"API error: {e.message}")
         return {"success": False, "error": str(e)}
 ```
 
@@ -171,13 +173,12 @@ import asyncio
 @pool.task("slow_task")
 async def slow_task(agent_id: UUID, context: SlowContext) -> dict:
     try:
-        result = await asyncio.wait_for(
+        return await asyncio.wait_for(
             slow_operation(),
-            timeout=context.timeout_seconds
+            timeout=context.timeout_seconds,
         )
-        return result
     except asyncio.TimeoutError:
-        ax.activity.update(agent_id, "Operation timed out, using fallback")
+        await ax.activity.update(agent_id, "Operation timed out, using fallback")
         return await fallback_operation()
 ```
 
@@ -186,15 +187,13 @@ async def slow_task(agent_id: UUID, context: SlowContext) -> dict:
 ### From Application Code
 
 ```python
-import asyncio
 import agentexec as ax
 from .contexts import ResearchContext
 
 async def start_research(company: str) -> str:
-    """Queue a research task and return the agent ID."""
     task = await ax.enqueue(
         "research_company",
-        ResearchContext(company=company, focus_areas=["products", "financials"])
+        ResearchContext(company=company, focus_areas=["products", "financials"]),
     )
     return str(task.agent_id)
 ```
@@ -202,144 +201,147 @@ async def start_research(company: str) -> str:
 ### With Priority
 
 ```python
-# High priority - processed first
 urgent_task = await ax.enqueue(
     "process_order",
     OrderContext(order_id="123"),
-    priority=ax.Priority.HIGH
+    priority=ax.Priority.HIGH,
 )
 
-# Low priority (default) - processed after high priority
 background_task = await ax.enqueue(
     "generate_report",
-    ReportContext(report_type="weekly")
+    ReportContext(report_type="weekly"),
 )
 ```
 
-### To Specific Queue
+### With Metadata
+
+Attach arbitrary key-value pairs to the activity record (useful for
+multi-tenancy and filtering):
 
 ```python
-# Enqueue to a specific queue
 task = await ax.enqueue(
     "send_email",
     EmailContext(to="user@example.com", subject="Hello"),
-    queue_name="email_queue"
+    metadata={"organization_id": "org-123"},
 )
 ```
+
+> **Prerequisite:** `ax.enqueue()` writes an activity record, so the
+> process calling it needs an engine configured. `Pool.__init__` configures
+> the engine on your behalf — any module that imports your worker module
+> (like an API server or a producer script) picks this up for free. If you
+> need to enqueue without importing the worker, call
+> `agentexec.core.db.configure_engine(engine)` explicitly.
 
 ## Tracking Progress
 
 ### Basic Status Check
 
 ```python
-from sqlalchemy.orm import Session
+import agentexec as ax
 
 async def get_task_status(agent_id: str) -> dict:
-    with Session(engine) as session:
-        activity = ax.activity.detail(session, agent_id)
+    activity = await ax.activity.detail(agent_id=agent_id)
+    if not activity:
+        return {"error": "Task not found"}
 
-        if not activity:
-            return {"error": "Task not found"}
-
-        return {
-            "status": activity.status.value,
-            "progress": activity.latest_percentage,
-            "updated_at": activity.updated_at.isoformat(),
-        }
+    latest = activity.logs[-1] if activity.logs else None
+    return {
+        "status": latest.status.value if latest else None,
+        "progress": latest.percentage if latest else None,
+        "updated_at": activity.updated_at.isoformat(),
+    }
 ```
 
 ### Polling for Completion
 
+Prefer `ax.get_result()` for tasks that return a Pydantic result — it polls
+Redis directly and is cheaper than reading the activity table:
+
+```python
+task = await ax.enqueue("research_company", ResearchContext(...))
+result = await ax.get_result(task, timeout=300)
+```
+
+If you need the activity logs (not just the result), poll `activity.detail`:
+
 ```python
 import asyncio
+from agentexec.activity import Status
 
 async def wait_for_completion(agent_id: str, timeout: int = 300) -> dict:
-    """Wait for a task to complete, checking every 2 seconds."""
     start = asyncio.get_event_loop().time()
+    terminal = {Status.COMPLETE, Status.ERROR, Status.CANCELED}
 
-    while True:
-        with Session(engine) as session:
-            activity = ax.activity.detail(session, agent_id)
-
-            if activity and activity.status in ("COMPLETE", "ERROR"):
-                return {
-                    "status": activity.status.value,
-                    "logs": [log.message for log in activity.logs]
-                }
-
-        if asyncio.get_event_loop().time() - start > timeout:
-            return {"error": "Timeout waiting for task"}
-
+    while asyncio.get_event_loop().time() - start < timeout:
+        activity = await ax.activity.detail(agent_id=agent_id)
+        if activity and activity.logs and activity.logs[-1].status in terminal:
+            return {
+                "status": activity.logs[-1].status.value,
+                "logs": [log.message for log in activity.logs],
+            }
         await asyncio.sleep(2)
+
+    return {"error": "Timeout waiting for task"}
 ```
 
 ## Running Workers
 
-### Standalone Worker Process
+### Using the CLI (recommended)
 
-```python
-# worker.py
-if __name__ == "__main__":
-    pool.run()  # Blocks until shutdown
-```
-
-Run with:
 ```bash
-uv run python -m myapp.worker
+uv run agentexec run myapp.worker:pool --create-tables
 ```
 
-### Multiple Worker Types
+Key flags:
 
-Run different workers for different task types:
+- `--create-tables` — run `Base.metadata.create_all` before starting (dev only)
+- `--workers N`, `-w N` — override `CONF.num_workers`
+- `--max-retries N` — override `CONF.max_task_retries`
+- `--log-level LEVEL` — default `INFO`
 
-```python
-# email_worker.py
-email_pool = ax.Pool(
-    engine=engine,
-    database_url=DATABASE_URL,
-    queue_name="email_queue"
-)
+### Programmatic Entry Point
 
-@email_pool.task("send_email")
-async def send_email(agent_id: UUID, context: EmailContext):
-    ...
-
-if __name__ == "__main__":
-    email_pool.run()
-```
+If you need more control than the CLI provides:
 
 ```python
-# research_worker.py
-research_pool = ax.Pool(
-    engine=engine,
-    database_url=DATABASE_URL,
-    queue_name="research_queue"
-)
+# worker.py (extension)
+import asyncio
+import agentexec as ax
 
-@research_pool.task("research_company")
-async def research_company(agent_id: UUID, context: ResearchContext):
-    ...
+# ... define pool and tasks as above ...
+
+async def main():
+    async with engine.begin() as conn:
+        await conn.run_sync(ax.Base.metadata.create_all)
+    await pool.start()
 
 if __name__ == "__main__":
-    research_pool.run()
+    asyncio.run(main())
 ```
 
 ## Database Setup
 
-The preferred method for managing database tables is **Alembic migrations**. This gives you version-controlled, reversible migrations that work well in production. For quick prototyping, you can use SQLAlchemy's `create_all()` as a simple fallback.
+The preferred method for managing database tables is **Alembic migrations**.
+This gives you version-controlled, reversible migrations that work well in
+production. For quick prototyping, `--create-tables` (or
+`Base.metadata.create_all`) is the simpler path.
 
 ### Recommended: Alembic Migrations
 
 Alembic provides proper migration management for production applications.
 
-**1. Initialize Alembic in your project:**
+**1. Initialize Alembic:**
 
 ```bash
 uv add alembic
 alembic init alembic
 ```
 
-**2. Configure `alembic/env.py` to include agentexec models:**
+**2. Configure `alembic/env.py` to include agentexec models.** Alembic
+typically runs synchronously, so for autogenerate you can either use a sync
+URL for migrations or use Alembic's async template. A simple synchronous
+setup pointed at the same database:
 
 ```python
 # alembic/env.py
@@ -349,23 +351,20 @@ from logging.config import fileConfig
 from alembic import context
 from sqlalchemy import engine_from_config, pool
 
-# Import your application's models
 from myapp.models import Base as AppBase
-
-# Import agentexec
 import agentexec as ax
 
 config = context.config
 
-# Get database URL from environment
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agents.db")
+# Migrations use a sync driver even when the app uses async.
+# For SQLite: sqlite:///agents.db   (not sqlite+aiosqlite://)
+# For Postgres: postgresql+psycopg://...   (not postgresql+asyncpg://)
+DATABASE_URL = os.getenv("MIGRATIONS_DATABASE_URL", "sqlite:///agents.db")
 config.set_main_option("sqlalchemy.url", DATABASE_URL)
 
 if config.config_file_name is not None:
     fileConfig(config.config_file_name)
 
-# Combine metadata from both your app and agentexec
-# This allows Alembic to manage tables from both sources
 target_metadata = [AppBase.metadata, ax.Base.metadata]
 
 
@@ -402,36 +401,35 @@ else:
 **3. Generate and run migrations:**
 
 ```bash
-# Generate migration for agentexec tables
 alembic revision --autogenerate -m "Add agentexec tables"
-
-# Apply migrations
 alembic upgrade head
 ```
 
-See the [examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi) directory for a complete Alembic setup.
+See the
+[examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi)
+directory for a complete Alembic setup.
 
-### Quick Start: SQLAlchemy create_all()
+### Quick Start: create_all()
 
-For quick prototyping or simple scripts, you can use `create_all()`:
+For prototyping, let the CLI create tables on startup:
 
-```python
-# db.py
-from sqlalchemy import create_engine
-import agentexec as ax
-
-DATABASE_URL = "sqlite:///agents.db"
-engine = create_engine(DATABASE_URL)
-
-# Create tables (simple approach for getting started)
-ax.Base.metadata.create_all(engine)
+```bash
+uv run agentexec run myapp.worker:pool --create-tables
 ```
 
-> **Note**: `create_all()` only creates tables that don't exist. It won't update existing tables when agentexec is upgraded. For production, use Alembic migrations.
+Or do it inline before `pool.start()`:
 
+```python
+async with engine.begin() as conn:
+    await conn.run_sync(ax.Base.metadata.create_all)
+```
+
+> **Note:** `create_all()` only creates tables that don't exist. It won't
+> update existing tables when agentexec is upgraded. For production, use
+> Alembic migrations.
 
 ## Next Steps
 
-- [FastAPI Integration](fastapi-integration.md) - Build REST APIs
-- [Pipelines](pipelines.md) - Multi-step workflows
-- [OpenAI Runner](openai-runner.md) - Advanced agent configuration
+- [FastAPI Integration](fastapi-integration.md) — Build REST APIs
+- [Pipelines](pipelines.md) — Multi-step workflows
+- [OpenAI Runner](openai-runner.md) — Advanced agent configuration

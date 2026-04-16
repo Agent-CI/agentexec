@@ -50,21 +50,29 @@ Redis provides atomic operations, persistence options, and excellent performance
 The worker pool manages multiple Python processes:
 
 ```python
-pool = ax.Pool(engine=engine, database_url=DATABASE_URL)
+from sqlalchemy.ext.asyncio import create_async_engine
+
+engine = create_async_engine(DATABASE_URL)
+pool = ax.Pool(engine=engine)
 
 @pool.task("my_task")
 async def my_task(agent_id: UUID, context: MyContext):
     ...
 
-pool.run()  # Starts workers and collects logs
+# Start via the CLI:   agentexec run mymodule:pool
+# or programmatically: asyncio.run(pool.start())
 ```
 
 **Key characteristics:**
 
-- **Multi-process**: Each worker is a separate Python process using `multiprocessing`
-- **Process isolation**: Worker crashes don't affect other workers
-- **Graceful shutdown**: Workers complete current tasks before stopping
-- **Log aggregation**: Logs from all workers are collected via Redis pub/sub
+- **Multi-process**: Each worker is a separate Python process started with
+  the `spawn` method — fresh interpreter, no inherited state.
+- **Daemon workers**: Workers die with the parent so they can't orphan and
+  poll the queue after the pool exits.
+- **Process isolation**: Worker crashes don't affect other workers.
+- **Graceful shutdown**: Workers complete current tasks before stopping.
+- **Log aggregation**: Every worker installs a stderr handler on startup so
+  logs from framework code and user code share a consistent format.
 
 ### Activity Tracking (Database)
 
@@ -162,11 +170,12 @@ return {"agent_id": task.agent_id}
 
 ```python
 # In your API handler
-activity = ax.activity.detail(session, agent_id)
+activity = await ax.activity.detail(agent_id=agent_id)
+latest = activity.logs[-1] if activity and activity.logs else None
 return {
-    "status": activity.status,
-    "progress": activity.latest_percentage,
-    "logs": [{"message": log.message} for log in activity.logs]
+    "status": latest.status if latest else None,
+    "progress": latest.percentage if latest else None,
+    "logs": [{"message": log.message} for log in (activity.logs if activity else [])],
 }
 ```
 
@@ -194,36 +203,37 @@ Each worker process:
 ```
 Main Process                    Worker Process
      │                               │
-     │  fork()                       │
+     │  spawn() fresh interpreter    │
      ├──────────────────────────────>│
      │                               │
-     │                          Initialize DB session
+     │                          Re-import user module
      │                               │
-     │                          Connect to Redis
+     │                          Install stderr log handler
      │                               │
      │                          ┌────┴────┐
      │                          │  Loop   │
-     │                          │ BRPOP   │◄─────┐
+     │                          │  pop    │◄─────┐
      │                          │ Execute │      │
-     │                          │ Log     │──────┘
+     │                          │complete │──────┘
      │                          └─────────┘
      │
- Collect logs via pub/sub
+  Event handler (IPC queue)
+  Scheduler loop
 ```
 
 ### Graceful Shutdown
 
 On SIGTERM or SIGINT:
 
-1. Main process signals shutdown via Redis event
-2. Workers finish current task (up to timeout)
-3. Workers close database and Redis connections
-4. Main process waits for workers to exit
-5. Pending activities are marked as CANCELED
+1. Main process sets the shared `multiprocessing.Event`.
+2. Workers finish their current task and exit the loop.
+3. Workers call `backend.close()` and exit.
+4. Main process joins each worker (up to `CONF.graceful_shutdown_timeout`).
+5. Any stragglers are `terminate()`'d.
 
 ```python
 # Automatic on SIGTERM/SIGINT, or manual:
-pool.shutdown(timeout=60)  # Wait up to 60 seconds
+await pool.shutdown(timeout=60)
 ```
 
 ## Scalability
@@ -233,49 +243,58 @@ pool.shutdown(timeout=60)  # Wait up to 60 seconds
 Scale by running more worker processes:
 
 ```bash
-# Single machine - more workers
+# Single machine: more workers
 AGENTEXEC_NUM_WORKERS=16
 
-# Multiple machines - each runs its own pool
+# Multiple machines: each runs its own pool
 # Machine 1
-python worker.py  # Spawns 8 workers
+agentexec run myapp.worker:pool -w 8
 
 # Machine 2
-python worker.py  # Spawns 8 more workers
+agentexec run myapp.worker:pool -w 8
 ```
 
-All workers share the same Redis queue, automatically distributing load.
+All pools share the same Redis queue, automatically distributing load.
 
 ### Vertical Scaling
 
-For CPU-bound agents, increase workers per machine. For I/O-bound agents (most LLM calls), workers can handle many concurrent tasks.
+For CPU-bound agents, increase workers per machine. For I/O-bound agents
+(most LLM calls), workers can handle many concurrent tasks because each
+handler is async.
 
-### Queue Partitioning
+### Partitioned Locking
 
-Use multiple queues for different workloads:
+Use `lock_key` on a task to serialize work within a partition (e.g. per
+user, per document):
 
 ```python
-# High-priority pool
-pool_high = ax.Pool(queue_name="high_priority", ...)
-
-# Low-priority pool
-pool_low = ax.Pool(queue_name="low_priority", ...)
-
-# Enqueue to specific queue
-await ax.enqueue("urgent_task", ctx, queue_name="high_priority")
+@pool.task("sync_user", lock_key="user:{user_id}")
+async def sync_user(agent_id: UUID, context: UserContext):
+    ...
 ```
+
+Tasks with matching evaluated keys execute one at a time; tasks with
+different keys run concurrently.
 
 ## Fault Tolerance
 
-### Worker Crashes
+### Worker Failures
 
-If a worker crashes:
+If a task handler raises:
 
-- Other workers continue processing
-- Current task may be lost (not re-queued)
-- Activity will show RUNNING (stale)
+- The worker logs the full traceback.
+- A `TaskFailed` message is sent to the main process via IPC.
+- The main process re-enqueues the task at `HIGH` priority, up to
+  `CONF.max_task_retries` (default `3`) times.
 
-**Mitigation**: Use `activity.cancel_pending()` on startup to clean up stale activities.
+If the entire worker process crashes:
+
+- Other workers continue processing.
+- The in-flight task may be lost (not automatically re-queued).
+- The activity record may be left in `RUNNING`.
+
+**Mitigation:** Run `await ax.activity.cancel_pending()` on startup to
+reconcile stale activities.
 
 ### Redis Failures
 

@@ -69,7 +69,7 @@ class MyFrameworkRunner(BaseAgentRunner):
             Your framework's result type
         """
         # 1. Update status to RUNNING
-        ax.activity.update(
+        await ax.activity.update(
             self.agent_id,
             ax.CONF.activity_message_started
         )
@@ -79,7 +79,7 @@ class MyFrameworkRunner(BaseAgentRunner):
             result = await self._execute_agent(agent, input, max_turns)
 
             # 3. Mark as complete
-            ax.activity.complete(
+            await ax.activity.complete(
                 self.agent_id,
                 ax.CONF.activity_message_complete
             )
@@ -88,7 +88,7 @@ class MyFrameworkRunner(BaseAgentRunner):
 
         except Exception as e:
             # 4. Mark as error
-            ax.activity.error(
+            await ax.activity.error(
                 self.agent_id,
                 ax.CONF.activity_message_error.format(error=str(e))
             )
@@ -145,7 +145,7 @@ class LangChainRunner(BaseAgentRunner):
             Agent output dict
         """
         # Update status to RUNNING
-        ax.activity.update(
+        await ax.activity.update(
             self.agent_id,
             ax.CONF.activity_message_started
         )
@@ -170,7 +170,7 @@ class LangChainRunner(BaseAgentRunner):
             )
 
             # Mark complete
-            ax.activity.complete(
+            await ax.activity.complete(
                 self.agent_id,
                 ax.CONF.activity_message_complete
             )
@@ -178,7 +178,7 @@ class LangChainRunner(BaseAgentRunner):
             return result
 
         except Exception as e:
-            ax.activity.error(
+            await ax.activity.error(
                 self.agent_id,
                 ax.CONF.activity_message_error.format(error=str(e))
             )
@@ -196,14 +196,14 @@ class LangChainRunner(BaseAgentRunner):
 
             async def on_agent_action(self, action, **kwargs):
                 self.step_count += 1
-                ax.activity.update(
+                await ax.activity.update(
                     agent_id,
                     f"Executing action: {action.tool}",
                     percentage=min(self.step_count * 10, 90)
                 )
 
             async def on_tool_end(self, output, **kwargs):
-                ax.activity.update(
+                await ax.activity.update(
                     agent_id,
                     f"Tool completed",
                 )
@@ -212,7 +212,7 @@ class LangChainRunner(BaseAgentRunner):
 
     async def run_streamed(self, agent, input: str, **kwargs) -> AsyncIterator:
         """Stream agent execution."""
-        ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
+        await ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
 
         try:
             input_dict = {"input": input} if isinstance(input, str) else input
@@ -220,10 +220,10 @@ class LangChainRunner(BaseAgentRunner):
             async for event in agent.astream_events(input_dict, version="v1"):
                 yield event
 
-            ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
+            await ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
 
         except Exception as e:
-            ax.activity.error(
+            await ax.activity.error(
                 self.agent_id,
                 ax.CONF.activity_message_error.format(error=str(e))
             )
@@ -284,7 +284,7 @@ class ClaudeRunner(BaseAgentRunner):
         **kwargs
     ):
         """Run Claude with tool use loop."""
-        ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
+        await ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
 
         messages = [{"role": "user", "content": input}]
         tools = tools or []
@@ -309,28 +309,28 @@ class ClaudeRunner(BaseAgentRunner):
 
                     # Report progress
                     progress = int((turn + 1) / max_turns * 100)
-                    ax.activity.update(
+                    await ax.activity.update(
                         self.agent_id,
                         f"Turn {turn + 1}: Processing tool calls",
                         percentage=min(progress, 90)
                     )
                 else:
                     # Complete
-                    ax.activity.complete(
+                    await ax.activity.complete(
                         self.agent_id,
                         ax.CONF.activity_message_complete
                     )
                     return self._extract_text(response)
 
             # Max turns reached
-            ax.activity.complete(
+            await ax.activity.complete(
                 self.agent_id,
                 "Max turns reached"
             )
             return self._extract_text(response)
 
         except Exception as e:
-            ax.activity.error(
+            await ax.activity.error(
                 self.agent_id,
                 ax.CONF.activity_message_error.format(error=str(e))
             )
@@ -393,7 +393,7 @@ class _RunnerTools:
         @function_tool
         def report_activity(message: str, percentage: int) -> str:
             """Report progress on the current task."""
-            ax.activity.update(agent_id, message, percentage=percentage)
+            await ax.activity.update(agent_id, message, percentage=percentage)
             return f"Status reported: {message} ({percentage}%)"
 
         return report_activity
@@ -421,7 +421,7 @@ class MyRunner(BaseAgentRunner):
         }
 
     async def _report_status(self, message: str, percentage: int):
-        ax.activity.update(self.agent_id, message, percentage=percentage)
+        await ax.activity.update(self.agent_id, message, percentage=percentage)
         return "Status updated"
 ```
 
@@ -433,23 +433,23 @@ class MyRunner(BaseAgentRunner):
 class RetryRunner(BaseAgentRunner):
 
     async def run(self, agent, input: str, max_turns: int = 10, retries: int = 3):
-        ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
+        await ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
 
         last_error = None
         for attempt in range(retries):
             try:
                 result = await self._execute(agent, input, max_turns)
-                ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
+                await ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
                 return result
             except TransientError as e:
                 last_error = e
-                ax.activity.update(
+                await ax.activity.update(
                     self.agent_id,
                     f"Retry {attempt + 1}/{retries}: {e}"
                 )
                 await asyncio.sleep(2 ** attempt)  # Exponential backoff
 
-        ax.activity.error(
+        await ax.activity.error(
             self.agent_id,
             f"Failed after {retries} retries: {last_error}"
         )
@@ -466,19 +466,19 @@ class FallbackRunner(BaseAgentRunner):
         self.fallback_model = fallback_model
 
     async def run(self, agent, input: str, **kwargs):
-        ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
+        await ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
 
         try:
             result = await self._run_primary(agent, input, **kwargs)
-            ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
+            await ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
             return result
         except PrimaryModelError as e:
-            ax.activity.update(
+            await ax.activity.update(
                 self.agent_id,
                 f"Primary model failed, using fallback: {e}"
             )
             result = await self._run_fallback(input, **kwargs)
-            ax.activity.complete(
+            await ax.activity.complete(
                 self.agent_id,
                 "Completed with fallback model"
             )
@@ -530,16 +530,16 @@ async def test_custom_runner_error_handling():
 ```python
 async def run(self, ...):
     # START: Update to RUNNING
-    ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
+    await ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
 
     try:
         result = await self._execute(...)
         # SUCCESS: Mark COMPLETE
-        ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
+        await ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
         return result
     except Exception as e:
         # FAILURE: Mark ERROR
-        ax.activity.error(self.agent_id, str(e))
+        await ax.activity.error(self.agent_id, str(e))
         raise
 ```
 
@@ -550,7 +550,7 @@ async def _execute(self, agent, input, max_turns):
     for turn in range(max_turns):
         # Report progress each turn
         progress = int((turn + 1) / max_turns * 100)
-        ax.activity.update(
+        await ax.activity.update(
             self.agent_id,
             f"Turn {turn + 1}/{max_turns}",
             percentage=min(progress, 90)  # Leave 10% for completion
@@ -571,20 +571,20 @@ ax.activity.error(self.agent_id, ax.CONF.activity_message_error.format(error=str
 
 ```python
 async def run(self, agent, input, **kwargs):
-    ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
+    await ax.activity.update(self.agent_id, ax.CONF.activity_message_started)
 
     try:
         result = await asyncio.wait_for(
             self._execute(agent, input),
             timeout=kwargs.get("timeout", 300)
         )
-        ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
+        await ax.activity.complete(self.agent_id, ax.CONF.activity_message_complete)
         return result
     except asyncio.TimeoutError:
-        ax.activity.error(self.agent_id, "Task timed out")
+        await ax.activity.error(self.agent_id, "Task timed out")
         raise
     except asyncio.CancelledError:
-        ax.activity.update(self.agent_id, "Task cancelled")
+        await ax.activity.update(self.agent_id, "Task cancelled")
         raise
 ```
 

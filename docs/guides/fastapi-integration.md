@@ -1,6 +1,7 @@
 # FastAPI Integration
 
-This guide shows how to integrate agentexec with FastAPI to build REST APIs for AI agent tasks.
+This guide shows how to integrate agentexec with FastAPI to build REST APIs
+for AI agent tasks.
 
 ## Project Structure
 
@@ -15,8 +16,7 @@ my-fastapi-project/
 │       ├── worker.py       # Worker pool and tasks
 │       ├── views.py        # API endpoints
 │       ├── contexts.py     # Pydantic models
-│       ├── db.py           # Database setup
-│       └── deps.py         # FastAPI dependencies
+│       └── db.py           # Database setup
 └── tests/
 ```
 
@@ -24,44 +24,32 @@ my-fastapi-project/
 
 ### Database Configuration
 
-For production applications, use **Alembic migrations** to manage your database schema. See the [Basic Usage Guide](basic-usage.md#database-setup) for complete Alembic setup instructions, or the [examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi) directory for a working example.
+For production, use **Alembic migrations** to manage your database schema.
+See the [Basic Usage Guide](basic-usage.md#database-setup) for a complete
+Alembic setup, or the
+[examples/openai-agents-fastapi](https://github.com/Agent-CI/agentexec/tree/main/examples/openai-agents-fastapi)
+directory for a working example.
 
-For quick prototyping, you can use `create_all()`:
+For prototyping, create tables via the CLI (`--create-tables`) or
+inline. In either case, use an async driver:
 
 ```python
 # db.py
 import os
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker, Session
-import agentexec as ax
+from sqlalchemy.ext.asyncio import create_async_engine
 
-DATABASE_URL = os.getenv("DATABASE_URL", "sqlite:///agents.db")
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "sqlite+aiosqlite:///agents.db",
+)
 
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(bind=engine)
-
-# Quick start approach; use Alembic migrations for production
-ax.Base.metadata.create_all(engine)
-```
-
-### FastAPI Dependencies
-
-```python
-# deps.py
-from typing import Generator
-from sqlalchemy.orm import Session
-from .db import SessionLocal
-
-def get_db() -> Generator[Session, None, None]:
-    """Database session dependency."""
-    db = SessionLocal()
-    try:
-        yield db
-    finally:
-        db.close()
+engine = create_async_engine(DATABASE_URL)
 ```
 
 ### Worker Pool
+
+Keep `worker.py` free of top-level side effects — FastAPI and the worker
+CLI both import this module:
 
 ```python
 # worker.py
@@ -70,14 +58,17 @@ from pydantic import BaseModel
 from agents import Agent
 import agentexec as ax
 
-from .db import engine, DATABASE_URL
+from .db import engine
 
-# Create worker pool
-pool = ax.Pool(engine=engine, database_url=DATABASE_URL)
+# Pool.__init__ calls configure_engine(engine), enabling ax.enqueue()
+# in any process that imports this module.
+pool = ax.Pool(engine=engine)
+
 
 class ResearchContext(BaseModel):
     company: str
     focus_areas: list[str] = []
+
 
 @pool.task("research_company")
 async def research_company(agent_id: UUID, context: ResearchContext) -> dict:
@@ -92,11 +83,12 @@ async def research_company(agent_id: UUID, context: ResearchContext) -> dict:
         model="gpt-4o",
     )
 
-    result = await runner.run(agent, input=f"Research {context.company}", max_turns=15)
+    result = await runner.run(
+        agent,
+        input=f"Research {context.company}",
+        max_turns=15,
+    )
     return {"company": context.company, "findings": result.final_output}
-
-if __name__ == "__main__":
-    pool.run()
 ```
 
 ### FastAPI Application
@@ -105,30 +97,36 @@ if __name__ == "__main__":
 # main.py
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
-from sqlalchemy.orm import Session
 import agentexec as ax
 
-from .db import engine
+# Importing worker.py creates the Pool and configures the engine so
+# `ax.enqueue()` works in request handlers.
+from .worker import pool  # noqa: F401
 from .views import router
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    # Startup: Clean up stale activities
-    with Session(engine) as session:
-        canceled = ax.activity.cancel_pending(session)
-        if canceled > 0:
-            print(f"Cleaned up {canceled} stale activities")
+    # Startup: reconcile stale activities from previous runs
+    canceled = await ax.activity.cancel_pending()
+    if canceled:
+        print(f"Cleaned up {canceled} stale activities")
 
     yield
 
-    # Shutdown: Close Redis connection
-    await ax.close_redis()
+    # Shutdown: close backend connections
+    from agentexec.state import backend
+    from agentexec.core.db import dispose_engine
+
+    await backend.close()
+    await dispose_engine()
+
 
 app = FastAPI(
     title="Agent API",
     description="API for AI agent tasks",
     version="1.0.0",
-    lifespan=lifespan
+    lifespan=lifespan,
 )
 
 app.include_router(router, prefix="/api")
@@ -136,30 +134,31 @@ app.include_router(router, prefix="/api")
 
 ## API Endpoints
 
-### Task Endpoints
+All handlers are `async def` and call the async activity API directly — no
+session dependency is needed because `ax.activity.*` functions fall back to
+`get_session()`.
 
 ```python
 # views.py
 from typing import Optional
-from uuid import UUID
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel
-from sqlalchemy.orm import Session
 import agentexec as ax
 
-from .deps import get_db
 from .worker import ResearchContext
 
 router = APIRouter()
 
-# Request/Response models
+
 class TaskRequest(BaseModel):
     company: str
     focus_areas: list[str] = []
 
+
 class TaskResponse(BaseModel):
     agent_id: str
     message: str
+
 
 class StatusResponse(BaseModel):
     agent_id: str
@@ -167,33 +166,35 @@ class StatusResponse(BaseModel):
     progress: Optional[int]
     message: Optional[str]
 
-# Endpoints
+
 @router.post("/tasks/research", response_model=TaskResponse)
 async def create_research_task(request: TaskRequest):
     """Queue a new research task."""
     task = await ax.enqueue(
         "research_company",
-        ResearchContext(company=request.company, focus_areas=request.focus_areas),
+        ResearchContext(
+            company=request.company,
+            focus_areas=request.focus_areas,
+        ),
     )
-
     return TaskResponse(
         agent_id=str(task.agent_id),
-        message=f"Research task queued for {request.company}"
+        message=f"Research task queued for {request.company}",
     )
 
+
 @router.get("/tasks/{agent_id}/status", response_model=StatusResponse)
-async def get_task_status(agent_id: str, db: Session = Depends(get_db)):
-    """Get the status of a task."""
-    activity = ax.activity.detail(db, agent_id)
-
+async def get_task_status(agent_id: str):
+    activity = await ax.activity.detail(agent_id=agent_id)
     if not activity:
-        raise HTTPException(status_code=404, detail="Task not found")
+        raise HTTPException(404, "Task not found")
 
+    latest = activity.logs[-1] if activity.logs else None
     return StatusResponse(
         agent_id=str(activity.agent_id),
-        status=activity.status.value,
-        progress=activity.latest_percentage,
-        message=activity.logs[-1].message if activity.logs else None
+        status=latest.status.value if latest else "UNKNOWN",
+        progress=latest.percentage if latest else None,
+        message=latest.message if latest else None,
     )
 ```
 
@@ -202,53 +203,49 @@ async def get_task_status(agent_id: str, db: Session = Depends(get_db)):
 ```python
 # views.py (continued)
 
-class ActivityListResponse(BaseModel):
-    items: list[dict]
-    total: int
-    page: int
-    pages: int
+@router.get("/activities")
+async def list_activities(page: int = 1, page_size: int = 20):
+    """List activities with pagination."""
+    return await ax.activity.list(page=page, page_size=page_size)
 
-class ActivityDetailResponse(BaseModel):
-    agent_id: str
-    task_type: str
-    status: str
-    progress: Optional[int]
-    created_at: str
-    updated_at: str
-    logs: list[dict]
 
-@router.get("/activities", response_model=ActivityListResponse)
-async def list_activities(
-    page: int = 1,
-    page_size: int = 20,
-    db: Session = Depends(get_db)
-):
-    """List all activities with pagination."""
-    return ax.activity.list(db, page=page, page_size=page_size)
-
-@router.get("/activities/{agent_id}", response_model=ActivityDetailResponse)
-async def get_activity_detail(agent_id: str, db: Session = Depends(get_db)):
+@router.get("/activities/{agent_id}")
+async def get_activity_detail(agent_id: str):
     """Get detailed activity with full log history."""
-    activity = ax.activity.detail(db, agent_id)
-
+    activity = await ax.activity.detail(agent_id=agent_id)
     if not activity:
-        raise HTTPException(status_code=404, detail="Activity not found")
-
+        raise HTTPException(404, "Activity not found")
     return activity
+```
+
+### Waiting for a Result (optional)
+
+If a request wants to return the task result directly instead of a status
+handle, use `ax.get_result()`:
+
+```python
+@router.post("/tasks/research/await")
+async def research_and_wait(request: TaskRequest):
+    task = await ax.enqueue(
+        "research_company",
+        ResearchContext(**request.model_dump()),
+    )
+    result = await ax.get_result(task, timeout=300)
+    return {"agent_id": str(task.agent_id), "result": result}
 ```
 
 ## Running the Application
 
 ### Development
 
-**Terminal 1 - Start FastAPI:**
+**Terminal 1 — start FastAPI:**
 ```bash
 uv run uvicorn myapp.main:app --reload --port 8000
 ```
 
-**Terminal 2 - Start Workers:**
+**Terminal 2 — start workers:**
 ```bash
-uv run python -m myapp.worker
+uv run agentexec run myapp.worker:pool --create-tables
 ```
 
 ### Production
@@ -257,8 +254,6 @@ Use a process manager like systemd or Docker Compose:
 
 ```yaml
 # docker-compose.yml
-version: '3.8'
-
 services:
   api:
     build: .
@@ -266,7 +261,7 @@ services:
     ports:
       - "8000:8000"
     environment:
-      - DATABASE_URL=postgresql://user:pass@db/myapp
+      - DATABASE_URL=postgresql+asyncpg://user:pass@db/myapp
       - REDIS_URL=redis://redis:6379/0
     depends_on:
       - db
@@ -274,9 +269,9 @@ services:
 
   worker:
     build: .
-    command: python -m myapp.worker
+    command: agentexec run myapp.worker:pool
     environment:
-      - DATABASE_URL=postgresql://user:pass@db/myapp
+      - DATABASE_URL=postgresql+asyncpg://user:pass@db/myapp
       - REDIS_URL=redis://redis:6379/0
       - AGENTEXEC_NUM_WORKERS=4
     depends_on:
@@ -296,6 +291,6 @@ services:
 
 ## Next Steps
 
-- [Pipelines](pipelines.md) - Multi-step workflows
-- [Production Guide](../deployment/production.md) - Production deployment
-- [Docker Deployment](../deployment/docker.md) - Containerization
+- [Pipelines](pipelines.md) — Multi-step workflows
+- [Production Guide](../deployment/production.md) — Production deployment
+- [Docker Deployment](../deployment/docker.md) — Containerization

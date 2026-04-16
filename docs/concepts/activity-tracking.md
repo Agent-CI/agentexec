@@ -1,37 +1,42 @@
 # Activity Tracking
 
-Activity tracking provides observability into your AI agents. It records the full lifecycle of each task execution, including status changes, progress updates, and log messages.
+Activity tracking provides observability into your AI agents. It records
+the full lifecycle of each task execution, including status changes,
+progress updates, and log messages.
+
+All activity APIs are async. Pass an `AsyncSession` explicitly, or let the
+function fall back to `get_session()` (which requires `configure_engine()`
+to have been called — the Pool handles this automatically).
 
 ## Overview
 
-Every task creates an **Activity** record in your database. As the task executes, **ActivityLog** entries are appended to track progress:
+Every task creates an **Activity** record. As the task executes, log entries
+are appended:
 
 ```
 Activity (task instance)
 ├── id: UUID
 ├── agent_id: UUID (for tracking)
 ├── agent_type: "research_company"
+├── metadata: {...}
 ├── created_at: 2024-01-15 10:00:00
 ├── updated_at: 2024-01-15 10:05:00
 │
 └── ActivityLog entries:
-    ├── [10:00:00] QUEUED - "Waiting to start."
-    ├── [10:00:05] RUNNING - "Task started."
-    ├── [10:01:00] RUNNING - "Researching company profile..." (25%)
-    ├── [10:03:00] RUNNING - "Analyzing competitors..." (50%)
-    ├── [10:04:30] RUNNING - "Generating report..." (75%)
-    └── [10:05:00] COMPLETE - "Task completed successfully." (100%)
+    ├── [10:00:00] QUEUED    "Agent queued"
+    ├── [10:00:05] RUNNING   "Task started."
+    ├── [10:01:00] RUNNING   "Researching company profile..." (25%)
+    ├── [10:03:00] RUNNING   "Analyzing competitors..." (50%)
+    ├── [10:04:30] RUNNING   "Generating report..." (75%)
+    └── [10:05:00] COMPLETE  "Task completed successfully." (100%)
 ```
 
 ## Status Lifecycle
 
-Activities progress through these statuses:
-
 ```
 QUEUED ──> RUNNING ──> COMPLETE
                   └──> ERROR
-
-CANCELED (cleanup/shutdown)
+                  └──> CANCELED (cleanup/shutdown)
 ```
 
 | Status | Description |
@@ -46,25 +51,21 @@ CANCELED (cleanup/shutdown)
 
 ### Creating Activities
 
-Activities are created automatically when you enqueue a task:
+Activities are created automatically by `ax.enqueue()`:
 
 ```python
 task = await ax.enqueue("research", ResearchContext(company="Acme"))
-# Activity is created with status=QUEUED
+# Activity created with status=QUEUED
 ```
 
 For manual creation (advanced use cases):
 
 ```python
-from sqlalchemy.orm import Session
-
-with Session(engine) as session:
-    agent_id = ax.activity.create(
-        task_name="custom_task",
-        message="Starting custom operation",
-        agent_id=None,  # Auto-generated if None
-        session=session
-    )
+agent_id = await ax.activity.create(
+    task_name="custom_task",
+    message="Starting custom operation",
+    metadata={"organization_id": "org-123"},
+)
 ```
 
 ### Updating Progress
@@ -74,143 +75,131 @@ Report progress during task execution:
 ```python
 @pool.task("long_task")
 async def long_task(agent_id: UUID, context: MyContext):
-    # Update with message only
-    ax.activity.update(agent_id, "Starting phase 1")
-
+    await ax.activity.update(agent_id, "Starting phase 1")
     await phase_1()
 
-    # Update with progress percentage
-    ax.activity.update(
+    await ax.activity.update(
         agent_id,
         "Phase 1 complete, starting phase 2",
-        percentage=33
+        percentage=33,
     )
-
     await phase_2()
 
-    ax.activity.update(
+    await ax.activity.update(
         agent_id,
         "Phase 2 complete, starting phase 3",
-        percentage=66
+        percentage=66,
     )
-
     await phase_3()
-
-    # Final status is set automatically by the runner
+    # Final status (COMPLETE) is set automatically when the handler returns.
 ```
 
 ### Completing Tasks
 
-Mark a task as complete:
+Task completion is tracked automatically. If you need to mark a task
+complete manually (e.g. partial completion):
 
 ```python
-# Automatic completion (via runner or task.execute())
-result = await runner.run(agent, input="...")
-# Activity is marked COMPLETE automatically
-
-# Manual completion
-ax.activity.complete(
+await ax.activity.complete(
     agent_id,
     message="All processing finished",
-    percentage=100
+    percentage=100,
 )
 ```
 
 ### Recording Errors
 
-Mark a task as failed:
+Uncaught exceptions automatically mark the activity as `ERROR`. Call
+`activity.error` yourself when you want a specific error message recorded:
 
 ```python
 try:
     await risky_operation()
-except Exception as e:
-    ax.activity.error(agent_id, f"Operation failed: {e}")
-    raise  # Re-raise to trigger automatic ERROR status
+except APIError as e:
+    await ax.activity.error(agent_id, f"API failed: {e.message}")
+    raise
 ```
 
 ### Canceling Pending Tasks
 
-Clean up stale tasks (e.g., after restart):
+Reconcile stale activities (e.g. after a crash or restart):
 
 ```python
-with Session(engine) as session:
-    canceled_count = ax.activity.cancel_pending(session)
-    print(f"Canceled {canceled_count} pending tasks")
+canceled = await ax.activity.cancel_pending()
+print(f"Canceled {canceled} pending tasks")
 ```
 
 ## Querying Activities
 
 ### Get Activity Detail
 
-Retrieve full activity with all logs:
-
 ```python
-from sqlalchemy.orm import Session
+activity = await ax.activity.detail(agent_id=agent_id)
 
-with Session(engine) as session:
-    activity = ax.activity.detail(session, agent_id)
-
-    if activity:
-        print(f"Task: {activity.agent_type}")
-        print(f"Status: {activity.status}")
-        print(f"Created: {activity.created_at}")
-        print(f"Updated: {activity.updated_at}")
-        print(f"Progress: {activity.latest_percentage}%")
-
-        print("\nLog history:")
-        for log in activity.logs:
-            print(f"  [{log.created_at}] [{log.status}] {log.message}")
+if activity:
+    print(f"Task: {activity.agent_type}")
+    print(f"Created: {activity.created_at}")
+    print(f"Updated: {activity.updated_at}")
+    for log in activity.logs:
+        pct = f" ({log.percentage}%)" if log.percentage is not None else ""
+        print(f"  [{log.created_at}] {log.status} {log.message}{pct}")
 ```
 
 ### List Activities
 
-Get a paginated list of activities:
-
 ```python
-with Session(engine) as session:
-    result = ax.activity.list(
-        session,
-        page=1,
-        page_size=20
-    )
+result = await ax.activity.list(page=1, page_size=20)
 
-    print(f"Total activities: {result.total}")
-    print(f"Page {result.page} of {result.pages}")
+print(f"Total: {result.total}")
+print(f"Page {result.page}, total_pages: {result.total_pages}")
 
-    for item in result.items:
-        print(f"{item.agent_id}: {item.agent_type} - {item.status}")
-        if item.latest_log:
-            print(f"  Latest: {item.latest_log}")
+for item in result.items:
+    print(f"{item.agent_id}: {item.agent_type} - {item.status}")
+    if item.latest_log_message:
+        print(f"  Latest: {item.latest_log_message}")
 ```
 
-### Query by Status
-
-Use SQLAlchemy to filter activities:
+### Filter by Metadata
 
 ```python
+result = await ax.activity.list(
+    metadata_filter={"organization_id": "org-123"},
+)
+```
+
+### Query Directly with the ORM
+
+For complex queries, use `AsyncSession` directly:
+
+```python
+from sqlalchemy import select
 from agentexec.activity.models import Activity, ActivityLog, Status
+from agentexec.core.db import get_session
 
-with Session(engine) as session:
-    # Get running activities
-    running = session.query(Activity).filter(
-        Activity.logs.any(status=Status.RUNNING)
-    ).all()
-
-    # Get recently completed
-    from datetime import datetime, timedelta
-    hour_ago = datetime.utcnow() - timedelta(hours=1)
-
-    recent = session.query(Activity).filter(
-        Activity.updated_at >= hour_ago
-    ).order_by(Activity.updated_at.desc()).all()
-
-    # Get error activities
-    errors = session.query(Activity).filter(
-        Activity.logs.any(status=Status.ERROR)
-    ).all()
+async with get_session() as db:
+    # Activities with latest status = ERROR
+    stmt = (
+        select(Activity)
+        .join(ActivityLog, ActivityLog.activity_id == Activity.id)
+        .where(ActivityLog.status == Status.ERROR)
+        .order_by(Activity.updated_at.desc())
+    )
+    result = await db.execute(stmt)
+    errors = result.scalars().all()
 ```
 
 ## Response Schemas
+
+### ActivityLogSchema
+
+```python
+class ActivityLogSchema(BaseModel):
+    id: uuid.UUID
+    message: str
+    status: Status
+    percentage: int | None = 0
+    created_at: datetime
+```
 
 ### ActivityDetailSchema
 
@@ -218,18 +207,29 @@ Returned by `activity.detail()`:
 
 ```python
 class ActivityDetailSchema(BaseModel):
-    agent_id: UUID
-    agent_type: str                    # Task name
+    id: uuid.UUID | None
+    agent_id: uuid.UUID
+    agent_type: str
     created_at: datetime
     updated_at: datetime
-    status: Status                     # Current status
-    latest_percentage: int | None
-    logs: list[ActivityLogSchema]      # All log entries
+    logs: list[ActivityLogSchema]
+```
+
+### ActivityListItemSchema
+
+```python
+class ActivityListItemSchema(BaseModel):
+    agent_id: uuid.UUID
+    agent_type: str
+    status: Status
+    latest_log_message: str | None
+    latest_log_timestamp: datetime | None
+    percentage: int | None
+    started_at: datetime | None
+    elapsed_time_seconds: int  # computed
 ```
 
 ### ActivityListSchema
-
-Returned by `activity.list()`:
 
 ```python
 class ActivityListSchema(BaseModel):
@@ -237,35 +237,7 @@ class ActivityListSchema(BaseModel):
     total: int
     page: int
     page_size: int
-    pages: int
-```
-
-### ActivityListItemSchema
-
-Individual items in the list:
-
-```python
-class ActivityListItemSchema(BaseModel):
-    agent_id: UUID
-    agent_type: str
-    created_at: datetime
-    updated_at: datetime
-    status: Status
-    latest_log: str | None              # Most recent log message
-    latest_percentage: int | None
-```
-
-### ActivityLogSchema
-
-Individual log entries:
-
-```python
-class ActivityLogSchema(BaseModel):
-    id: int
-    message: str
-    status: Status
-    percentage: int | None
-    created_at: datetime
+    total_pages: int  # computed
 ```
 
 ## Database Models
@@ -274,13 +246,13 @@ class ActivityLogSchema(BaseModel):
 
 ```sql
 CREATE TABLE agentexec_activity (
-    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    id UUID PRIMARY KEY,
     agent_id UUID UNIQUE NOT NULL,
-    agent_type VARCHAR NOT NULL,
-    created_at TIMESTAMP DEFAULT NOW(),
-    updated_at TIMESTAMP DEFAULT NOW()
+    agent_type VARCHAR(255),
+    created_at TIMESTAMPTZ NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL,
+    metadata JSON
 );
-
 CREATE INDEX ix_agentexec_activity_agent_id ON agentexec_activity(agent_id);
 ```
 
@@ -288,15 +260,15 @@ CREATE INDEX ix_agentexec_activity_agent_id ON agentexec_activity(agent_id);
 
 ```sql
 CREATE TABLE agentexec_activity_log (
-    id SERIAL PRIMARY KEY,
+    id UUID PRIMARY KEY,
     activity_id UUID REFERENCES agentexec_activity(id),
     message TEXT NOT NULL,
-    status VARCHAR NOT NULL,  -- QUEUED, RUNNING, COMPLETE, ERROR, CANCELED
+    status VARCHAR NOT NULL,
     percentage INTEGER,
-    created_at TIMESTAMP DEFAULT NOW()
+    created_at TIMESTAMPTZ NOT NULL
 );
-
-CREATE INDEX ix_agentexec_activity_log_activity_id ON agentexec_activity_log(activity_id);
+CREATE INDEX ix_agentexec_activity_log_activity_id
+    ON agentexec_activity_log(activity_id);
 ```
 
 ### Table Prefix
@@ -312,7 +284,7 @@ AGENTEXEC_TABLE_PREFIX=myapp_
 
 ### Built-in Reporting Tool
 
-The OpenAI runner provides a tool for agents to report their progress:
+The OpenAI runner provides a tool for agents to report progress:
 
 ```python
 runner = ax.OpenAIRunner(agent_id=agent_id)
@@ -323,42 +295,25 @@ agent = Agent(
     You are a research agent.
     {runner.prompts.report_status}
     """,
-    tools=[runner.tools.report_status],  # Add the reporting tool
+    tools=[runner.tools.report_status],
     model="gpt-4o",
 )
 ```
 
-### How It Works
-
-1. The `report_status` tool is added to the agent
-2. The agent receives instructions to use it
-3. When the agent calls the tool, it updates the activity
-4. Progress is immediately visible via the API
-
-Example agent tool call:
-```json
-{
-    "name": "report_activity",
-    "arguments": {
-        "message": "Found 5 relevant articles",
-        "percentage": 50
-    }
-}
-```
+When the agent calls `report_status`, the runner writes an
+`ax.activity.update()` with the message and percentage.
 
 ### Custom Reporting Prompts
-
-Customize the instructions given to agents:
 
 ```python
 runner = ax.OpenAIRunner(
     agent_id=agent_id,
     report_status_prompt="""
     Use the report_activity tool to update progress:
-    - Call it after completing each major step
-    - Include specific details about what you found
-    - Estimate percentage complete (0-100)
-    """
+    - Call it after completing each major step.
+    - Include specific details about what you found.
+    - Estimate percentage complete (0-100).
+    """,
 )
 ```
 
@@ -367,56 +322,45 @@ runner = ax.OpenAIRunner(
 Customize default messages via environment variables:
 
 ```bash
-AGENTEXEC_ACTIVITY_MESSAGE_CREATE="Queued for processing"
 AGENTEXEC_ACTIVITY_MESSAGE_STARTED="Agent is working..."
 AGENTEXEC_ACTIVITY_MESSAGE_COMPLETE="Successfully finished"
 AGENTEXEC_ACTIVITY_MESSAGE_ERROR="Failed: {error}"
 ```
 
-The `{error}` placeholder in the error message is replaced with the actual error message.
+The `{error}` placeholder in the error message is replaced with the raised
+exception's message.
 
 ## Building a Status API
 
-Example FastAPI endpoints for activity tracking:
+Example FastAPI endpoints (all async):
 
 ```python
-from fastapi import FastAPI, Depends, HTTPException
-from sqlalchemy.orm import Session
+from fastapi import FastAPI, HTTPException
 import agentexec as ax
 
 app = FastAPI()
 
-def get_db():
-    with Session(engine) as session:
-        yield session
-
 @app.get("/api/activities")
-def list_activities(
-    page: int = 1,
-    page_size: int = 20,
-    db: Session = Depends(get_db)
-):
-    """List all activities with pagination."""
-    return ax.activity.list(db, page=page, page_size=page_size)
+async def list_activities(page: int = 1, page_size: int = 20):
+    return await ax.activity.list(page=page, page_size=page_size)
 
 @app.get("/api/activities/{agent_id}")
-def get_activity(agent_id: str, db: Session = Depends(get_db)):
-    """Get detailed activity with full log history."""
-    activity = ax.activity.detail(db, agent_id)
+async def get_activity(agent_id: str):
+    activity = await ax.activity.detail(agent_id=agent_id)
     if not activity:
         raise HTTPException(404, "Activity not found")
     return activity
 
 @app.get("/api/activities/{agent_id}/status")
-def get_status(agent_id: str, db: Session = Depends(get_db)):
-    """Get just the current status and progress."""
-    activity = ax.activity.detail(db, agent_id)
+async def get_status(agent_id: str):
+    activity = await ax.activity.detail(agent_id=agent_id)
     if not activity:
         raise HTTPException(404, "Activity not found")
+    latest = activity.logs[-1] if activity.logs else None
     return {
-        "status": activity.status,
-        "progress": activity.latest_percentage,
-        "message": activity.logs[-1].message if activity.logs else None
+        "status": latest.status if latest else None,
+        "progress": latest.percentage if latest else None,
+        "message": latest.message if latest else None,
     }
 ```
 
@@ -424,97 +368,64 @@ def get_status(agent_id: str, db: Session = Depends(get_db)):
 
 ### 1. Report Progress Frequently
 
-For long-running tasks, report progress often:
-
 ```python
 @pool.task("long_task")
 async def long_task(agent_id: UUID, context: MyContext):
     items = await get_items()
-
     for i, item in enumerate(items):
         await process_item(item)
-
-        # Report every item or batch
-        progress = int((i + 1) / len(items) * 100)
-        ax.activity.update(
+        await ax.activity.update(
             agent_id,
             f"Processed {i+1}/{len(items)} items",
-            percentage=progress
+            percentage=int((i + 1) / len(items) * 100),
         )
 ```
 
 ### 2. Include Meaningful Messages
 
-Make messages informative:
-
 ```python
-# Good - descriptive message
-ax.activity.update(
+# Good
+await ax.activity.update(
     agent_id,
     f"Found {len(results)} matching documents, analyzing...",
-    percentage=50
+    percentage=50,
 )
 
-# Bad - vague message
-ax.activity.update(agent_id, "Working...", percentage=50)
+# Bad
+await ax.activity.update(agent_id, "Working...", percentage=50)
 ```
 
-### 3. Handle Errors Gracefully
-
-Provide useful error messages:
-
-```python
-try:
-    result = await api_call()
-except APIError as e:
-    ax.activity.error(
-        agent_id,
-        f"API call failed: {e.message} (code: {e.code})"
-    )
-    raise
-except TimeoutError:
-    ax.activity.error(
-        agent_id,
-        "API call timed out after 30 seconds"
-    )
-    raise
-```
-
-### 4. Clean Up on Startup
-
-Cancel stale activities when your application starts:
+### 3. Clean Up on Startup
 
 ```python
 # In your startup code
-with Session(engine) as session:
-    canceled = ax.activity.cancel_pending(session)
-    if canceled > 0:
-        print(f"Cleaned up {canceled} stale activities from previous run")
+canceled = await ax.activity.cancel_pending()
+if canceled:
+    print(f"Cleaned up {canceled} stale activities from previous run")
 ```
 
-### 5. Archive Old Activities
+### 4. Archive Old Activities
 
-For high-volume systems, archive old activities:
+For high-volume systems:
 
 ```python
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import delete
+from agentexec.activity.models import Activity
+from agentexec.core.db import get_session
 
-def archive_old_activities(session: Session, days: int = 30):
-    cutoff = datetime.utcnow() - timedelta(days=days)
-
-    old_activities = session.query(Activity).filter(
-        Activity.updated_at < cutoff
-    ).all()
-
-    for activity in old_activities:
-        # Move to archive table or delete
-        session.delete(activity)
-
-    session.commit()
+async def archive_old_activities(days: int = 30) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    async with get_session() as db:
+        result = await db.execute(
+            delete(Activity).where(Activity.updated_at < cutoff)
+        )
+        await db.commit()
+        return result.rowcount
 ```
 
 ## Next Steps
 
-- [Task Lifecycle](task-lifecycle.md) - Understand task states
-- [OpenAI Runner](../guides/openai-runner.md) - Agent self-reporting
-- [FastAPI Integration](../guides/fastapi-integration.md) - Build status APIs
+- [Task Lifecycle](task-lifecycle.md) — Understand task states
+- [OpenAI Runner](../guides/openai-runner.md) — Agent self-reporting
+- [FastAPI Integration](../guides/fastapi-integration.md) — Build status APIs

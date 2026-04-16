@@ -50,10 +50,10 @@ GRANT ALL PRIVILEGES ON DATABASE agentexec TO agentexec_migrate;
 Use PgBouncer or built-in SQLAlchemy pooling:
 
 ```python
-from sqlalchemy import create_engine
+from sqlalchemy.ext.asyncio import create_async_engine
 
-engine = create_engine(
-    DATABASE_URL,
+engine = create_async_engine(
+    DATABASE_URL,           # e.g. postgresql+asyncpg://...
     pool_size=10,           # Base connections
     max_overflow=20,        # Additional connections under load
     pool_timeout=30,        # Seconds to wait for connection
@@ -176,7 +176,7 @@ services:
 ```bash
 # Production .env
 # Database
-DATABASE_URL=postgresql://user:pass@db-host:5432/agentexec?sslmode=require
+DATABASE_URL=postgresql+asyncpg://user:pass@db-host:5432/agentexec?ssl=require
 
 # Redis
 REDIS_URL=redis://:password@redis-host:6379/0
@@ -245,8 +245,6 @@ active_workers = Gauge('agentexec_active_workers', 'Active workers')
 ```python
 # health.py
 from fastapi import FastAPI, Response
-from sqlalchemy.orm import Session
-from agentexec.core.redis_client import get_redis
 
 @app.get("/health")
 async def health():
@@ -258,15 +256,17 @@ async def readiness():
 
     # Check Redis
     try:
-        redis = await get_redis()
-        await redis.ping()
+        from agentexec.state import backend
+        await backend.state.get("__health_probe__")
     except Exception as e:
         errors.append(f"redis: {e}")
 
     # Check Database
     try:
-        with Session(engine) as session:
-            session.execute("SELECT 1")
+        from sqlalchemy import text
+        from agentexec.core.db import get_session
+        async with get_session() as db:
+            await db.execute(text("SELECT 1"))
     except Exception as e:
         errors.append(f"database: {e}")
 
@@ -332,14 +332,12 @@ Clean up stale activities on startup:
 
 ```python
 # In your startup code
-from sqlalchemy.orm import Session
 import agentexec as ax
 
-def startup():
-    with Session(engine) as session:
-        canceled = ax.activity.cancel_pending(session)
-        if canceled > 0:
-            logger.info(f"Cleaned up {canceled} stale activities")
+async def startup():
+    canceled = await ax.activity.cancel_pending()
+    if canceled > 0:
+        logger.info(f"Cleaned up {canceled} stale activities")
 ```
 
 ### Dead Letter Queue
@@ -355,7 +353,7 @@ async def process_with_dlq(agent_id: UUID, context: MyContext):
         # Move to dead letter queue after 3 failures
         if context.retry_count >= 3:
             await move_to_dlq(agent_id, context, str(e))
-            ax.activity.error(agent_id, f"Moved to DLQ: {e}")
+            await ax.activity.error(agent_id, f"Moved to DLQ: {e}")
             return
 
         # Retry
@@ -384,7 +382,7 @@ async def api_task(agent_id: UUID, context: APIContext):
         result = await call_external_api(context.data)
         return result
     except CircuitBreakerError:
-        ax.activity.error(agent_id, "Circuit breaker open - service unavailable")
+        await ax.activity.error(agent_id, "Circuit breaker open - service unavailable")
         raise
 ```
 
@@ -492,42 +490,32 @@ appendfsync everysec
 
 ```python
 # Use eager loading for related data
-from sqlalchemy.orm import joinedload
+from sqlalchemy import select
+from sqlalchemy.orm import selectinload
 
-activity = session.query(Activity).options(
-    joinedload(Activity.logs)
-).filter(Activity.agent_id == agent_id).first()
-```
+from agentexec.activity.models import Activity
+from agentexec.core.db import get_session
 
-### Redis Pipeline
-
-```python
-# Batch Redis operations
-async def get_multiple_results(agent_ids: list[str]):
-    redis = await get_redis()
-    pipe = redis.pipeline()
-    for agent_id in agent_ids:
-        pipe.get(f"result:{agent_id}")
-    return await pipe.execute()
+async with get_session() as db:
+    result = await db.execute(
+        select(Activity)
+        .options(selectinload(Activity.logs))
+        .where(Activity.agent_id == agent_id)
+    )
+    activity = result.scalar_one_or_none()
 ```
 
 ### Connection Management
 
-```python
-# Reuse connections with context manager
-from contextlib import asynccontextmanager
+`agentexec.core.db.get_session()` returns a fresh `AsyncSession` bound to
+the engine configured at startup. Use it as an async context manager — no
+additional wrapper is needed.
 
-@asynccontextmanager
-async def get_session():
-    session = SessionLocal()
-    try:
-        yield session
-        session.commit()
-    except Exception:
-        session.rollback()
-        raise
-    finally:
-        session.close()
+```python
+from agentexec.core.db import get_session
+
+async with get_session() as db:
+    ...
 ```
 
 ## Maintenance
@@ -537,23 +525,22 @@ async def get_session():
 Archive old activities:
 
 ```python
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
+from sqlalchemy import delete
 
-def cleanup_old_activities(days: int = 30):
-    cutoff = datetime.utcnow() - timedelta(days=days)
+from agentexec.activity.models import Activity
+from agentexec.core.db import get_session
 
-    with Session(engine) as session:
-        # Archive to separate table or delete
-        old_activities = session.query(Activity).filter(
-            Activity.updated_at < cutoff
-        ).all()
 
-        for activity in old_activities:
-            # Archive logic here
-            session.delete(activity)
-
-        session.commit()
-        logger.info(f"Cleaned up {len(old_activities)} old activities")
+async def cleanup_old_activities(days: int = 30) -> int:
+    cutoff = datetime.now(timezone.utc) - timedelta(days=days)
+    async with get_session() as db:
+        result = await db.execute(
+            delete(Activity).where(Activity.updated_at < cutoff)
+        )
+        await db.commit()
+        logger.info(f"Cleaned up {result.rowcount} old activities")
+        return result.rowcount
 ```
 
 ### Redis Cleanup
