@@ -1,92 +1,44 @@
 # Changelog
 
-## v0.2.0rc2
+## v0.2.0
 
-Second release candidate for 0.2.0. Completes the async migration and
-stabilizes the worker pool architecture.
+Major refactor of the backend, queue, activity, worker, and database layers.
+If you're upgrading from 0.1.x, read the **Breaking Changes** section closely.
 
 ### Breaking Changes
 
 **Fully async database layer**
 - `configure_engine()` and `get_session()` now require an async SQLAlchemy engine (`AsyncEngine`) and return `AsyncSession`
 - Database URLs must use async drivers (e.g. `sqlite+aiosqlite://`, `postgresql+asyncpg://`)
-- `sqlalchemy[asyncio]` is now a core dependency; `aiosqlite` added as dev dependency
-
-**Async activity query API**
-- `activity.list()`, `activity.detail()`, and `activity.count_active()` are now async and accept `AsyncSession`
-- Activity handlers are now async (`async def __call__`)
-
-**Removed `session` parameter from activity mutations**
-- `activity.create()`, `activity.update()`, `activity.complete()`, and `activity.error()` no longer accept a `session` parameter — the handler owns its own session lifecycle
-
-**Queue priority parameter**
-- `BaseQueueBackend.push()` signature changed from `high_priority: bool` to `priority: Priority | None`
-- Affects Redis, Kafka, and any custom queue backend implementations
-
-### New Features
-
-**CLI entrypoint**
-- New `agentexec` CLI command via `[project.scripts]`
-
-**Activity model `create()` classmethod**
-- `Activity.create()` encapsulates record + initial log entry creation in one async call
-
-**Async engine disposal**
-- `dispose_engine()` ensures the async engine's background threads exit cleanly on shutdown
-
-### Architecture Changes
-
-**Worker pool refactor**
-- Workers now use the `spawn` multiprocessing start method with explicit context — no inherited state
-- `StateEvent` replaced with stdlib `multiprocessing.Event` — removes dependency on the state backend for shutdown coordination
-- Event handling and scheduling extracted into `_EventHandler` and `_Scheduler` classes
-- Worker processes are now daemonic with `SIGINT` ignored — clean shutdown driven by the event
-- `pool.start()` handles `CancelledError` directly for Ctrl+C shutdown
-
-**Logging overhaul**
-- Removed `worker/logging.py` and `core/logging.py` — all modules use stdlib `logging.getLogger(__name__)`
-- Spawned workers bootstrap a `StreamHandler` on the root logger so logs reach stderr
-- Pool messages use `logger.info`/`logger.error` instead of `print()`
-
-### Bug Fixes
-
-- Fixed crash when worker receives a task for an unregistered task name (now logs error and skips)
-- Failed tasks now log full tracebacks via `logger.exception` instead of `logger.error`
-- Kafka consumer handles `None` message values without crashing
-- `ActivityUpdated.status` is now `Status` enum instead of raw string
-- `raise e` instead of bare `raise` in task execution for clearer tracebacks
-
-### Improvements
-
-- Dependency groups use PEP 735 `[dependency-groups]` instead of `[tool.uv]`
-- Ruff line-length increased to 110
-- Removed verbose docstring examples and redundant comments throughout activity models
-- `selectinload` for eager loading of activity logs in `get_by_agent_id`
-- Redis backend adds `type: ignore` annotations for redis-py async stubs
-
-## v0.2.0rc1
-
-First release candidate for 0.2.0. Major refactor of the backend, queue,
-activity, and worker systems.
-
-### Breaking Changes
-
-**Backend module restructure**
-- `agentexec.state.redis_backend` renamed to `agentexec.state.redis` — update `AGENTEXEC_STATE_BACKEND` if set explicitly
-- `AGENTEXEC_QUEUE_NAME` renamed to `AGENTEXEC_QUEUE_PREFIX` (old name still accepted as alias)
+- `sqlalchemy[asyncio]` is now a core dependency
 
 **Async activity API**
-- Activity functions are now async: `await ax.activity.create(...)`, `await ax.activity.update(...)`, etc.
+- All activity functions are async: `await ax.activity.create(...)`, `await ax.activity.update(...)`, `await ax.activity.complete(...)`, `await ax.activity.error(...)`
+- `activity.list()`, `activity.detail()`, and `activity.count_active()` are async and accept `AsyncSession`
+- Activity handlers are async (`async def __call__`)
+- The `session` parameter was removed from activity mutations — the handler owns its own session lifecycle
+
+**Pool entry point**
+- `pool.run()` was removed. Use `await pool.start()` in an asyncio loop, or the new `agentexec run mymodule:pool` CLI
+- `AGENTEXEC_QUEUE_NAME` renamed to `AGENTEXEC_QUEUE_PREFIX` (old name still accepted as alias)
+- `agentexec.state.redis_backend` renamed to `agentexec.state.redis` — update `AGENTEXEC_STATE_BACKEND` if set explicitly
 
 **Task context serialization**
 - `Task.context` is now `Mapping[str, Any]` (raw dict), not a typed BaseModel — hydration happens at execution time
 - `Task.create()` is now async
 
+**Queue backend protocol**
+- `BaseQueueBackend.push()` signature changed from `high_priority: bool` to `priority: Priority | None` — affects Redis, Kafka, and any custom queue backend
+
 **Removed APIs**
 - `set_global_session`/`get_global_session`/`remove_global_session` — use `configure_engine`/`get_session`
 - `state.backend.publish`/`subscribe` (pubsub), `index_add`/`index_range`/`index_remove`, `clear`, `configure`
+- `worker/logging.py` and `core/logging.py` — all modules use stdlib `logging.getLogger(__name__)` directly
 
 ### New Features
+
+**CLI entrypoint**
+- New `agentexec` CLI command: `agentexec run mymodule:pool --create-tables --workers 4`
 
 **Partitioned Redis queues**
 - Tasks with `lock_key` route to dedicated partition queues with per-partition locking and SCAN-based fair dequeue
@@ -101,17 +53,44 @@ activity, and worker systems.
 - `pip install agentexec[kafka]` for queue and schedule via Kafka
 
 **Typed worker IPC**
-- `TaskFailed`, `LogEntry`, `ActivityUpdated` messages over `multiprocessing.Queue`
+- `TaskFailed` and `ActivityEvent` messages flow over `multiprocessing.Queue` with pydantic validation
 
 **Schedule composite keys**
 - `{task_name}:{cron}:{context_hash}` for unique schedule identity
 
-### Improvements
+**Activity model `create()` classmethod**
+- `Activity.create()` encapsulates record + initial log entry creation in one async call
 
+**Async engine disposal**
+- `dispose_engine()` ensures the async engine's background threads exit cleanly on shutdown
+
+### Architecture Changes
+
+**Worker pool refactor**
+- Workers use the `spawn` multiprocessing start method with explicit context — no inherited state
+- Event handling and scheduling extracted into `_EventHandler` and `_Scheduler` classes
+- `StateEvent` replaced with stdlib `multiprocessing.Event` — removes dependency on the state backend for shutdown coordination
 - Class-based backend architecture with ABCs (`BaseStateBackend`, `BaseQueueBackend`, `BaseScheduleBackend`)
 - `Task` is pure data, `TaskDefinition` owns behavior
-- Session management via `configure_engine`/`get_session` (Pool owns the engine)
 - Status enum extracted to `activity/status.py` (no SQLAlchemy dependency)
+
+**Logging**
+- All modules use stdlib `logging.getLogger(__name__)`
+- Spawned workers bootstrap a `StreamHandler` on the root logger so logs reach stderr
+- Pool messages use `logger.info`/`logger.error` instead of `print()`
+
+### Bug Fixes
+
+- **Orphaned worker processes on shutdown.** SIGTERM (systemd/docker stop), SIGKILL, and SIGHUP were leaving worker processes running. Fixed via an asyncio SIGTERM handler in the CLI and `prctl(PR_SET_PDEATHSIG)` in each worker so the kernel terminates workers when the pool dies
+- **Worker and scheduler error loops throttled.** Infra failures (e.g. Redis unreachable) were producing 100k+ log lines per second. Added a 1s sleep after outer-loop exceptions
+- **Unregistered task name crash.** Worker now logs an error and skips instead of crashing when it receives a task for an unknown name
+- Failed tasks now log full tracebacks via `logger.exception` instead of `logger.error`
+- Kafka consumer handles `None` message values without crashing
+- `ActivityUpdated.status` is a `Status` enum instead of raw string
+
+### Documentation
+
+- Full documentation sweep for the async API — connection strings, CLI usage, `await` on activity calls across all guides and API references
 
 ## v0.1.7
 
