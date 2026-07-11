@@ -1,5 +1,20 @@
 # Changelog
 
+## v0.3.0
+
+### Breaking Changes
+
+**Permanent task failure raises `TaskFailedError`**
+- Callers that previously relied on `TimeoutError` to detect a task that exhausted its retries now receive `ax.TaskFailedError` as soon as the failure is recorded
+
+### New Features
+
+**Terminal failure contract for `ax.gather` / `ax.get_result`**
+- When a task exhausts its retries, the pool stores a `TaskFailure` record at the task's result key (same convention and TTL as success results)
+- `ax.get_result` raises `ax.TaskFailedError` — carrying `task_name`, `agent_id`, `error`, and `attempts` — on its next poll (~0.5s) instead of polling until the timeout
+- `ax.gather` fails fast on the first permanent failure; remaining tasks keep running and their results stay retrievable, so re-gathering survivors resolves instantly
+- `TaskFailedError` is exported on the `ax` namespace
+
 ## v0.2.0
 
 Major refactor of the backend, queue, activity, worker, and database layers.
