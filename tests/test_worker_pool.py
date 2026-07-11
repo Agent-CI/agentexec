@@ -423,8 +423,9 @@ class TestPoolRetryLogic:
         assert pushed[0]["priority"] is Priority.HIGH
 
     async def test_gives_up_after_max_retries(self, pool, monkeypatch, caplog):
-        """Failed task at max retries is not requeued."""
+        """Failed task at max retries is not requeued and stores a failure record."""
         from agentexec.worker.pool import TaskFailed
+        from agentexec.core.results import TaskFailure
 
         @pool.task("doomed_task")
         async def handler(agent_id: uuid.UUID, context: SampleContext):
@@ -438,11 +439,17 @@ class TestPoolRetryLogic:
         )
 
         pushed = []
+        stored = {}
 
         async def mock_push(value, *, priority=None, partition_key=None):
             pushed.append(value)
 
+        async def mock_set(key, value, ttl_seconds=None):
+            stored[key] = value
+            return True
+
         monkeypatch.setattr("agentexec.state.backend.queue.push", mock_push)
+        monkeypatch.setattr("agentexec.state.backend.state.set", mock_set)
         monkeypatch.setattr(ax.CONF, "max_task_retries", 3)
 
         eh = self._make_handler(pool)
@@ -454,6 +461,16 @@ class TestPoolRetryLogic:
         assert "doomed_task" in caplog.text
         assert "4 attempts" in caplog.text
         assert "fatal" in caplog.text
+
+        from agentexec.state import KEY_RESULT
+
+        result_key = backend.format_key(*KEY_RESULT, str(task.agent_id))
+        failure = backend.deserialize(stored[result_key])
+        assert isinstance(failure, TaskFailure)
+        assert failure.task_name == "doomed_task"
+        assert failure.agent_id == task.agent_id
+        assert failure.error == "fatal"
+        assert failure.attempts == 4
 
     async def test_retry_preserves_partition_key(self, pool, monkeypatch):
         """Requeued task uses the correct partition key from its definition."""

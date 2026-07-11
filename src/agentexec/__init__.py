@@ -30,7 +30,7 @@ from importlib.metadata import PackageNotFoundError, version
 from agentexec.config import CONF
 from agentexec.core.db import Base
 from agentexec.core.queue import Priority, enqueue
-from agentexec.core.results import gather, get_result
+from agentexec.core.results import TaskFailedError, gather, get_result
 from agentexec.core.task import Task
 from agentexec import activity
 from agentexec.worker import Pool
@@ -51,6 +51,7 @@ __all__ = [
     "Tracker",
     "Pool",
     "Task",
+    "TaskFailedError",
     "Priority",
     "activity",
     "enqueue",

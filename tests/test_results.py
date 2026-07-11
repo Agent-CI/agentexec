@@ -6,7 +6,7 @@ import pytest
 from pydantic import BaseModel
 
 import agentexec as ax
-from agentexec.core.results import gather, get_result, _get_result
+from agentexec.core.results import TaskFailedError, TaskFailure, gather, get_result, _get_result
 
 
 class SampleContext(BaseModel):
@@ -148,6 +148,60 @@ async def test_gather_preserves_order(mock_get_result) -> None:
 
     expected = tuple(SampleResult(status=f"result_{i}", value=i) for i in range(5))
     assert results == expected
+
+
+async def test_get_result_raises_on_task_failure(mock_get_result) -> None:
+    """A stored TaskFailure record raises TaskFailedError immediately."""
+    task = ax.Task(
+        task_name="doomed_task",
+        context={"message": "test"},
+        agent_id=uuid.uuid4(),
+    )
+    mock_get_result.return_value = TaskFailure(
+        task_name="doomed_task",
+        agent_id=task.agent_id,
+        error="boom",
+        attempts=4,
+    )
+
+    with pytest.raises(TaskFailedError, match="failed after 4 attempts: boom") as exc_info:
+        await get_result(task, timeout=30)
+
+    assert exc_info.value.task_name == "doomed_task"
+    assert exc_info.value.agent_id == task.agent_id
+    assert exc_info.value.error == "boom"
+    assert exc_info.value.attempts == 4
+    # Raised on the first poll, not after the timeout.
+    mock_get_result.assert_called_once_with(task.agent_id)
+
+
+async def test_gather_propagates_task_failure(mock_get_result) -> None:
+    """gather raises when any task has permanently failed."""
+    ok_task = ax.Task(
+        task_name="ok_task",
+        context={"message": "ok"},
+        agent_id=uuid.uuid4(),
+    )
+    doomed_task = ax.Task(
+        task_name="doomed_task",
+        context={"message": "doom"},
+        agent_id=uuid.uuid4(),
+    )
+
+    async def mock_result(agent_id):
+        if agent_id == ok_task.agent_id:
+            return SampleResult(status="ok", value=1)
+        return TaskFailure(
+            task_name="doomed_task",
+            agent_id=doomed_task.agent_id,
+            error="fatal",
+            attempts=4,
+        )
+
+    mock_get_result.side_effect = mock_result
+
+    with pytest.raises(TaskFailedError, match="doomed_task"):
+        await gather(ok_task, doomed_task, timeout=30)
 
 
 async def test_get_result_with_complex_object(mock_get_result) -> None:
