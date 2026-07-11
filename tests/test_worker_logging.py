@@ -272,6 +272,7 @@ class TestEventHandlerLogging:
 
         _, buf = _capture_handler()
         monkeypatch.setattr(ax.CONF, "max_task_retries", 3)
+        monkeypatch.setattr("agentexec.state.backend.state.set", AsyncMock())
 
         import queue
         q = queue.Queue()

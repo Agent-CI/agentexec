@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from sqlalchemy.ext.asyncio import AsyncEngine, create_async_engine
 
 from agentexec.config import CONF
-from agentexec.state import backend
+from agentexec.state import KEY_RESULT, backend
 import queue as stdlib_queue
 
 from agentexec import activity
@@ -19,6 +19,7 @@ from agentexec.activity.events import ActivityEvent
 from agentexec.activity.handlers import IPCHandler
 from agentexec.core.db import configure_engine, dispose_engine
 from agentexec.core.queue import enqueue
+from agentexec.core.results import TaskFailure
 from agentexec.core.task import Task, TaskDefinition, TaskHandler
 from agentexec import schedule
 
@@ -224,6 +225,16 @@ class _EventHandler:
                         priority=Priority.HIGH,
                     )
                 else:
+                    failure = TaskFailure(
+                        task_name=task.task_name,
+                        agent_id=task.agent_id,
+                        error=error,
+                        attempts=task.retry_count + 1,
+                    )
+                    key = backend.format_key(*KEY_RESULT, str(task.agent_id))
+                    await backend.state.set(
+                        key, backend.serialize(failure), ttl_seconds=CONF.result_ttl
+                    )
                     logger.info(
                         f"Task {task.task_name} failed "
                         f"after {task.retry_count + 1} attempts, giving up: {error}"
